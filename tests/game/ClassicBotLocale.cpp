@@ -21,6 +21,8 @@
 
 #include "../../src/modules/PlayerbotV2/Util/BotLocaleText.h"
 #include "../../src/modules/PlayerbotV2/Bot/Raid/RaidBanter.h"
+#include "../../src/modules/PlayerbotV2/Bot/Raid/RaidCallouts.h"
+#include "../../src/modules/PlayerbotV2/Bot/Raid/RaidVoice.h"
 #include "../../src/modules/PlayerbotV2/Bot/Quest/QuestRefusal.h"
 #include <cctype>
 #include <set>
@@ -221,6 +223,37 @@ TEST_CASE("BotLocale: raid leader banter", "[BotLocale]")
                     CHECK_FALSE(s.empty());
                     CHECK(ru.Knows(s));
                 }
+}
+
+TEST_CASE("BotLocale: the raid's voice", "[BotLocale]")
+{
+    using namespace Playerbot::Raid;
+    Catalog const& ru = Russian();
+    // Every fixed line of the raid's voice and every boss brief has its Russian form.
+    for (uint32_t pick = 0; pick < 64; ++pick)
+        for (std::string_view s : { KillLine(pick), RunBackLine(pick), LeaderRebuffLine(pick), IdleLine(pick), LeaderIdleLine(pick) })
+        {
+            INFO(s);
+            CHECK(ru.Knows(s));
+        }
+    for (uint32_t e : { 12118u, 11982u, 12259u, 12057u, 12264u, 12056u, 12098u, 11988u, 12018u, 11502u, 10184u,
+                        12435u, 13020u, 12017u, 11983u, 14601u, 11981u, 14020u, 11583u, 10162u })
+    {
+        INFO(BossBrief(e));
+        CHECK(ru.Knows(BossBrief(e)));
+    }
+    // The newer callouts.
+    CalloutFacts breath;
+    breath.move_reason = "break sight";
+    CHECK(Translate(Lang::Ru, PickCallout(breath).text) == "сейчас дыхание, уйдите из его видимости");
+    breath.sight_aura = "Flame Buffet";
+    CHECK(Translate(Lang::Ru, PickCallout(breath).text) == "сбрасываю стаки Flame Buffet вне его видимости");
+    CalloutFacts tranq;
+    tranq.purge = true;
+    tranq.spell = "Tranquilizing Shot";
+    tranq.target = "Flamegor";
+    CHECK(Translate(Lang::Ru, PickCallout(tranq).text) == "кастую Tranquilizing Shot на Flamegor");
+    CHECK(Translate(Lang::Ru, "Polymorph on Flamewaker Healer, don't break it") == "Polymorph на Flamewaker Healer, не сбивайте");
 }
 
 TEST_CASE("BotLocale: boss tactics answers", "[BotLocale]")

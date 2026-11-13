@@ -1197,9 +1197,20 @@ def answer_talk(event, api, minds, opts):
     log("%s [%s, %.1f s]: %s" % (bot, "talk" if channel == "say" else channel, time.time() - started, say))
 
 
+# The raid's own talk that is no mistake (Playerbot.Raid.Talk, the server's RaidVoice): what the bot is doing when it speaks.
+RAID_VOICE = {
+    "kill_crowd": "Your raid just killed a boss; you say something short in raid chat the way raiders do then.",
+    "run_back": "Your raid just wiped and you are on the way back; you say something a raider says then (repair, rez, buffs, a "
+                "small joke).",
+    "rebuff_call": "You are the raid leader; after a wipe you get everyone to resurrect, rebuff and go again, calm and short.",
+    "between_pulls": "Your raid is resting between pulls; you say something a raider says then (buffs, water, loot, the next "
+                     "boss, a small joke).",
+}
+
+
 def answer_raid_line(event, api, opts):
     """A bot's raid chat line about something that just happened in the fight (the raid leader reacting to a mistake, a raider
-    after a wipe). Fast or nothing: the server says its fixed line itself when this one is not back within wait_ms (2.5 s), so
+    after a wipe), or the raid's own talk (a kill, the run back, between pulls: RAID_VOICE). Fast or nothing: the server says its fixed line itself when this one is not back within wait_ms (2.5 s), so
     the prompt is short, the answer is a few words, and a slow model simply loses. No persona text of anyone's goes in: the
     lines stay game banter, never about a person, never a slur (check_line still filters what comes back)."""
     api = getattr(api, "primary", api)   # never the paid backup for banter
@@ -1212,16 +1223,21 @@ def answer_raid_line(event, api, opts):
     harsh = str(event.get("mood", "mild")) == "harsh"
     leader = str(event.get("role", "")) == "raid leader"
     russian = str(event.get("locale", "")).lower() == "ruru"
+    voice = RAID_VOICE.get(str(event.get("what", "")))
+    if voice and leader and event.get("what") == "between_pulls":
+        voice = "You are the raid leader; the raid rests between pulls and you get them ready for the next one, calm and short."
     system = ("You are %s, a level %s %s in a World of Warcraft raid, writing in raid chat like a real player. %s "
-              "Write ONE short line (at most 12 words), lowercase, no emoji, no quotes. Only about the game and this mistake: "
+              "Write ONE short line (at most 12 words), lowercase, no emoji, no quotes. Only about the game and this %s: "
               "never about the person behind the character, never insults about real life, never slurs, no threats. "
               "Answer as JSON: {\"say\": \"...\"}."
               % (bot, event.get("level", "60"), event.get("class", ""),
+                 voice if voice else
                  ("You are the raid leader and you %s." % ("freak out at every mistake, loud and dramatic, CAPS now and then, but it "
                                                            "is all in good fun" if harsh else "tease people about mistakes, "
                                                            "calm and a bit dry")) if leader else
                  ("You just wiped with your raid; you %s." % ("blame someone a bit, half joking" if harsh else
-                                                              "make an excuse, a joke or own up"))))
+                                                              "make an excuse, a joke or own up")),
+                 "moment" if voice else "mistake"))
     if russian:
         system += " " + language_line(True)
     user = "Just now: %s.\nThe kind of line meant (don't copy it): %s" % (event.get("detail", "something happened"), event.get("example", ""))

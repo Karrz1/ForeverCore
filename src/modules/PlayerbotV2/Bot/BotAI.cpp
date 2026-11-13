@@ -1271,7 +1271,8 @@ void BotAI::dispatch_layers(BotSnapshotView s, GroupSnapshotView g,
 
     // ike3 speech that no game event announces: companions' combat / ammo callouts and world
     // bots' General / Trade suggestions. Rate-limited inside; at most one chat intent.
-    if (!s.big_raid())   // quiet in 40-man raids
+    // A 40-man raid hears it only with Playerbot.Raid.Talk on (one voice for the whole raid, Bot/Raid/RaidVoice.h).
+    if (!s.big_raid() || BotChatter::RaidTalkOn())
         BotChatter::SpeechTick(*this, s, em);
 
     // Future: detect AtVendor / AtMailbox / AtAh / InInstance / Decorating

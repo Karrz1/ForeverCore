@@ -582,6 +582,15 @@ Playerbot.Raid.Callouts = 1
 #   0 = off, 1 = mild (teasing), 2 = harsh (a leader who freaks out at every mishap)
 Playerbot.Raid.Banter = 1
 
+# A raid of more than 15 talks like a crowd of players (Bot/Raid/RaidVoice.h): the bots' own chatter (loot, a death, a ready check)
+# with one line for the whole raid at a time, a few gg and grats after a kill, talk on the run back after a wipe and the leader's
+# rebuff call, a line now and then between pulls, and the raid leader bot saying what the next boss does when a player walks up to
+# it (Molten Core, Onyxia, Blackwing Lair). Only in a raid with a real player in it. With the bot bridge answering chat the
+# program may word the lines (a line not back within 2.5 s is said the fixed way).
+#   0 = off (the bots stay quiet in a big raid except Callouts and Banter, as before 0.1.37), 1 = normal, 2 = chatty
+#   (normal: one chatter line per raid every 30 s, between pulls a line every 2 to 3 minutes; chatty: twice as often)
+Playerbot.Raid.Talk = 1
+
 # A resurrection a bot casts on you is accepted for you after 3 s without an answer (the 70205 client shows no accept popup).
 Playerbot.Raid.AutoAcceptOwnerRez = 1
 

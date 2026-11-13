@@ -101,14 +101,14 @@ static void AnswerReadyCheck(BotAI& ai, BotSnapshotView const& snapshot, GroupSn
             if (why)
             {
                 if (snapshot.is_alive())
-                    emit.say(why);
+                    BotChatter::SayToGroup(emit, snapshot, why);
             }
             else if (ready)
             {
                 // Now and then a plain "ready" in chat, like a person (Playerbot.Behavior.PartyBanter).
                 std::string line = BotChatter::BanterLine(BotChatter::Banter::Ready, ai, snapshot);
                 if (!line.empty())
-                    emit.say(std::move(line));
+                    BotChatter::SayToGroup(emit, snapshot, std::move(line));
             }
             ai.set_ready_check_acked(true);
             ai.set_last_rule_fired("ingroup:ready_check_ack");

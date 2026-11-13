@@ -12,6 +12,7 @@
 #include "RaidBrainInternal.h"
 #include "RaidBanter.h"
 #include "RaidCallouts.h"
+#include "RaidVoice.h"
 #include "../BotBridge.h"
 #include "RaidEncounters.h"
 #include "RaidGeometry.h"
@@ -4598,6 +4599,174 @@ void WipeBanter(Group* group, Map* map, std::string const& firstDead, std::strin
     }
 }
 
+// ---------------------------------------------------------------------------
+// The raid's voice (RaidVoice.h, Playerbot.Raid.Talk): a raid of more than 15 with a real player in it talks like a crowd. The kill
+// crowd, the run back after a wipe, a line now and then between pulls, and the leader's word on the next boss.
+// ---------------------------------------------------------------------------
+
+RaidTalk TalkNow() { return RaidTalkFromConfig(Services::Config().raid_talk()); }
+
+bool VoicedRaid(Group const* group)
+{
+    return group && group->GetMembersCount() > kRaidVoiceGroupSize && TalkNow() != RaidTalk::Off && GroupHasHuman(group);
+}
+
+// A line of the raid's voice (not a mistake): the program may word it like the banter (raid_line, `what` the moment), else the
+// fixed `text` at `delayMs`. `ask` false: the fixed line only (the leader's boss brief is information, never reworded).
+void QueueVoice(Group* group, Player* bot, char const* what, std::string const& detail, std::string const& text, bool leader,
+                uint32_t delayMs, uint32_t now, bool ask = true)
+{
+    if (text.empty() || !bot || g_banterQueue.size() >= 64)
+        return;
+    uint64 const id = ask ? BotBridge::AskRaidLine(bot, what, detail, text, "mild", leader ? "raid leader" : "raider", delayMs, kModelWaitMs) : 0;
+    g_banterQueue.push_back({ now + (id ? std::max(delayMs, kModelWaitMs) : delayMs), group->GetGUID(), bot->GetGUID(), text, id });
+    TC_LOG_INFO("playerbot.v2.raid", "[raid_voice] {} ({}{}): {}{}", bot->GetName(), what, leader ? ", leader" : "", text,
+        id ? " (asked the program first)" : "");
+}
+
+// The group's bots on `map` other than `except`, in random order (`aliveOnly`: the living only).
+std::vector<Player*> VoiceCrowd(Group* group, Map* map, Player const* except, bool aliveOnly)
+{
+    std::vector<Player*> out;
+    for (GroupReference const& ref : group->GetMembers())
+        if (Player* m = ref.GetSource(); m && m != except && m->IsInWorld() && m->GetMap() == map && (!aliveOnly || m->IsAlive()) &&
+                                         Services::Lifecycle().is_bot(m->GetGUID().GetCounter()))
+            out.push_back(m);
+    for (size_t i = out.size(); i > 1; --i)
+        std::swap(out[i - 1], out[urand(0, uint32(i - 1))]);
+    return out;
+}
+
+// After a kill: besides the leader's line (RaidBanter BossDown), a few raiders say gg / grats, and a few cheer.
+void KillCrowd(Group* group, Map* map, std::string const& boss, uint32_t now)
+{
+    if (!VoicedRaid(group) || !map)
+        return;
+    RaidVoiceTuning const t = VoiceTuning(TalkNow());
+    std::vector<Player*> const crowd = VoiceCrowd(group, map, BanterLeader(group, map), true);
+    size_t const speakers = std::min<size_t>(crowd.size(), urand(1, t.killCrowd));
+    std::string const detail = "your raid just killed " + (boss.empty() ? std::string("the boss") : boss) + "; say something short in raid chat";
+    uint32_t at = urand(2500, 4000);
+    for (size_t i = 0; i < speakers; ++i)
+    {
+        QueueVoice(group, crowd[i], "kill_crowd", detail, std::string(KillLine(urand(0, 63))), false, at, now);
+        at += urand(1500, 4000);
+    }
+    size_t const cheers = std::min<size_t>(crowd.size(), speakers + urand(2, 4));
+    for (size_t i = speakers; i < cheers; ++i)
+        crowd[i]->HandleEmoteCommand(EMOTE_ONESHOT_CHEER);
+}
+
+// After a wipe: a few raiders talk on the run back (repair, rez, rebuff), and the leader calls the rebuff.
+void RunBackVoice(Group* group, Map* map, std::string const& boss, uint32_t now)
+{
+    if (!VoicedRaid(group) || !map)
+        return;
+    RaidVoiceTuning const t = VoiceTuning(TalkNow());
+    Player* leader = BanterLeader(group, map);
+    std::vector<Player*> const crowd = VoiceCrowd(group, map, leader, false);
+    size_t const speakers = std::min<size_t>(crowd.size(), urand(1, t.runBackCrowd));
+    std::string const at_boss = boss.empty() ? std::string() : " on " + boss;
+    uint32_t at = urand(9000, 13000);
+    for (size_t i = 0; i < speakers; ++i)
+    {
+        QueueVoice(group, crowd[i], "run_back", "your raid wiped" + at_boss + " and is running back to try again; say something short",
+            std::string(RunBackLine(urand(0, 63))), false, at, now);
+        at += urand(4000, 9000);
+    }
+    if (leader)
+        QueueVoice(group, leader, "rebuff_call", "the raid wiped" + at_boss + "; tell everyone to resurrect, rebuff and try again",
+            std::string(LeaderRebuffLine(urand(0, 63))), true, at + urand(2000, 5000), now);
+}
+
+// Per raid (group, map): when it last fought, and when somebody next says something between pulls.
+struct VoiceClock { uint32_t lastFight = 0; uint32_t nextIdle = 0; uint32_t nextBriefScan = 0; uint32_t seen = 0; };
+std::unordered_map<uint64_t, VoiceClock> g_voiceClock;
+BossBriefGate g_bossBrief;
+
+uint32_t IdleGap(RaidVoiceTuning const& t) { return urand(t.idleGapMs * 7 / 10, t.idleGapMs * 13 / 10); }
+
+// The creatures a leader explains besides the map's bosses: Lord Victor Nefarius, who starts Nefarian's fight.
+constexpr uint32_t kBriefExtras[] = { 10162 };
+
+// Between pulls (the plan pass out of combat): a line now and then, and the leader's word on a boss a player walks up to.
+void VoiceBetweenPulls(uint64_t key, Group* group, Plan const& plan, Map* map, uint32_t now)
+{
+    if (!VoicedRaid(group) || !map)
+        return;
+    RaidVoiceTuning const t = VoiceTuning(TalkNow());
+    VoiceClock& c = g_voiceClock[key];
+    c.seen = now;
+    if (!c.nextIdle)
+        c.nextIdle = now + IdleGap(t);
+    if (!c.lastFight)
+        c.lastFight = now;
+
+    // The next boss: a real player within 60 y of one that is alive and not fighting. Looked for every 3 s.
+    if (int32_t(now - c.nextBriefScan) >= 0)
+    {
+        c.nextBriefScan = now + 3000;
+        for (Member const& m : plan.members)
+        {
+            if (m.bot || !m.p)
+                continue;
+            auto const brief = [&](uint32_t entry)
+            {
+                Creature* boss = m.p->FindNearestCreature(entry, 60.0f, true);
+                if (!boss || boss->IsInCombat() || !g_bossBrief.Allow(plan.groupLow, entry, t, now))
+                    return false;
+                if (Player* leader = BanterLeader(group, map))
+                    QueueVoice(group, leader, "boss_brief", {}, std::string(BossBrief(entry)), true, urand(800, 1600), now, /*ask=*/false);
+                return true;
+            };
+            bool said = false;
+            for (uint32_t entry : plan.rules->bosses)
+                if ((said = brief(entry)))
+                    break;
+            if (!said && plan.mapId == 469)
+                for (uint32_t entry : kBriefExtras)
+                    if ((said = brief(entry)))
+                        break;
+            if (said)
+            {
+                c.nextIdle = std::max(c.nextIdle, now + t.idleQuietMs);   // no small talk over the brief
+                return;
+            }
+        }
+    }
+
+    // Small talk: once the raid has been out of combat a while, about every idleGapMs; now and then the leader instead.
+    if (now - c.lastFight < t.idleQuietMs || int32_t(now - c.nextIdle) < 0)
+        return;
+    c.nextIdle = now + IdleGap(t);
+    Player* leader = BanterLeader(group, map);
+    if (leader && urand(0, 3) == 0)
+    {
+        QueueVoice(group, leader, "between_pulls", "the raid is resting between pulls; say something short to get them ready for the next one",
+            std::string(LeaderIdleLine(urand(0, 63))), true, urand(0, 1500), now);
+        return;
+    }
+    std::vector<Player*> const crowd = VoiceCrowd(group, map, leader, true);
+    if (!crowd.empty())
+        QueueVoice(group, crowd.front(), "between_pulls", "your raid is resting between pulls in " + std::string(map->GetMapName()) +
+            "; say something short a raider would say now", std::string(IdleLine(urand(0, 63))), false, urand(0, 1500), now);
+}
+
+// The plan pass in combat: the raid is fighting.
+void VoiceFighting(uint64_t key, uint32_t now)
+{
+    if (auto it = g_voiceClock.find(key); it != g_voiceClock.end())
+        it->second.lastFight = it->second.seen = now;
+    else if (TalkNow() != RaidTalk::Off)
+        g_voiceClock[key] = { now, 0, 0, now };
+}
+
+void ForgetVoiceClocks(uint32_t now)
+{
+    for (auto it = g_voiceClock.begin(); it != g_voiceClock.end();)
+        it = now - it->second.seen > 600000 ? g_voiceClock.erase(it) : std::next(it);
+}
+
 // Per raid group: what the banter watches between plan passes.
 struct BanterWatch
 {
@@ -5142,10 +5311,21 @@ void EndQuietPulls(uint32_t now_ms)
                 if (mob.boss && bossName.empty())
                     bossName = mob.name;
             if (bossKilled)
+            {
                 LeaderReacts(bg, map, Mishap::BossDown, pl.firstDead, bossName, now_ms);
+                KillCrowd(bg, map, bossName, now_ms);
+            }
             else if (std::strcmp(result, "wipe") == 0)
+            {
                 WipeBanter(bg, map, pl.firstDead, bossName, now_ms);
+                RunBackVoice(bg, map, bossName, now_ms);
+            }
         }
+        // A wipe on a boss: the leader explains it again on the way back in (RaidVoice.h).
+        if (std::strcmp(result, "wipe") == 0)
+            for (auto const& [guid, mob] : pl.engaged)
+                if (mob.boss)
+                    g_bossBrief.Wiped(pl.groupLow, mob.entry);
         TC_LOG_INFO("playerbot.v2.raid", "[raid_encounter] ts={} map={} group={} pull end: result={} dur={}s killed={}/{} alive={}/{} low={} deaths={} | {}{}{}",
             uint64_t(GameTime::GetGameTime()), pl.mapId, pl.groupLow, result, (pl.lastSeenMs - pl.startMs) / 1000, killed,
             uint32_t(pl.engaged.size()), alive, pl.startAlive, pl.aliveLow, pl.deaths, PullLabel(pl), left.empty() ? "" : " | left: ", left);
@@ -5313,7 +5493,8 @@ void SayCallout(Player* bot, RaidOrder const& o, uint32_t now_ms)
     f.move_reason = o.move && o.move_reason ? o.move_reason : "";
     f.hold_rotation = o.hold_rotation;
     f.use_object = !o.use_object.IsEmpty();
-    if (o.cast_kind == RaidOrder::CastKind::Taunt || o.cast_kind == RaidOrder::CastKind::CrowdControl)
+    if (o.cast_kind == RaidOrder::CastKind::Taunt || o.cast_kind == RaidOrder::CastKind::CrowdControl ||
+        o.cast_kind == RaidOrder::CastKind::Purge)
     {
         Unit const* target = o.cast_target.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, o.cast_target);
         if (target)
@@ -5323,7 +5504,20 @@ void SayCallout(Player* bot, RaidOrder const& o, uint32_t now_ms)
         if (o.cast_kind == RaidOrder::CastKind::CrowdControl)
             if (SpellInfo const* info = sSpellMgr->GetSpellInfo(o.cast_spell, DIFFICULTY_NONE))
                 f.long_cc = info->GetMaxDuration() >= 15000;
+        // A purge is called on a boss only (Flamegor's frenzy, Chromaggus' enrage): on trash it would be every few seconds.
+        if (o.cast_kind == RaidOrder::CastKind::Purge)
+            f.purge = target && target->ToCreature() && IsBossCreature(target->ToCreature());
     }
+    // Out of sight: dropping a stacking debuff (Firemaw's Flame Buffet) when the bot carries the rule's aura, else hiding from a
+    // breath (Chromaggus).
+    if (f.move_reason == "break sight")
+        if (RaidRules const* rules = RulesForMap(bot->GetMapId()))
+            for (BreakSight const& rule : rules->breakSight)
+                if (rule.aura && bot->HasAura(rule.aura))
+                {
+                    f.sight_aura = SpellNameOf(rule.aura);
+                    break;
+                }
     if (f.move_reason == "carrier run")
         if (RaidRules const* rules = RulesForMap(bot->GetMapId()))
             for (CarrierRun const& rule : rules->carrierRun)
@@ -5334,7 +5528,9 @@ void SayCallout(Player* bot, RaidOrder const& o, uint32_t now_ms)
                 }
 
     Callout const c = PickCallout(f);
-    if (!g_callouts.Allow(group->GetGUID().GetCounter(), bot->GetGUID().GetCounter(), c.kind, c.group_wide, now_ms))
+    // The same sheep or tranq on the same target is called once for the raid, whichever bot casts it.
+    std::string_view const subject = c.kind == CalloutKind::CrowdControl || c.kind == CalloutKind::Tranq ? std::string_view(f.target) : std::string_view();
+    if (!g_callouts.Allow(group->GetGUID().GetCounter(), bot->GetGUID().GetCounter(), c.kind, c.group_wide, now_ms, subject))
         return;
     ChatMsg type = group->isRaidGroup()
         ? (group->IsLeader(bot->GetGUID()) ? CHAT_MSG_RAID_LEADER : CHAT_MSG_RAID)
@@ -5608,6 +5804,7 @@ void Brain::Update(uint32_t now_ms)
     LogDeadHumanReleaseState(now_ms);
     EndAbandonedEncounters(now_ms);
     SayDueBanter(now_ms);
+    ForgetVoiceClocks(now_ms);
 
     // Bucket bots on raid maps that have rules by (group, map).
     struct Bucket { Group* group = nullptr; uint32_t mapId = 0; uint64_t refBot = 0; Player* ref = nullptr; };
@@ -5718,9 +5915,11 @@ void Brain::Update(uint32_t now_ms)
         {
             FillRaidRoles(key, plan, now_ms);
             WarnBeforePull(plan, b.ref->GetMap(), now_ms);
+            VoiceBetweenPulls(key, b.group, plan, b.ref->GetMap(), now_ms);
             MechanicsPrePull(plan, next, dump, now_ms);
             continue;
         }
+        VoiceFighting(key, now_ms);
 
         dump << plan.rules->name << " group " << b.group->GetGUID().GetCounter() << ": " << plan.members.size() << " members, "
              << plan.enemies.size() << " enemies\n";
