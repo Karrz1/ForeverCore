@@ -243,8 +243,9 @@ Playerbot.World.Moving.LeadSec = 25
 Playerbot.World.Moving.LeadMin = 130
 Playerbot.World.Moving.SpawnFactor = 2
 Playerbot.World.Moving.DespawnBehindYards = 450
-# Share (%) of bots placed in a town (capital) that stay there for 20-40 min, using trainers, AH, bank and vendors.
-Playerbot.World.TownPct = 100
+# Share (%) of bots placed in a town (capital) that stay there for 45-90 min, using trainers, AH, bank and vendors. The rest run
+# errands for a while and then leave by the city gate to quest or grind, so the city has people coming and going.
+Playerbot.World.TownPct = 50
 # World-wide filler: 1 = the MaxBots budget not needed for the bubble around players is filled with bots all over
 # the world (pool bots log in where they last were; new ones are set up and sent to a leveling town of their
 # level). Far bots run on the cheap activity tiers. They are only logged out (farthest first) to make room for the
@@ -347,6 +348,9 @@ Playerbot.World.Town.LingerMaxSec = 12
 Playerbot.World.Town.SpotCap = 5
 Playerbot.World.Town.InnCap = 4
 Playerbot.World.Town.MailboxCap = 2
+# Most bots put down at one meeting place of a capital (the bank, the auction house, the inn) when they arrive; past it a newcomer is put
+# elsewhere in the district. 0 = no cap (the area cap below still holds).
+Playerbot.World.Town.HubCap = 6
 # The share of the city's bots that rest at the inn (8% by day, 20% in the evening, 35% at night) is scaled by this percent.
 Playerbot.World.Town.InnSharePct = 50
 # 1 = the city gate is one of the places (once the gate-duel driver has found it).
@@ -459,7 +463,7 @@ Playerbot.World.JumpGraceSec = 20
 # Most world bots within AreaRadius yards of one another: placement refuses a spot that is full and a pass moves the extras of a crowd
 # next to the nearest player (0 = no cap). Outdoors and in a capital.
 Playerbot.World.AreaCapOutdoors = 14
-Playerbot.World.AreaCapTown = 40
+Playerbot.World.AreaCapTown = 15
 # The same in a start zone (Camp Narache, Deathknell, ...), where every new character has the same camp and the same quest giver (0 = AreaCapOutdoors).
 Playerbot.World.AreaCapStart = 10
 Playerbot.World.AreaRadius = 45

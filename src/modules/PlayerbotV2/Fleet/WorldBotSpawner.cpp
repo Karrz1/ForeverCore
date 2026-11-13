@@ -271,7 +271,8 @@ void WorldBotSpawner::LoadConfig()
     // Default (-1) is 45% of the machine's RAM, so a small PC stops adding filler bots before it swaps; 0 = no limit.
     int32 const rss_cfg = sConfigMgr->GetIntDefault("Playerbot.World.RssBudgetMb", -1, true);
     c.rss_budget_mb    = rss_cfg >= 0 ? uint32(rss_cfg) : uint32(PhysicalRamMb() * 45u / 100u);
-    c.town_pct         = std::min<uint32>(100, uint32(sConfigMgr->GetIntDefault("Playerbot.World.TownPct", 100, true)));
+    c.town_pct         = std::min<uint32>(100, uint32(sConfigMgr->GetIntDefault("Playerbot.World.TownPct", 50, true)));
+    c.town_hub_cap     = uint32(std::clamp<int64>(sConfigMgr->GetIntDefault("Playerbot.World.Town.HubCap", 6, true), 0, 100));
     c.city_spawn_per_tick = uint32(sConfigMgr->GetIntDefault("Playerbot.World.CitySpawnPerTick", 0, true));
     c.seed_roster      = sConfigMgr->GetBoolDefault("Playerbot.World.SeedRoster", false, true);
     c.seed_in_flight   = std::max<uint32>(1, uint32(sConfigMgr->GetIntDefault("Playerbot.World.SeedInFlight", 8, true)));
@@ -305,7 +306,7 @@ void WorldBotSpawner::LoadConfig()
     }
     c.pool_max         = uint32(sConfigMgr->GetIntDefault("Playerbot.World.PoolMax", std::max<uint32>(c.max_bots * 4, 200), true));
     c.area_cap_outdoors = uint32(std::clamp<int64>(sConfigMgr->GetIntDefault("Playerbot.World.AreaCapOutdoors", 14, true), 0, 500));
-    c.area_cap_town    = uint32(std::clamp<int64>(sConfigMgr->GetIntDefault("Playerbot.World.AreaCapTown", 40, true), 0, 500));
+    c.area_cap_town    = uint32(std::clamp<int64>(sConfigMgr->GetIntDefault("Playerbot.World.AreaCapTown", 15, true), 0, 500));
     c.area_cap_start   = uint32(std::clamp<int64>(sConfigMgr->GetIntDefault("Playerbot.World.AreaCapStart", 10, true), 0, 500));
     c.area_radius      = std::clamp(sConfigMgr->GetFloatDefault("Playerbot.World.AreaRadius", 45.0f, true), 15.0f, 200.0f);
     c.pool_horde_pct   = std::clamp<uint32>(uint32(sConfigMgr->GetIntDefault("Playerbot.World.PoolHordePct", 50, true)), 5, 95);
@@ -576,9 +577,9 @@ std::string WorldBotSpawner::Report() const
             pool += Trinity::StringFormat(" {}/{}", pool_counts_.alliance[b], pool_counts_.horde[b]);
         line += Trinity::StringFormat(" | pool A/H per bracket{} cap {}", pool, PoolBracketCap(cfg_.pool_max));
     }
-    line += Trinity::StringFormat(" | place calls={} none={} rejected no_ground={} water={} no_nav={} lava={} no_path={} area_full={} enemy_town={}",
+    line += Trinity::StringFormat(" | place calls={} none={} rejected no_ground={} water={} no_nav={} lava={} no_path={} area_full={} enemy_town={} town_spot_full={}",
         n_place_calls_, n_place_none_, n_place_reject_[0], n_place_reject_[1], n_place_reject_[2], n_place_reject_[3], n_place_reject_[4], n_place_reject_[5],
-        n_place_reject_[6]);
+        n_place_reject_[6], n_place_reject_[7]);
     {
         uint32 riders = 0;
         for (auto const& [k, t] : motion_)
@@ -1282,12 +1283,27 @@ bool WorldBotSpawner::PlaceNear(Player* bot, Player* anchor)
                         pick = alt;
                 }
             Spot const& h = *pick;
-            if (in_town) { probe_z = h.z; hub = h; at_hub = true; }
-            float const a = frand(0.0f, 2.0f * float(M_PI));
-            float const rr = frand(0.0f, h.r);
-            x = h.x + std::cos(a) * rr;
-            y = h.y + std::sin(a) * rr;
-            dist = Dist2D(x, y, anchor->GetPositionX(), anchor->GetPositionY());
+            // A capital's meeting places are few (a bank's or an auction house's worth of NPCs: the Trade District has two) and every
+            // spot took bots up to the area cap, so the whole city crowd stood in one heap by the auction house (chris, test realm
+            // 0.1.36, Stormwind and Ironforge). Town.HubCap bots at most around one; past it this try takes a spot on the ring instead,
+            // and the town errands spread the residents over the city from there.
+            if (in_town && cfg_.town_hub_cap && crowd_at(h) >= cfg_.town_hub_cap)
+            {
+                ++n_place_reject_[7];
+                float const ang = frand(0.0f, 2.0f * float(M_PI));
+                dist = frand(ring_min, ring_max);
+                x = anchor->GetPositionX() + std::cos(ang) * dist;
+                y = anchor->GetPositionY() + std::sin(ang) * dist;
+            }
+            else
+            {
+                if (in_town) { probe_z = h.z; hub = h; at_hub = true; }
+                float const a = frand(0.0f, 2.0f * float(M_PI));
+                float const rr = frand(0.0f, h.r);
+                x = h.x + std::cos(a) * rr;
+                y = h.y + std::sin(a) * rr;
+                dist = Dist2D(x, y, anchor->GetPositionX(), anchor->GetPositionY());
+            }
         }
         else if (riding)
         {

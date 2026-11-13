@@ -21387,7 +21387,9 @@ void DispatchIdle(BotAI& ai,
                 if (!reach.empty())
                 {
                     uint32 const h32 = uint32(s.guid().GetCounter()) * 2654435761u + w.strikes * 40503u;
-                    int const k = ::Playerbot::V2::Fleet::PickGatherSpot(reach, float(h32 % 10000u) / 10000.0f);
+                    // Every place the same chance: by weight a bank or an auction house (four NPCs and more) drew nearly every walk,
+                    // and the bots the watch caught in a city all ended in the same heap there (test realm 0.1.36, Trade District).
+                    int const k = int((h32 >> 4) % uint32(reach.size()));
                     float const a = float(h32 % 628u) / 100.0f;
                     float const rr = float((h32 >> 8) % 100u) / 100.0f * ::Playerbot::V2::Fleet::kGatherRadius;
                     tx = reach[k].x + std::cos(a) * rr; ty = reach[k].y + std::sin(a) * rr; tz = reach[k].z;
