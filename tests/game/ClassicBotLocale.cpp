@@ -147,9 +147,13 @@ TEST_CASE("BotLocale: the tank lead lines keep the tank's name", "[BotLocale]")
 {
     CHECK(Translate(Lang::Ru, "Raveni leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.") ==
           "Raveni ведет группу по подземелью: пулит по одной группе мобов и ждет ману и вас. Скажите 'lead pause', чтобы он ждал, 'lead off', чтобы вести самому.");
-    CHECK(Translate(Lang::Ru, "Raveni holds here and pulls nothing until you say 'lead on'.") == "Raveni ждет здесь и никого не пулит, пока вы не скажете 'lead on'.");
+    CHECK(Translate(Lang::Ru, "Raveni holds here and pulls nothing until you say 'go'.") == "Raveni ждет здесь и никого не пулит, пока вы не скажете 'go'.");
     CHECK(Translate(Lang::Ru, "waiting for mana") == "жду ману");
     CHECK(Translate(Lang::Ru, "You lead again: your bots follow you.") == "Снова ведете вы: ваши боты следуют за вами.");
+    // Stay / Follow pause the lead, "go" picks it up.
+    CHECK(Translate(Lang::Ru, "Raveni leads on.") == "Raveni ведет дальше.");
+    CHECK(Translate(Lang::Ru, "Raveni pauses the lead: say 'go' when it should lead on.") ==
+          "Raveni ждет: скажите 'go' (или 'вперед'), когда ему вести дальше.");
 }
 
 TEST_CASE("BotLocale: captured words are translated, names and numbers are not", "[BotLocale]")

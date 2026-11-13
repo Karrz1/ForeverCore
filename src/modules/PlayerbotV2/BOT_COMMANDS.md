@@ -288,8 +288,9 @@ A group chat order reaches every bot of yours; to address only some, whisper the
   Defensive stance. Before every pull and every step on it waits until nobody is dead, everyone has 70 % health, the healer is
   near and has drunk to the pull mark, the other mana users (you too) have drunk, and you are inside, alive and within 60 yards;
   in party chat it says `waiting for mana` or `waiting for you`. `lead pause` holds it where it stands (it still fights what
-  comes); `lead on` goes on. `lead off`, or leaving the dungeon, gives the lead back to you. `follow` and `stay` still work while
-  it leads (they hold the tank too); `lead on` hands the lead back to it. It needs one of your bots in the tank role, and is for
+  comes); `go` (also `lead on`, `вперед`) goes on. `lead off`, or leaving the dungeon, gives the lead back to you. `follow`,
+  `stay`, `hold` and `come` (the buttons too) pause the lead and do their own thing; `go` picks it up again. `go` is the lead's
+  word only while the lead is on or paused. It needs one of your bots in the tank role, and is for
   5-man dungeons only (a raid group runs its own pulls).
 
 ## 9. Battleground behaviour

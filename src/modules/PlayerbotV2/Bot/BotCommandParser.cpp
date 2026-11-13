@@ -82,6 +82,7 @@
 #include <cmath>     // std::sqrt for /inrange distance calc
 #include <cctype>
 #include <cstring>
+#include <array>
 #include <string_view>
 #include <deque>
 #include <mutex>
@@ -2353,6 +2354,80 @@ bool BotCommandParser::ApplyPlaceOrder(Player* sender, std::string const& line, 
     return true;
 }
 
+// True when a bot of the sender's in his group has the lead on or paused (every bot of his carries the same state).
+static bool LeadEngagedFor(Player* sender)
+{
+    Group* grp = sender ? sender->GetGroup() : nullptr;
+    if (!grp)
+        return false;
+    for (GroupReference const& itr : grp->GetMembers())
+    {
+        Player* m = itr.GetSource();
+        if (!m || m == sender || !BotCommandParser::ControlsForGroupOrder(sender, m))
+            continue;
+        if (BotAI const* ai = Services::Registry().ai(m->GetGUID().GetCounter()); ai && ai->tank_lead_engaged())
+            return true;
+    }
+    return false;
+}
+
+void BotCommandParser::PauseLeadForOwnerOrder(Player* sender, std::string const& line, char const* via)
+{
+    if (!sender || !sender->GetSession())
+        return;
+    // The order word: past a squad address ("all: stay"), lower case, without a leading '/' or '!'.
+    std::string n = Normalize(line);
+    if (size_t const colon = n.find(':'); colon != std::string::npos)
+        n = Normalize(n.substr(colon + 1));
+    while (!n.empty() && (n.front() == '/' || n.front() == '!' || n.front() == ' '))
+        n.erase(0, 1);
+    ParsedCommand const parsed = SplitArgs(n);
+    std::string const& verb = parsed.verb;
+    bool const manual = verb == "stay" || verb == "halt" || verb == "hold" || verb == "come" || verb == "wait" ||
+                        (verb == "follow" && parsed.tail != "stop" && parsed.tail != "off");
+    if (!manual)
+        return;
+    Group* grp = sender->GetGroup();
+    if (!grp)
+        return;
+    uint32 paused = 0;
+    std::string tank_name;
+    for (GroupReference const& itr : grp->GetMembers())
+    {
+        Player* m = itr.GetSource();
+        if (!m || m == sender || !Services::Registry().has(m->GetGUID().GetCounter()) || !ControlsForGroupOrder(sender, m))
+            continue;
+        BotAI* ai = Services::Registry().ai(m->GetGUID().GetCounter());
+        if (!ai || ai->tank_lead() != BotAI::TankLead::On)
+            continue;
+        ai->set_tank_lead(BotAI::TankLead::Paused);
+        ++paused;
+        if (tank_name.empty() && BotRole(m) == Role::Tank)
+            tank_name = m->GetName();
+    }
+    if (paused == 0)
+        return;
+    TC_LOG_INFO("playerbot.v2", "[tank_lead] {} ({}): \"{}\" pauses the lead for {} bot(s)", sender->GetName(), via ? via : "?", verb, paused);
+    std::string const reply = tank_name.empty()
+        ? std::string("Tank leads is paused: say 'go' when the tank should lead on.")
+        : fmt::format("{} pauses the lead: say 'go' when it should lead on.", tank_name);
+    Playerbot::BotLanguage::LocalizedHandler(sender->GetSession()).PSendSysMessage("%s", reply.c_str());
+}
+
+bool BotCommandParser::IsLeadGoWord(std::string const& line)
+{
+    std::string n = Normalize(line);
+    while (!n.empty() && (n.back() == '!' || n.back() == '.'))
+        n.pop_back();
+    // The Russian testers' words too: "вперед" / "вперёд" / "го", lower case or with a capital (std::tolower leaves Cyrillic alone).
+    static constexpr std::array<std::string_view, 7> kGo = {
+        "go",
+        "\xD0\xB2\xD0\xBF\xD0\xB5\xD1\x80\xD0\xB5\xD0\xB4", "\xD0\x92\xD0\xBF\xD0\xB5\xD1\x80\xD0\xB5\xD0\xB4",   // вперед, Вперед
+        "\xD0\xB2\xD0\xBF\xD0\xB5\xD1\x80\xD1\x91\xD0\xB4", "\xD0\x92\xD0\xBF\xD0\xB5\xD1\x80\xD1\x91\xD0\xB4",   // вперёд, Вперёд
+        "\xD0\xB3\xD0\xBE", "\xD0\x93\xD0\xBE" };                                                                 // го, Го
+    return std::find(kGo.begin(), kGo.end(), n) != kGo.end();
+}
+
 bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, char const* via)
 {
     std::string n = line;
@@ -2360,12 +2435,19 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
     std::istringstream in(n);
     std::string verb, word, extra;
     in >> verb;
-    if (verb != "lead" || !sender || !sender->GetSession())
+    if (!sender || !sender->GetSession())
+        return false;
+    // "go" alone picks a paused lead back up (chris, 2026-11-13: Stay and Follow pause the lead, "go" goes on). It is the lead's word
+    // only while the tank leads or is paused; otherwise it stays the chat cue it was (BotChatReactor).
+    bool const go_word = IsLeadGoWord(line);
+    if (verb != "lead" && !go_word)
         return false;
     in >> word >> extra;
+    if (go_word && !LeadEngagedFor(sender))
+        return false;
     Playerbot::BotLanguage::LocalizedHandler answer(sender->GetSession());
     BotAI::TankLead want = BotAI::TankLead::On;
-    if (word.empty() || word == "on" || word == "start" || word == "go")
+    if (go_word || word.empty() || word == "on" || word == "start" || word == "go" || word == "resume")
         want = BotAI::TankLead::On;
     else if (word == "pause" || word == "hold" || word == "wait")
         want = BotAI::TankLead::Paused;
@@ -2447,12 +2529,12 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
     switch (want)
     {
         case BotAI::TankLead::On:
-            reply = in_dungeon
+            reply = go_word ? fmt::format("{} leads on.", name) : in_dungeon
                 ? fmt::format("{} leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.", name)
                 : fmt::format("{} leads once you are inside a dungeon. Say 'lead off' to lead yourself.", name);
             break;
         case BotAI::TankLead::Paused:
-            reply = fmt::format("{} holds here and pulls nothing until you say 'lead on'.", name);
+            reply = fmt::format("{} holds here and pulls nothing until you say 'go'.", name);
             break;
         default:
             reply = "You lead again: your bots follow you.";
@@ -2477,6 +2559,8 @@ bool BotCommandParser::Dispatch(Player* sender, Player* bot, std::string const& 
     // "lead on|pause|off": the whole group's lead, set on every bot of the sender's at once, answered once.
     if (ApplyLeadOrder(sender, msg, via))
         return true;
+    // Stay / Hold / Follow / Come while the tank leads pause the lead; the order itself goes on as usual.
+    PauseLeadForOwnerOrder(sender, msg, via);
     // A crowd-control order ("@warlock no fear", "off cc") is the owner's, not each bot's: stored once, answered once.
     if (ApplyCcOrder(sender, msg, via))
         return true;

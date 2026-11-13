@@ -52,8 +52,14 @@ public:
     // "Tank leads" (BotAI::TankLead): "lead" / "lead on" hands the lead of a 5-man dungeon to the sender's tank bot (it walks the
     // route, pulls pack by pack, waits for mana and for him, goes boss to boss; he follows), "lead pause" holds it where it stands,
     // "lead off" gives the lead back to him. Set on every bot of the sender's in his group, answered once. The ForeverBots Lead
-    // button and `.bot lead` send the same words. Returns false for any other line. World thread.
+    // button and `.bot lead` send the same words. "go" alone (or "lead resume") picks up a paused lead; it is the lead's word only
+    // while the lead is on or paused. Returns false for any other line. World thread.
     static bool ApplyLeadOrder(Player* sender, std::string const& line, char const* via);
+    // True when `line` is "go" alone (or the Russian "вперед" / "го"), the word that picks up a paused lead.
+    static bool IsLeadGoWord(std::string const& line);
+    // An owner's Stay / Hold / Follow / Come (`line`, a bare order or a squad line) while his tank leads: the lead pauses (chris,
+    // 2026-11-13) and he is told "go" goes on; the order itself is not consumed. Does nothing for any other line. World thread.
+    static void PauseLeadForOwnerOrder(Player* sender, std::string const& line, char const* via);
 
     // The ForeverBots Positions tab (add-on PLACE_REQ) and the "place" order: the chosen bots of the sender's group stand in `shape`
     // (close, circle, arc, spread, line, column, spear, arrow; Placement.h) with `gap` (tight, normal, wide) round `anchor` (here =

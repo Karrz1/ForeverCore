@@ -4117,6 +4117,8 @@ void Module::RouteGroupOrder(Player* sender, Group* group, std::string order)
         return;
     if (BotCommandParser::ApplyLeadOrder(sender, order, "group"))
         return;
+    // Stay / Hold / Follow / Come while the tank leads pause the lead ("go" picks it up); the order itself goes on below.
+    BotCommandParser::PauseLeadForOwnerOrder(sender, order, "group");
     if (order.rfind("crowdcontrol ", 0) == 0 || order.rfind("crowd control ", 0) == 0 || order == "cc on" || order == "cc off")
     {
         // A switch of the owner's, not an order to each bot: set once, answer once.
@@ -4432,6 +4434,9 @@ void Module::OnPartyChat(Player* sender, Group* group, std::string const& msg, b
         // A bare group order ("follow", "stay", ...) in party or raid chat goes to every bot of the sender's in the
         // group. A line that starts with the name of a bot in the group, or with "all", is that bot's (every bot's)
         // order without the ';' ("Lentha use altar", "all use altar"). Other chatter stays ignored.
+        // "go" while the tank leads or is paused picks the lead up (BotCommandParser::ApplyLeadOrder); otherwise it is chatter.
+        if (BotCommandParser::IsLeadGoWord(msg) && BotCommandParser::ApplyLeadOrder(sender, msg, raid_chat ? "raid" : "party"))
+            return;
         if (auto const order = ClassifyGroupOrder(msg, Services::Config().behavior_owner_commands()))
             RouteGroupOrder(sender, group, *order);
         else if (auto const addressed = AddressedGroupOrder(msg, [group](std::string_view name) { return GroupHasBotNamed(group, name); }))
