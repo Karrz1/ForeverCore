@@ -4715,6 +4715,7 @@ struct PullLog
     uint32_t startMs = 0, lastSeenMs = 0;
     uint32_t startAlive = 0, groupSize = 0;
     uint32_t aliveLast = 0;   // raiders alive at the last plan pass of the pull (the end line is written 4 s later, often after the squad left the map)
+    uint32_t aliveLow = 0;    // the fewest raiders alive at any plan pass of the pull (a wipe's low point, before ghosts revive and come back)
     // seenDead: its corpse was seen. A mob that merely left the map (evade and despawn after a wipe) is not a kill (n32 mc_majordomo: the
     // eight adds despawned at 89-99 % health and the line read "killed=8/9").
     struct Mob { uint32_t entry; std::string name; bool boss; bool seenDead = false; int32_t lastPct = 100; };
@@ -4969,6 +4970,7 @@ void TrackPull(uint64_t key, Group* group, detail::Plan const& plan, Map* map, u
         pl.groupLow = plan.groupLow;
         pl.startMs = now_ms;
         pl.startAlive = uint32_t(plan.members.size());
+        pl.aliveLow = pl.startAlive;
         pl.groupSize = group->GetMembersCount();
         ResetHealStats();
         ManaLedgerReset();
@@ -4976,6 +4978,7 @@ void TrackPull(uint64_t key, Group* group, detail::Plan const& plan, Map* map, u
     }
     pl.lastSeenMs = now_ms;
     pl.aliveLast = uint32_t(plan.members.size());
+    pl.aliveLow = std::min(pl.aliveLow, pl.aliveLast);
     for (Member const& m : plan.members)
         IncomingWatch(m.p->GetGUID().GetCounter(), m.tank);
     for (GroupReference const& gref : group->GetMembers())
@@ -5122,9 +5125,13 @@ void EndQuietPulls(uint32_t now_ms)
         // A wipe is raiders dead, not raiders gone: a scenario that ends at its death limit takes the squad out of the map, and a raid that
         // left the instance is no wipe either (onyxia_full / mc_geddon n7 2026-10-14: six deaths, run over, "alive=0/40 wipe").
         bool const mostDead = pl.deaths * 4 >= pl.startAlive * 3;
+        // The raid at its lowest, not at the end: dead bots revive and are ported back to the group within seconds, so 4 s after the last
+        // pass the map held 25 of 40 alive again after a wipe that left 2 standing (dev BWL Nefarius 2026-11-13 22:29: deaths=39,
+        // "alive=25/40 result=reset", and nobody said a word about the wipe).
+        bool const raidFell = std::min(alive, pl.aliveLow) * 4 <= pl.startAlive;
         // The boss dead is a kill even with its adds still standing (Garr's Firesworn, Ragnaros' Sons of Flame): the left list names them.
         bool const bossKilled = bosses > 0 && bossesDead == bosses;
-        char const* result = killed == pl.engaged.size() || bossKilled ? "kill" : ((alive * 4 <= pl.startAlive && mostDead) || humanDeadNoneAlive ? "wipe" : "reset");
+        char const* result = killed == pl.engaged.size() || bossKilled ? "kill" : ((raidFell && mostDead) || humanDeadNoneAlive ? "wipe" : "reset");
         // The raid leader's word on it, and after a wipe the others' (RaidBanter). A group of 15 or fewer has the companions' own
         // wipe and kill lines (PartyBanter) instead.
         if (Group* bg = sGroupMgr->GetGroupByGUID(ObjectGuid::Create<HighGuid::Party>(pl.groupLow));
@@ -5139,9 +5146,9 @@ void EndQuietPulls(uint32_t now_ms)
             else if (std::strcmp(result, "wipe") == 0)
                 WipeBanter(bg, map, pl.firstDead, bossName, now_ms);
         }
-        TC_LOG_INFO("playerbot.v2.raid", "[raid_encounter] ts={} map={} group={} pull end: result={} dur={}s killed={}/{} alive={}/{} deaths={} | {}{}{}",
+        TC_LOG_INFO("playerbot.v2.raid", "[raid_encounter] ts={} map={} group={} pull end: result={} dur={}s killed={}/{} alive={}/{} low={} deaths={} | {}{}{}",
             uint64_t(GameTime::GetGameTime()), pl.mapId, pl.groupLow, result, (pl.lastSeenMs - pl.startMs) / 1000, killed,
-            uint32_t(pl.engaged.size()), alive, pl.startAlive, pl.deaths, PullLabel(pl), left.empty() ? "" : " | left: ", left);
+            uint32_t(pl.engaged.size()), alive, pl.startAlive, pl.aliveLow, pl.deaths, PullLabel(pl), left.empty() ? "" : " | left: ", left);
         // Healer throughput of the pull: heal casts per minute per healer (a healer missing from the list cast nothing).
         uint32_t healersCast = 0;
         std::string const healStats = TakeHealStats(uint32_t((pl.lastSeenMs - pl.startMs) / 1000), healersCast);
