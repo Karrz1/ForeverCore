@@ -4407,7 +4407,7 @@ void Module::OnPartyChat(Player* sender, Group* group, std::string const& msg, b
     // own name with short conversational replies so group chat reads like
     // a room of real players. Runs for every message; the reactor itself
     // gates on bot verbosity, per-bot throttle, and skips bot-sent lines.
-    BotChatReactor::React(sender, group, msg);
+    BotChatReactor::React(sender, group, msg, raid_chat);
     if (msg.front() != ';')
     {
         // The owner's crowd-control orders ("no fear", "@warlock no fear", "@mages no sheep", "off cc"): stored once for the
