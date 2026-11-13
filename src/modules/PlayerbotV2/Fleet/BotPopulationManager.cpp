@@ -2640,9 +2640,18 @@ uint32 BotPopulationManager::SwapFightCloak(Player* p, bool on)
         s_fight_cloak.erase(it);
         return changed;
     }
-    if (s_fight_cloak.count(id))
-        return 0;
     Item* cur = p->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_BACK);
+    if (auto const it = s_fight_cloak.find(id); it != s_fight_cloak.end())
+    {
+        if (cur && cur->GetEntry() == Classic::kOnyxiaScaleCloak)
+            return 0;
+        // The copy is no longer on (a regear or the owner put another cloak in the slot): drop the stale swap, then wear it again
+        // (dev realm 2026-11-13: bots pulled Nefarian in their own cloaks while the swap still counted as done).
+        RestoreOwnGear(p, it->second);
+        s_fight_cloak.erase(it);
+        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} lost the Onyxia Scale Cloak from the back slot: wearing it again", p->GetName());
+        cur = p->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_BACK);
+    }
     if (cur && cur->GetEntry() == Classic::kOnyxiaScaleCloak)
         return 0;   // wears one already (its own, or the copy of a session before a relog)
     ItemTemplate const* tpl = sObjectMgr->GetItemTemplate(Classic::kOnyxiaScaleCloak);

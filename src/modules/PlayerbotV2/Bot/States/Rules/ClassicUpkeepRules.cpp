@@ -39,6 +39,7 @@
 #include "Bot/BotSnapshotView.h"
 #include "Bot/BotIntentEmitter.h"
 #include "Bot/ClassicUpkeep.h"
+#include "Bot/ResistGear.h"
 #include "Services.h"
 #include "SharedDefines.h"
 #include "Util/ConfigReader.h"
@@ -632,7 +633,11 @@ bool FightCloakGate(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
     if (!UpkeepWindow(s, g) || s.recently_in_combat(3000))
         return false;
     bool const want = Classic::WantsFightCloak(s);
-    return want != ai.fight_cloak() && !ai.action_recently_tried(BotAI::ActionKind::ClassUpkeep, uint64(want) | kFightCloakKeyBit, now_ms);
+    // Wanted but not worn: the swap was refused (combat, bags) or something took the cloak off since. The flag alone said "done" and the
+    // bot pulled in its own cloak (dev realm 2026-11-13); the back slot is what counts.
+    bool const worn = s.raw().inventory.equipped[14 /*EQUIPMENT_SLOT_BACK*/].entry == Classic::kOnyxiaScaleCloak;
+    bool const differs = want ? !worn : ai.fight_cloak();
+    return differs && !ai.action_recently_tried(BotAI::ActionKind::ClassUpkeep, uint64(want) | kFightCloakKeyBit, now_ms);
 }
 bool FightCloakFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&, BotIntentEmitter& emit, uint32 now_ms)
 {
