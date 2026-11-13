@@ -60,6 +60,7 @@ The `.bot` commands for your own bots work for every account, no GM needed; each
 | `.bot add <class> [tank\|healer\|dps] [race] [male\|female]` | Creates a companion bound to you, levels it to you, teaches spells, sets role/talents/gear, brings it over and groups it. The role is kept across relog and `.bot call`. |
 | `.bot lfg [tank\|healer\|dps]` | Fills the missing tank / healer / damage places of your group (1 tank, 1 healer, 3 damage) with level-matched companions, now. The word is your own role. The Group Finder does the same on its own: post a dungeon listing and, if nobody joins within `Playerbot.Lfg.BotFillSeconds` (default 180), the missing roles are filled. |
 | `.bot dungeon [list \| <name\|any> [tank\|healer\|dps] \| leave \| cancel]` | Dungeon finder. `.bot dungeon any` (a random 5-player dungeon for your level) or `.bot dungeon <word>` (`rfc`, `vc`/`dm` Deadmines, `smgy`, `smlib`, `dme`, `strat`, `ubrs`...; `.bot dungeon list` shows them): the missing tank / healer / damage places are filled with your companions at your level, and once the group is complete (at most 90 s) you are put inside the dungeon's door and your bots are brought after you. Real players in your group get a summon. `.bot dungeon leave` takes you back to where you queued, bots follow; `cancel` stops a queue still forming. Only the group leader queues. `Playerbot.Lfg.Finder.Enable` turns it off. |
+| `.bot lead [on\|pause\|off]` | Tank leads: in a 5-man dungeon your tank bot leads and you follow (the same as `lead on` / `lead pause` / `lead off` in party chat and the Orders tab's Tank leads button). See section 8. |
 | `.bot call <name\|all>` | Brings back a companion (logs it in, joins your group). `all` = your saved roster plus every bot in your group. |
 | `.bot summon <name\|all\|saved>` | Every player, own bots only: `.bot summon all` brings only the bots that are in your group right now (it never logs anyone in), `.bot summon saved` your saved roster plus the grouped bots (logging them in), `.bot summon <name>` one of your companions. Any other name: "You can only summon your own bots". The GM `.summon` (other players) is unchanged and stays GM-only. |
 | `.bot goto <name>` | Every player, own bots only (companions and summoned alts): takes you to that bot, the other way round from `.bot summon`. Not in combat, dead or on a flight path, and not into or out of a battleground or arena. Into a dungeon or raid only when the bot is in your group, and the dungeon's own entry rules still apply. The GM `.appear` stays GM-only. |
@@ -280,6 +281,16 @@ A group chat order reaches every bot of yours; to address only some, whisper the
   `worldserver.conf` to let a player enter without one. A party (non-raid) group of companions in a raid map
   follows you and defends and does not run the raid autopilot (`OwnerFollowHold`).
 - `follow` suspends the dungeon autopilot until you say `attack`, `pull` or `resume`.
+- **Tank leads** (`lead on`, `lead pause`, `lead off` in party chat, `.bot lead [on|pause|off]`, or the Orders tab's Tank leads
+  button: click on/off, right-click pause): in a 5-man dungeon you normally lead and the bots follow you. With the lead on your
+  tank bot leads instead, as it does in a group of bots alone: it walks the dungeon's route, pulls pack by pack (a big pack is
+  pulled back to the group, the mage holds one of it first), goes boss to boss, and the others fight its pulls even in the
+  Defensive stance. Before every pull and every step on it waits until nobody is dead, everyone has 70 % health, the healer is
+  near and has drunk to the pull mark, the other mana users (you too) have drunk, and you are inside, alive and within 60 yards;
+  in party chat it says `waiting for mana` or `waiting for you`. `lead pause` holds it where it stands (it still fights what
+  comes); `lead on` goes on. `lead off`, or leaving the dungeon, gives the lead back to you. `follow` and `stay` still work while
+  it leads (they hold the tank too); `lead on` hands the lead back to it. It needs one of your bots in the tank role, and is for
+  5-man dungeons only (a raid group runs its own pulls).
 
 ## 9. Battleground behaviour
 
@@ -409,6 +420,7 @@ The module logs nothing unless `Logger.playerbot.v2=3` is set. Grep the server l
 |---|---|
 | `[owner_order]` | Every order a bot receives: source (whisper, party), raw text, resulting order state; unrecognised or refused (not the owner) lines are throttled per bot. Start here when a bot "ignores" you. |
 | `[pull_back]` | Which tank was chosen for a pull back and why; every other bot holds. |
+| `[tank_lead]` | Tank leads: who turned it on, paused or off and for how many bots, the tank waiting for the player (`waits for X: 75y behind`), the lead ending when the bot left the dungeon. With `[tank_advance] ... blocked gate=` for the other holds. |
 | `[fallback]` | A bot's rally slot and rank when it falls back, and its arrival. |
 | `[assign]` | Icon assignments: the raw order, the stored result. |
 | `[formation]` | Slot, owner position and distance, action taken (rate limited). |

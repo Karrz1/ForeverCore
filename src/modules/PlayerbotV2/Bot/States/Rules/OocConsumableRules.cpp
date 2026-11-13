@@ -307,17 +307,18 @@ int32 OocDrinkStart(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
 }
 
 // A player's bots (grouped, led by him) rest only when they need it and until full (Classic::LedMaySitDown); every other bot keeps the
-// personality's food mark and the pull-ready drink marks.
-bool LedRest(BotSnapshotView const& s)
+// personality's food mark and the pull-ready drink marks. With the tank leading a dungeon ("lead on") the tank's pull gate sets the
+// pace, as in a group of bots alone, so they drink to its marks between pulls.
+bool LedRest(BotSnapshotView const& s, BotAI const& ai)
 {
-    return s.in_group() && s.is_led_by_player();
+    return s.in_group() && s.is_led_by_player() && !ai.tank_leads_here(s);
 }
 
 Classic::RecoveryPick OocRecoveryPick(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const& g, uint32 now_ms)
 {
     int32 hp = GetIdleConsumeThresholds(ai).food_floor;
     int32 mana = OocDrinkStart(s, ai, g, now_ms);
-    bool const led = LedRest(s);
+    bool const led = LedRest(s, ai);
     if (led)
     {
         hp = std::min<int32>(hp, Classic::kLedEatBelowHpPct);
@@ -358,7 +359,7 @@ bool OocEatFoodGate(BotSnapshotView const& s, BotAI& ai,
         if (s.raw().movement.is_moving)
             return false;
         // Not while the group walks on, nor straight back down after the follow got it up.
-        if (LedRest(s) && !Classic::LedMaySitDown({ Classic::IsEating(s) || Classic::IsDrinking(s), ai.since_rest_broken_ms(now_ms),
+        if (LedRest(s, ai) && !Classic::LedMaySitDown({ Classic::IsEating(s) || Classic::IsDrinking(s), ai.since_rest_broken_ms(now_ms),
                                                      ai.since_anchor_moved_ms(now_ms) }))
             return false;
         return true;

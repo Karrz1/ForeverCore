@@ -850,6 +850,29 @@ public:
     // out of a dungeon run: those stay out while the owner leads with a follow order too.
     bool           dungeon_run_engaged() const { return dungeon_run_mode_ == DungeonRunMode::Active; }
 
+    // "Tank leads" (the owner's "lead on|pause|off", `.bot lead`, the ForeverBots Lead button): in a 5-man dungeon a human in the
+    // group normally leads and the bots follow him (human_lead_hold). With the lead on, the bot tank leads instead, as in a group of
+    // bots alone: it walks the route, pulls pack by pack and goes boss to boss, and the player follows. It still waits for the
+    // healer's and the casters' mana (PullManaGate), for the dead, and for the player when he is dead, outside or over
+    // kTankLeadPlayerHoldYd away. Paused: the lead stays with the tank, which starts no new pull and walks no further until "lead on".
+    // Ends on its own when the bot leaves the dungeon (update_dungeon_autopilot_hold). Every bot of the group holds it: the tank
+    // leads, the rest stay on the tank and fight its pulls. Written by the chat handler (world thread), read by the bot worker.
+    enum class TankLead : uint8 { Off = 0, On = 1, Paused = 2 };
+    static constexpr float kTankLeadPlayerHoldYd = 60.0f;
+    static constexpr uint32 kTankLeadLeaveMs = 10000;   // outside the dungeon this long (not a loading-screen blink): the lead ends
+    TankLead tank_lead() const { return TankLead(tank_lead_.load(std::memory_order_relaxed)); }
+    // Returns true when the value changed.
+    bool set_tank_lead(TankLead m) { return tank_lead_.exchange(uint8(m), std::memory_order_relaxed) != uint8(m); }
+    bool tank_lead_engaged() const { return tank_lead() != TankLead::Off; }
+    // The bot is in a 5-man dungeon with the lead on (or paused): the human hold, the human-led passivity and the human-led
+    // mana exemption do not apply.
+    bool tank_leads_here(BotSnapshotView const& s) const;
+    // The reason the leading tank last told the group it waits ("mana", "you", ...) and when, so it says it once per hold
+    // (States: the advance gate). Bot worker only.
+    char const* tank_lead_said() const { return tank_lead_said_; }
+    uint32      tank_lead_said_ms() const { return tank_lead_said_ms_; }
+    void        note_tank_lead_said(char const* why, uint32 now_ms) { tank_lead_said_ = why; tank_lead_said_ms_ = now_ms; }
+
     // Owner "follow" order: the owner leads, so the bot follows its owner and defends, and the
     // dungeon autopilot stands down until the owner says attack / assist / tank / pull / resume /
     // run (or follow stop), or engages a mob himself. Unlike the 30s manual-mode window it lasts
@@ -862,7 +885,11 @@ public:
     // follow the owner and defend. Recomputed each tick (update_dungeon_autopilot_hold).
     bool raid_map_party_hold() const { return raid_map_party_hold_; }
     bool dungeon_autopilot_suspended() const
-    { return owner_follow_order() || owner_passive() || fallback_active() || pull_back_active() || raid_map_party_hold_ || human_lead_hold_ || owner_hold_; }
+    { return owner_follow_order() || (owner_passive() && !defensive_tank_lead()) || fallback_active() || pull_back_active() || raid_map_party_hold_ ||
+             human_lead_hold_ || owner_hold_; }
+    // The owner's Defensive stance (OwnerStance::Passive, the ForeverBots start setting) while the tank leads the dungeon: the lead is
+    // his order to go, so the autopilot runs and the bots fight the tank's pulls. The full Passive (NoFight) still stops everything.
+    bool defensive_tank_lead() const { return tank_leads_now_ && owner_stance() == OwnerStance::Passive; }
     // Owner stance (panel Aggressive / Passive toggle, whisper and group words "passive" / "aggressive"), kept per bot until
     // changed (the group order reaches every bot of the group):
     //   Auto       - passive when a human leads the group inside an instance, otherwise the bot's own autonomy;
@@ -897,6 +924,7 @@ public:
     {
         if (owner_no_fight()) return true;   // no order window opens the full Passive
         if (owner_order_window_open()) return false;
+        if (tank_leads_now_) return false;   // "lead on": the tank's pulls are the group's fights (Defensive and Auto alike)
         OwnerStance const st = owner_stance();
         return st == OwnerStance::Passive || (st == OwnerStance::Auto && human_led_instance);
     }
@@ -3639,6 +3667,12 @@ private:
     bool           owner_hold_            = false;   // an owner Stay / Hold is on: the autopilot walks nobody (update_dungeon_autopilot_hold)
     bool           human_lead_hold_       = false;   // see human_lead_hold()
     uint32         human_seen_ms_         = 0;       // last tick a leading human was in range (0 = never)
+    std::atomic<uint8> tank_lead_{0};                // TankLead
+    uint32         tank_lead_inside_ms_   = 0;       // last tick inside a 5-man dungeon while the lead was on (0 = not yet)
+    uint32         tank_lead_away_ms_     = 0;       // first tick outside it since (0 = inside); the lead ends after kTankLeadLeaveMs
+    char const*    tank_lead_said_        = nullptr; // see tank_lead_said()
+    bool           tank_leads_now_        = false;   // tank_leads_here() as of this tick (update_dungeon_autopilot_hold); bot worker
+    uint32         tank_lead_said_ms_     = 0;
     BgRunMode      bg_run_mode_           = BgRunMode::Off;
     // Edge-tracker for BG entry/exit. Auto-activate fires on the
     // false→true transition of `in_battleground()`, not while the bot

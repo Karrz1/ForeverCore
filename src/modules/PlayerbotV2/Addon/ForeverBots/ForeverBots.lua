@@ -1445,6 +1445,55 @@ function UI.Hint(pane, y, text)
     return fs
 end
 
+-- Tank leads (server: "lead on|pause|off", BotCommandParser::ApplyLeadOrder): in a 5-man dungeon the tank bot leads the group, the
+-- player follows. A click turns it on or off, a right-click pauses it or goes on. The button shows what was last sent: green on,
+-- blue paused. The server ends the lead when the group leaves the dungeon, and so does the button (UI.LeadZone).
+UI.leadState, UI.leadInside = "off", false
+function UI.RefreshLead()
+    local b = UI.leadBtn
+    if not b then return end
+    if UI.leadState == "on" then
+        b:SetText(L["short:Tank leads"]); b:FBSetRow(7)
+    elseif UI.leadState == "paused" then
+        b:SetText(L["short:Lead paused"]); b:FBSetRow(ROW_BLUE)
+    else
+        b:SetText(L["short:Tank leads"]); b:FBSetRow(ROW_NORMAL)
+    end
+end
+function UI.LeadClick(button)
+    local inGroup = (IsInRaid and IsInRaid()) or (IsInGroup and IsInGroup()) or (GetNumPartyMembers and GetNumPartyMembers() > 0)
+    if not inGroup then
+        Print(L["you have no group yet: add a bot first."])
+        return
+    end
+    local state = UI.leadState
+    if button == "RightButton" then
+        if state == "on" then GroupOrder("lead pause"); state = "paused"
+        elseif state == "paused" then GroupOrder("lead on"); state = "on"
+        else Print(L["the tank does not lead now: click the button first."]) end
+    elseif state == "off" then
+        GroupOrder("lead on"); state = "on"
+    else
+        GroupOrder("lead off"); state = "off"
+    end
+    UI.leadState = state
+    UI.RefreshLead()
+end
+-- Loading screens: inside a 5-man the lead is in force; leaving the dungeon again ends it (as on the server).
+function UI.LeadZone()
+    local inside, kind = false, nil
+    if IsInInstance then inside, kind = IsInInstance() end
+    if inside and kind == "party" then
+        UI.leadInside = true
+    elseif UI.leadInside then
+        UI.leadInside = false
+        if UI.leadState ~= "off" then
+            UI.leadState = "off"
+            UI.RefreshLead()
+        end
+    end
+end
+
 function UI.BuildOrders()
     local Btn, Section, Hint, NewPane = UI.Btn, UI.Section, UI.Hint, UI.NewPane
     ---------------------------------------------------------------------------------------------- orders
@@ -1479,10 +1528,16 @@ function UI.BuildOrders()
     RefreshStance()
     -- Ignore target: your target goes on the list of mobs your bots never attack, even when it attacks you (a beast you tame); the
     -- same button on it again takes it off. Clear empties the list. Secure order buttons, so they work in combat.
-    local ign = Btn(ordersGrid, 0, 18 + 4 * 32, 157, 26, L["Ignore target"], { order = "ignore target", size = 11 })
+    local ign = Btn(ordersGrid, 0, 18 + 4 * 32, 76, 26, L["short:Ignore"], { order = "ignore target", size = 11 })
     Tip(ign, L["Ignore target"], L["Your bots will not attack the mob you have targeted, even if it attacks you or them, until you press this again on it (or Clear). They fight every other mob as usual. Area spells wait while it is near. Forgotten after 30 minutes."])
-    local ignClear = Btn(ordersGrid, 162, 18 + 4 * 32, 76, 26, L["short:Clear ignored"], { order = "ignore clear", size = 11 })
+    local ignClear = Btn(ordersGrid, 81, 18 + 4 * 32, 76, 26, L["short:Clear ignored"], { order = "ignore clear", size = 11 })
     Tip(ignClear, L["Clear ignored"], L["Your bots may attack every mob again."])
+    -- Tank leads: a plain button (an add-on message, allowed in a fight too), so it can show its state.
+    UI.leadBtn = Btn(ordersGrid, 162, 18 + 4 * 32, 76, 26, L["short:Tank leads"], { size = 11 })
+    UI.leadBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    UI.leadBtn:SetScript("OnClick", function(_, button) UI.LeadClick(button) end)
+    Tip(UI.leadBtn, L["Tank leads"], L["In a dungeon your tank bot leads: it walks on, pulls pack by pack, waits for mana and for you, and goes boss to boss. You follow.\nClick: on or off. Right-click: pause (it holds where it stands) or go on.\nGreen: on. Blue: paused. It ends when you leave the dungeon. Follow and Stay still work: Tank leads again hands the lead back."])
+    UI.RefreshLead()
 
     -- Two on/off check boxes at the bottom (the client's own check box). Area spells: on (the server's start setting) the bots use
     -- them as their rotations call for; off, nothing that hits more than one enemy (server: "aoe_all on|off", whispered to one of
@@ -2021,6 +2076,7 @@ end
 distFrame:SetScript("OnEvent", function(self, event)
     if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
         if GroupSize() > 0 then self.stanceAt = Now() + 2.5 end
+        UI.LeadZone()
         return
     end
     OnGroupChanged()

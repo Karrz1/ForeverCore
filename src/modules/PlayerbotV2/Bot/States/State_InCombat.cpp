@@ -883,7 +883,7 @@ ThreatHold EvaluateThreatHold(BotAI& ai, BotSnapshotView const& s, ObjectGuid ta
         h = ThreatHold::None;
     }
     if (h == ThreatHold::OverThreat && past_hard_limit && !s.is_in_raid() && s.is_in_dungeon() && g && !g->leader_is_bot() &&
-        LedHardHoldExpired(s, target))
+        !ai.tank_leads_here(s) && LedHardHoldExpired(s, target))
     {
         if (RaidLogDue(RaidLogKey(s, RaidLogKind::ThreatHold), s.published_at_ms(), 5000u))
             TC_LOG_INFO("playerbot.v2",

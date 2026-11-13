@@ -588,4 +588,11 @@ ForeverBotsLocale = {
     ["short:G%d"] = "Г%d",
     ["Tick every bot in this raid group. Click again when they are all ticked to untick them."] = "Отметить всех ботов этой группы рейда. Нажмите еще раз, когда отмечены все, чтобы снять отметку.",
     ["The bot changed its offer: look at it again, then click Trade."] = "Бот изменил свое предложение: посмотрите еще раз и нажмите «Обмен».", -- check
+    -- Tank leads (Orders tab)
+    ["short:Ignore"] = "Не трогать", -- check
+    ["short:Tank leads"] = "Танк ведет", -- check
+    ["short:Lead paused"] = "Пауза",
+    ["Tank leads"] = "Танк ведет группу", -- check
+    ["In a dungeon your tank bot leads: it walks on, pulls pack by pack, waits for mana and for you, and goes boss to boss. You follow.\nClick: on or off. Right-click: pause (it holds where it stands) or go on.\nGreen: on. Blue: paused. It ends when you leave the dungeon. Follow and Stay still work: Tank leads again hands the lead back."] = "В подземелье группу ведет ваш бот-танк: идет вперед, пулит по одной группе мобов, ждет ману и вас и идет от босса к боссу. Вы следуете за ним.\nЩелчок: вкл. или выкл. Правый щелчок: пауза (стоит на месте) или дальше.\nЗеленый: вкл. Синий: пауза. Заканчивается, когда вы выходите из подземелья. Следовать и Стоять работают как прежде: «Танк ведет» снова отдает ведение танку.", -- check
+    ["the tank does not lead now: click the button first."] = "танк сейчас не ведет: сначала нажмите кнопку.",
 }

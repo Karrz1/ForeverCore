@@ -2353,6 +2353,118 @@ bool BotCommandParser::ApplyPlaceOrder(Player* sender, std::string const& line, 
     return true;
 }
 
+bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, char const* via)
+{
+    std::string n = line;
+    std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    std::istringstream in(n);
+    std::string verb, word, extra;
+    in >> verb;
+    if (verb != "lead" || !sender || !sender->GetSession())
+        return false;
+    in >> word >> extra;
+    Playerbot::BotLanguage::LocalizedHandler answer(sender->GetSession());
+    BotAI::TankLead want = BotAI::TankLead::On;
+    if (word.empty() || word == "on" || word == "start" || word == "go")
+        want = BotAI::TankLead::On;
+    else if (word == "pause" || word == "hold" || word == "wait")
+        want = BotAI::TankLead::Paused;
+    else if (word == "off" || word == "stop")
+        want = BotAI::TankLead::Off;
+    else
+    {
+        answer.PSendSysMessage("%s", "Tank leads: say 'lead on' (your tank bot leads the dungeon), 'lead pause' (it holds) or 'lead off' (you lead again).");
+        return true;
+    }
+    if (!extra.empty())
+    {
+        answer.PSendSysMessage("%s", "Tank leads: say 'lead on' (your tank bot leads the dungeon), 'lead pause' (it holds) or 'lead off' (you lead again).");
+        return true;
+    }
+    Group* grp = sender->GetGroup();
+    if (!grp)
+    {
+        answer.PSendSysMessage("%s", "You have no group yet: add a bot first.");
+        return true;
+    }
+    // A raid group runs its own pulls (the raid autopilot); a companion party in a raid map follows its owner (raid_map_party_hold).
+    if (grp->isRaidGroup())
+    {
+        answer.PSendSysMessage("%s", "'lead' is for a 5-man dungeon: in a raid group the bots run the pulls on their own.");
+        return true;
+    }
+    std::vector<Player*> bots;
+    Player* tank = nullptr;
+    for (GroupReference const& itr : grp->GetMembers())
+    {
+        Player* m = itr.GetSource();
+        if (!m || m == sender) continue;
+        if (!Services::Registry().has(m->GetGUID().GetCounter()) || !ControlsForGroupOrder(sender, m)) continue;
+        bots.push_back(m);
+        if (BotRole(m) == Role::Tank && (!tank || (!tank->IsAlive() && m->IsAlive())))
+            tank = m;
+    }
+    if (bots.empty())
+    {
+        answer.PSendSysMessage("%s", "No bot of yours in the group.");
+        return true;
+    }
+    if (want != BotAI::TankLead::Off && !tank)
+    {
+        answer.PSendSysMessage("%s", "None of your bots in the group is a tank: add one (.bot add warrior tank), then say 'lead on'.");
+        return true;
+    }
+    if (want == BotAI::TankLead::Paused)
+    {
+        BotAI const* tai = Services::Registry().ai(tank->GetGUID().GetCounter());
+        if (!tai || !tai->tank_lead_engaged())
+        {
+            answer.PSendSysMessage("%s", "Your tank does not lead now: say 'lead on' first.");
+            return true;
+        }
+    }
+    Map const* here = sender->GetMap();
+    bool const in_dungeon = here && here->IsDungeon() && !here->IsRaid();
+    uint32 changed = 0;
+    for (Player* m : bots)
+    {
+        BotAI* ai = Services::Registry().ai(m->GetGUID().GetCounter());
+        if (!ai) continue;
+        if (ai->set_tank_lead(want)) ++changed;
+        if (want == BotAI::TankLead::On)
+        {
+            // The lead replaces the owner's follow, stay and fall-back orders (each would hold the autopilot), and re-arms a run
+            // a "run stop" turned off.
+            ai->exit_manual();
+            ai->release_owner_lead(false);
+            Map const* bm = m->GetMap();
+            if (bm && bm->IsDungeon() && !bm->IsRaid() && ai->dungeon_run_mode() != BotAI::DungeonRunMode::Active)
+                ai->set_dungeon_run_mode(BotAI::DungeonRunMode::Active);
+        }
+    }
+    std::string const name = tank ? tank->GetName() : std::string();
+    std::string reply;
+    switch (want)
+    {
+        case BotAI::TankLead::On:
+            reply = in_dungeon
+                ? fmt::format("{} leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.", name)
+                : fmt::format("{} leads once you are inside a dungeon. Say 'lead off' to lead yourself.", name);
+            break;
+        case BotAI::TankLead::Paused:
+            reply = fmt::format("{} holds here and pulls nothing until you say 'lead on'.", name);
+            break;
+        default:
+            reply = "You lead again: your bots follow you.";
+            break;
+    }
+    TC_LOG_INFO("playerbot.v2", "[tank_lead] {} ({}): lead {} for {} bot(s) ({} changed), tank {}, {}", sender->GetName(), via ? via : "?",
+                want == BotAI::TankLead::On ? "on" : want == BotAI::TankLead::Paused ? "pause" : "off", bots.size(), changed,
+                name.empty() ? "-" : name, in_dungeon ? "in a dungeon" : "outside a dungeon");
+    answer.PSendSysMessage("%s", reply.c_str());
+    return true;
+}
+
 bool BotCommandParser::Dispatch(Player* sender, Player* bot, std::string const& msg, char const* via)
 {
     if (!sender || !bot) return false;
@@ -2361,6 +2473,9 @@ bool BotCommandParser::Dispatch(Player* sender, Player* bot, std::string const& 
         return true;
     // "place <shape> ..." (the Positions tab's words typed or whispered): the owner's whole set at once, answered once.
     if (ApplyPlaceOrder(sender, msg, via))
+        return true;
+    // "lead on|pause|off": the whole group's lead, set on every bot of the sender's at once, answered once.
+    if (ApplyLeadOrder(sender, msg, via))
         return true;
     // A crowd-control order ("@warlock no fear", "off cc") is the owner's, not each bot's: stored once, answered once.
     if (ApplyCcOrder(sender, msg, via))

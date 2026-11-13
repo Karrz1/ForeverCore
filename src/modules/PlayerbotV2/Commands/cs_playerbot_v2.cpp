@@ -69,6 +69,7 @@
 #include "Fleet/OwnerRegistry.h"
 #include "Bot/Gear/OwnedGearPolicy.h"
 #include "Bot/BotAI.h"
+#include "Bot/BotCommandParser.h"   // ApplyLeadOrder for `.bot lead`
 #include "Bot/Formation.h"
 #include "Bot/BotIntentEmitter.h"
 #include "Threading/IntentQueue.h"
@@ -691,6 +692,8 @@ public:
             { "add",           HandleBotAdd,        rbac::RBAC_PERM_JOIN_NORMAL_BG, Console::No  },
             { "lfg",           HandleBotLfg,        rbac::RBAC_PERM_JOIN_NORMAL_BG, Console::No  },
             { "dungeon",       HandleBotDungeon,    rbac::RBAC_PERM_JOIN_NORMAL_BG, Console::No  },
+            // Every player: `.bot lead [on|pause|off]` hands the lead of a 5-man dungeon to the caller's tank bot and back.
+            { "lead",          HandleBotLead,       rbac::RBAC_PERM_JOIN_NORMAL_BG, Console::No  },
             { "call",          HandleBotCall,       rbac::RBAC_PERM_JOIN_NORMAL_BG, Console::No  },
             // Every player: brings the caller's own bots only (`.bot summon all|saved|<bot name>`).
             { "summon",        HandleBotSummon,     rbac::RBAC_PERM_JOIN_NORMAL_BG, Console::No },
@@ -888,6 +891,19 @@ public:
     // .bot about: the name of the bots, so it shows in the command list and `.bot` help
     // .bot language [auto|en|ru]: the language your bots answer you in (whispers, group chat, these command replies). auto, the start
     // setting, follows the game client's language; the choice is kept per account (Api/BotLanguage.h).
+    // .bot lead [on|pause|off]: the "Tank leads" switch (BotCommandParser::ApplyLeadOrder, the same as the party words "lead on" /
+    // "lead pause" / "lead off" and the ForeverBots Lead button). On: in a 5-man dungeon the caller's tank bot leads (walks the route,
+    // pulls pack by pack, waits for mana and for the caller, boss to boss) and the caller follows. Pause: it holds where it stands.
+    // Off: the caller leads again. Ends by itself when the group leaves the dungeon.
+    static bool HandleBotLead(ChatHandler* handler, Optional<std::string> word)
+    {
+        WorldSession* session = handler->GetSession();
+        Player* player = session ? session->GetPlayer() : nullptr;
+        if (!player)
+            return false;
+        return Playerbot::BotCommandParser::ApplyLeadOrder(player, word ? "lead " + *word : std::string("lead"), "command");
+    }
+
     static bool HandleBotLanguage(ChatHandler* handler, Optional<std::string> word)
     {
         namespace Lang = Playerbot::BotLanguage;

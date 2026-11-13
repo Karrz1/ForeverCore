@@ -4115,6 +4115,8 @@ void Module::RouteGroupOrder(Player* sender, Group* group, std::string order)
         return;
     if (BotCommandParser::ApplyPlaceOrder(sender, order, "group"))
         return;
+    if (BotCommandParser::ApplyLeadOrder(sender, order, "group"))
+        return;
     if (order.rfind("crowdcontrol ", 0) == 0 || order.rfind("crowd control ", 0) == 0 || order == "cc on" || order == "cc off")
     {
         // A switch of the owner's, not an order to each bot: set once, answer once.
