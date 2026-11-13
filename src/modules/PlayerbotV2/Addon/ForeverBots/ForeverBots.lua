@@ -2062,6 +2062,57 @@ local function Toggle()
     UI.SetWindowShown(not open)
 end
 
+-- Enemy nameplates in combat only (/fb plates on|off). The client's own "only in combat" setting does not work on this build
+-- (always on or always off), so the add-on switches the CVar itself: on when combat starts, off when it ends. Off by default;
+-- turning it off puts back the setting the player had before. A CVar can be set at PLAYER_REGEN_DISABLED (a moment before the
+-- lockdown) and at PLAYER_REGEN_ENABLED (after it); a set refused during a lockdown is done on the next REGEN_ENABLED.
+local PLATES_CVAR = "nameplateShowEnemies"
+local function PlatesSet(on)
+    local v = on and "1" or "0"
+    if InCombatLockdown and InCombatLockdown() then
+        UI.platesPending = v
+        return false
+    end
+    UI.platesPending = nil
+    if C_CVar and C_CVar.SetCVar then C_CVar.SetCVar(PLATES_CVAR, v) elseif SetCVar then SetCVar(PLATES_CVAR, v) end
+    return true
+end
+local function PlatesGet()
+    local v = (C_CVar and C_CVar.GetCVar and C_CVar.GetCVar(PLATES_CVAR)) or (GetCVar and GetCVar(PLATES_CVAR))
+    return v == "1"
+end
+function UI.CombatPlates(on)
+    if on and not ForeverBotsDB.combatPlates then
+        ForeverBotsDB.platesBefore = PlatesGet()   -- what the player had, put back when this is turned off
+        ForeverBotsDB.combatPlates = true
+        PlatesSet(UnitAffectingCombat and UnitAffectingCombat("player") or false)
+    elseif not on and ForeverBotsDB.combatPlates then
+        ForeverBotsDB.combatPlates = false
+        PlatesSet(ForeverBotsDB.platesBefore and true or false)
+        ForeverBotsDB.platesBefore = nil
+    end
+end
+local platesFrame = CreateFrame("Frame")
+platesFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+platesFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+platesFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+platesFrame:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_REGEN_ENABLED" and UI.platesPending then
+        local pending = UI.platesPending
+        if ForeverBotsDB.combatPlates then pending = "0" end
+        PlatesSet(pending == "1")
+        return
+    end
+    if not ForeverBotsDB.combatPlates then return end
+    if event == "PLAYER_REGEN_DISABLED" then
+        PlatesSet(true)
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        PlatesSet(false)
+    else
+        PlatesSet(UnitAffectingCombat and UnitAffectingCombat("player") or false)
+    end
+end)
+
 local combatFrame = CreateFrame("Frame")
 combatFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -2897,6 +2948,13 @@ SlashCmdList.FOREVERBOTS = function(msg)
         elseif class == "off" then ForeverBotsDB.showChat = false
         else ForeverBotsDB.showChat = not ForeverBotsDB.showChat end
         Print(L["bot confirmations in chat: %s"]:format(ForeverBotsDB.showChat and L["shown"] or L["hidden (shown in the Bots panel status line)"]) .. "  (/fb chat on|off)")
+        return
+    end
+    if verb == "plates" or verb == "nameplates" then
+        if class == "on" then UI.CombatPlates(true)
+        elseif class == "off" then UI.CombatPlates(false)
+        elseif class == nil or class == "" then UI.CombatPlates(not ForeverBotsDB.combatPlates) end
+        Print(L["enemy nameplates only in combat: %s"]:format(ForeverBotsDB.combatPlates and L["on"] or L["off (your own setting)"]) .. "  (/fb plates on|off)")
         return
     end
     if verb == "bots" or verb == "manage" or verb == "roster" then
