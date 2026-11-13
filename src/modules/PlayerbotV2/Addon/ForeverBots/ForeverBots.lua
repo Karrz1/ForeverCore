@@ -2062,55 +2062,61 @@ local function Toggle()
     UI.SetWindowShown(not open)
 end
 
--- Enemy nameplates in combat only (/fb plates on|off). The client's own "only in combat" setting does not work on this build
--- (always on or always off), so the add-on switches the CVar itself: on when combat starts, off when it ends. Off by default;
--- turning it off puts back the setting the player had before. A CVar can be set at PLAYER_REGEN_DISABLED (a moment before the
--- lockdown) and at PLAYER_REGEN_ENABLED (after it); a set refused during a lockdown is done on the next REGEN_ENABLED.
-local PLATES_CVAR = "nameplateShowEnemies"
-local function PlatesSet(on)
-    local v = on and "1" or "0"
-    if InCombatLockdown and InCombatLockdown() then
-        UI.platesPending = v
-        return false
-    end
-    UI.platesPending = nil
-    if C_CVar and C_CVar.SetCVar then C_CVar.SetCVar(PLATES_CVAR, v) elseif SetCVar then SetCVar(PLATES_CVAR, v) end
-    return true
+-- Enemy nameplates in combat only. The client's own setting for it (Enemy Unit Nameplates on, Always Show Nameplates off) shows a
+-- bar over every hostile mob in range, fighting you or not. With those two settings the add-on asks the server to filter
+-- (PLATES|1, Player::SetCombatPlateFilter): a mob outside your, your pet's or your group's fight keeps its plain red name and one
+-- that joins the fight gets its bar; the client draws both itself. Any other setting: no filter (PLATES|0). On by default;
+-- /fb plates off leaves the client's own behaviour. The server forgets it on a UI reload, so it is asked again on every
+-- loading screen and whenever one of the two settings changes. Up to three tries when no answer comes.
+UI.plates = { asked = nil, confirmed = nil, tries = 0, gen = 0 }
+local function CVarOn(name)
+    if C_CVar and C_CVar.GetCVarBool then return C_CVar.GetCVarBool(name) and true or false end
+    return GetCVar and GetCVar(name) == "1" or false
 end
-local function PlatesGet()
-    local v = (C_CVar and C_CVar.GetCVar and C_CVar.GetCVar(PLATES_CVAR)) or (GetCVar and GetCVar(PLATES_CVAR))
-    return v == "1"
+local function PlatesWanted()
+    return ForeverBotsDB.combatPlates ~= false and CVarOn("nameplateShowEnemies") and not CVarOn("nameplateShowAll")
+end
+function UI.PlatesSync(force)
+    local Net = Cmd.ns.Net
+    if not Net then return end
+    local want = PlatesWanted()
+    local st = UI.plates
+    if not force and st.asked == want and st.confirmed == want then return end
+    st.asked, st.confirmed, st.tries = want, nil, 0
+    st.gen = st.gen + 1
+    local gen = st.gen
+    local function try()
+        if gen ~= st.gen then return end
+        st.tries = st.tries + 1
+        Net.EnsureMode(function()
+            Net.Request("PLATES", { want and "1" or "0" }, function(fields)
+                if gen ~= st.gen then return end
+                if fields and fields[1] == (want and "1" or "0") then
+                    st.confirmed = want
+                elseif st.tries < 3 and C_Timer and C_Timer.After then
+                    C_Timer.After(st.tries * 3, try)
+                end
+            end)
+        end)
+    end
+    try()
 end
 function UI.CombatPlates(on)
-    if on and not ForeverBotsDB.combatPlates then
-        ForeverBotsDB.platesBefore = PlatesGet()   -- what the player had, put back when this is turned off
-        ForeverBotsDB.combatPlates = true
-        PlatesSet(UnitAffectingCombat and UnitAffectingCombat("player") or false)
-    elseif not on and ForeverBotsDB.combatPlates then
-        ForeverBotsDB.combatPlates = false
-        PlatesSet(ForeverBotsDB.platesBefore and true or false)
-        ForeverBotsDB.platesBefore = nil
-    end
+    ForeverBotsDB.combatPlates = on and true or false
+    UI.PlatesSync(true)
 end
 local platesFrame = CreateFrame("Frame")
-platesFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
-platesFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 platesFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-platesFrame:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_REGEN_ENABLED" and UI.platesPending then
-        local pending = UI.platesPending
-        if ForeverBotsDB.combatPlates then pending = "0" end
-        PlatesSet(pending == "1")
+platesFrame:RegisterEvent("CVAR_UPDATE")
+platesFrame:SetScript("OnEvent", function(_, event, name)
+    if event == "CVAR_UPDATE" then
+        if issecretvalue and issecretvalue(name) then return end
+        name = type(name) == "string" and name:lower() or ""
+        if name ~= "nameplateshowenemies" and name ~= "nameplateshowall" then return end
+        UI.PlatesSync(false)
         return
     end
-    if not ForeverBotsDB.combatPlates then return end
-    if event == "PLAYER_REGEN_DISABLED" then
-        PlatesSet(true)
-    elseif event == "PLAYER_REGEN_ENABLED" then
-        PlatesSet(false)
-    else
-        PlatesSet(UnitAffectingCombat and UnitAffectingCombat("player") or false)
-    end
+    UI.PlatesSync(true)   -- a new session or a UI reload: the server has forgotten
 end)
 
 local combatFrame = CreateFrame("Frame")
@@ -2951,10 +2957,21 @@ SlashCmdList.FOREVERBOTS = function(msg)
         return
     end
     if verb == "plates" or verb == "nameplates" then
+        -- "/fb plates" alone shows the state (and asks the server again if it never answered)
         if class == "on" then UI.CombatPlates(true)
         elseif class == "off" then UI.CombatPlates(false)
-        elseif class == nil or class == "" then UI.CombatPlates(not ForeverBotsDB.combatPlates) end
-        Print(L["enemy nameplates only in combat: %s"]:format(ForeverBotsDB.combatPlates and L["on"] or L["off (your own setting)"]) .. "  (/fb plates on|off)")
+        elseif UI.plates.confirmed == nil then UI.PlatesSync(true) end
+        local text
+        if ForeverBotsDB.combatPlates == false then
+            text = L["off: the client's own nameplate settings apply."]
+        elseif not PlatesWanted() then
+            text = L["on, but it needs Enemy Unit Nameplates on and Always Show Nameplates off (Esc > Options > Nameplates)."]
+        elseif UI.plates.confirmed == true then
+            text = L["on: a health bar only over mobs that fight you, your pet or your group; the others keep their name."]
+        else
+            text = L["on, waiting for the server to confirm (an older server does not have it)."]
+        end
+        Print(L["enemy nameplates only in combat: %s"]:format(text) .. "  (/fb plates on|off)")
         return
     end
     if verb == "bots" or verb == "manage" or verb == "roster" then
