@@ -94,42 +94,43 @@ local CLIENT_NAMES = not (GetLocale and (GetLocale() == "enUS" or GetLocale() ==
 -- that set it. A call over PERF_SLOW_MS prints one line per handler; "/fb perf" lists the slowest, and the list is saved in
 -- ForeverBotsDB.perf at logout for the SavedVariables file. Secure frames are left alone: their scripts are not ours to wrap.
 local PERF = { stats = {}, said = {} }
-local PERF_SLOW_MS = 15
-local clockMs = debugprofilestop
-local function PerfLabel(kind, level)
+-- kept on PERF, not as file locals: the client's Lua allows the main chunk only 200 locals
+PERF.SLOW_MS = 15
+PERF.clock = debugprofilestop
+function PERF.Label(kind, level)
     local where = debugstack and debugstack(level or 3, 1, 0)
     local line = type(where) == "string" and where:match(":(%d+):") or "?"
     return kind .. "@" .. line
 end
 local function PerfWrap(label, fn)
-    if type(fn) ~= "function" or not clockMs then return fn end
+    if type(fn) ~= "function" or not PERF.clock then return fn end
     local st = PERF.stats[label]
     if not st then st = { n = 0, total = 0, max = 0 }; PERF.stats[label] = st end
     return function(...)
-        local t0 = clockMs()
+        local t0 = PERF.clock()
         local outer = PERF.running
         PERF.running = label
         local r1, r2, r3, r4, r5 = fn(...)
         PERF.running = outer
-        local ms = clockMs() - t0
+        local ms = PERF.clock() - t0
         st.n = st.n + 1
         st.total = st.total + ms
         if ms > st.max then st.max = ms end
-        if ms > PERF_SLOW_MS and not PERF.said[label] and DEFAULT_CHAT_FRAME then
+        if ms > PERF.SLOW_MS and not PERF.said[label] and DEFAULT_CHAT_FRAME then
             PERF.said[label] = true
             DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff66ccffWoW Forever Bots|r: slow handler %s took %.1f ms (/fb perf lists all).", label, ms))
         end
         return r1, r2, r3, r4, r5
     end
 end
-local function PerfFrame(f, tmpl)
+function PERF.Frame(f, tmpl)
     if type(f) ~= "table" or (type(tmpl) == "string" and tmpl:find("Secure", 1, true)) then return f end
     local set, hook = f.SetScript, f.HookScript
     f.SetScript = function(self, what, fn)
-        return set(self, what, PerfWrap(PerfLabel(tostring(what)), fn))
+        return set(self, what, PerfWrap(PERF.Label(tostring(what)), fn))
     end
     f.HookScript = function(self, what, fn, ...)
-        return hook(self, what, PerfWrap(PerfLabel("hook " .. tostring(what)), fn), ...)
+        return hook(self, what, PerfWrap(PERF.Label("hook " .. tostring(what)), fn), ...)
     end
     return f
 end
@@ -150,17 +151,17 @@ do
     end)
 end
 local CreateFrame = function(kind, name, parent, tmpl, ...)
-    return PerfFrame(_G.CreateFrame(kind, name, parent, tmpl, ...), tmpl)
+    return PERF.Frame(_G.CreateFrame(kind, name, parent, tmpl, ...), tmpl)
 end
 local C_Timer = _G.C_Timer and {
-    After = function(sec, fn) return _G.C_Timer.After(sec, PerfWrap(PerfLabel("timer"), fn)) end,
+    After = function(sec, fn) return _G.C_Timer.After(sec, PerfWrap(PERF.Label("timer"), fn)) end,
 } or nil
 local hooksecurefunc = _G.hooksecurefunc and function(a, b, c)
-    if c ~= nil then return _G.hooksecurefunc(a, b, PerfWrap(PerfLabel("hook " .. tostring(b)), c)) end
-    return _G.hooksecurefunc(a, PerfWrap(PerfLabel("hook " .. tostring(a)), b))
+    if c ~= nil then return _G.hooksecurefunc(a, b, PerfWrap(PERF.Label("hook " .. tostring(b)), c)) end
+    return _G.hooksecurefunc(a, PerfWrap(PERF.Label("hook " .. tostring(a)), b))
 end or nil
 local ChatFrame_AddMessageEventFilter = _G.ChatFrame_AddMessageEventFilter and function(ev, fn)
-    return _G.ChatFrame_AddMessageEventFilter(ev, PerfWrap(PerfLabel("filter " .. tostring(ev)), fn))
+    return _G.ChatFrame_AddMessageEventFilter(ev, PerfWrap(PERF.Label("filter " .. tostring(ev)), fn))
 end or nil
 
 function PERF.Report(top)
@@ -799,6 +800,7 @@ AddPart("filters", function()
     end
 end)
 
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local whisperFrame = CreateFrame("Frame")
 whisperFrame:RegisterEvent("CHAT_MSG_WHISPER")
 whisperFrame:SetScript("OnEvent", function(_, _, msg)
@@ -808,6 +810,7 @@ whisperFrame:SetScript("OnEvent", function(_, _, msg)
     end
     if IsAssignMsg(msg) then ParseAssignLine(msg) end
 end)
+end
 
 
 ------------------------------------------------------------------------------------------------------------- window
@@ -861,11 +864,13 @@ local function MakeSecureOrderButton(parent, text, width, order, height)
     return b
 end
 
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local orderMacroFrame = CreateFrame("Frame")
 for _, ev in ipairs({ "GROUP_ROSTER_UPDATE", "PARTY_MEMBERS_CHANGED", "RAID_ROSTER_UPDATE", "PLAYER_REGEN_ENABLED", "PLAYER_ENTERING_WORLD" }) do
     pcall(orderMacroFrame.RegisterEvent, orderMacroFrame, ev)
 end
 orderMacroFrame:SetScript("OnEvent", function() RefreshOrderMacros() end)
+end
 
 ------------------------------------------------------------------------------------------------------------- key bindings
 -- Esc > Options > Key Bindings > AddOns > "WoW Forever Bots" (Bindings.xml; unbound until the player picks keys). Order keys
@@ -989,6 +994,7 @@ local function RemoveDuplicateMacros()
     Step("")
 end
 
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local macroFrame = CreateFrame("Frame")
 macroFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 macroFrame:SetScript("OnEvent", function(self, _, isLogin, isReload)
@@ -997,6 +1003,7 @@ macroFrame:SetScript("OnEvent", function(self, _, isLogin, isReload)
     -- the client fills the macro list during the login; a second later it is complete
     if C_Timer and C_Timer.After then C_Timer.After(1, RemoveDuplicateMacros) else RemoveDuplicateMacros() end
 end)
+end
 
 ------------------------------------------------------------------------------------------------------------- skin
 -- Own artwork in Textures\ (32-bit .tga, power-of-two sizes): wood body, bronze bead border, medallion, tabs. The buttons are the
@@ -1094,6 +1101,8 @@ end
 -- instance holds in a bigger one (10 in Upper Blackrock Spire, 20 or 40 in a raid). The members already in the group count, so it
 -- never adds past that size: a sixth member made an open-world party a raid, and a raid gets no credit for normal quests
 -- (Discord report, 2026-10-27), while in Upper Blackrock Spire it stopped at six of ten.
+local QuickParty
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local QUICK_DPS = { "mage", "rogue", "hunter", "warlock" }
 local QUICK_HEALERS = { "priest", "druid" }
 local PARTY_SIZE = 5
@@ -1129,7 +1138,7 @@ local function QuickPartyRoster(size, count)
     return roster
 end
 
-local function QuickParty()
+function QuickParty()
     local members = 1
     if GetNumGroupMembers then members = math.max(GetNumGroupMembers(), 1)
     elseif GetNumPartyMembers then members = GetNumPartyMembers() + 1 end
@@ -1152,6 +1161,7 @@ local function QuickParty()
     else
         for i = 2, #roster do AddBotWithGear(roster[i][1], roster[i][2], true) end
     end
+end
 end
 
 -- Dungeon finder (".bot dungeon"): pick a dungeon, or any for your level; the server fills the missing roles with your bots at your level
@@ -2175,6 +2185,7 @@ function UI.CombatPlates(on)
     ForeverBotsDB.combatPlates = on and true or false
     UI.PlatesSync(true)
 end
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local platesFrame = CreateFrame("Frame")
 platesFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 platesFrame:RegisterEvent("CVAR_UPDATE")
@@ -2188,7 +2199,9 @@ platesFrame:SetScript("OnEvent", function(_, event, name)
     end
     UI.PlatesSync(true)   -- a new session or a UI reload: the server has forgotten
 end)
+end
 
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local combatFrame = CreateFrame("Frame")
 combatFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -2218,6 +2231,7 @@ combatFrame:SetScript("OnEvent", function(_, event)
         if show then f:Show() else f:Hide() end
     end
 end)
+end
 
 function ForeverBots_ToggleWindow() Toggle() end
 
@@ -2572,6 +2586,7 @@ local function BuildBotPanel()
     p:Hide()
 end
 
+do   -- kept out of the main chunk: Lua 5.1 allows 200 locals there
 local botFrame = CreateFrame("Frame")
 botFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 botFrame:RegisterEvent("CHAT_MSG_WHISPER")
@@ -2596,6 +2611,7 @@ botFrame:SetScript("OnEvent", function(_, event, msg, author)
     if not botPanel then BuildBotPanel() end
     UpdateBotPanel()
 end)
+end
 
 -- Unit right-click menu entry "ForeverBots": only through the client's own Menu.ModifyMenu API (a supported, taint-free
 -- extension point on the 11.x-style UI). The old UnitPopupMenus / UnitPopup_ShowMenu tables are NOT touched: editing
