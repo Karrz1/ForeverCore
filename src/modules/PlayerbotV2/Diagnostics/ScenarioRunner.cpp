@@ -898,10 +898,13 @@ std::size_t ClearRaidTrash(Run& run, Player* viewer)
                     run.def->name, kClearGridRange, run.def->arrive_near_entry, run.def->lair_x, run.def->lair_y);
     }
     CreatureGroup* boss_formation = nullptr;
+    float boss_formation_x = 0.f, boss_formation_y = 0.f;   // the boss's home: ScenarioDef::clear_formation_beyond counts from it
     for (auto const& kv : map->GetCreatureBySpawnIdStore())
         if (kv.second && kv.second->GetEntry() == run.def->arrive_near_entry)
         {
             boss_formation = kv.second->GetFormation();
+            boss_formation_x = kv.second->GetHomePosition().GetPositionX();
+            boss_formation_y = kv.second->GetHomePosition().GetPositionY();
             break;
         }
     // Another encounter's boss is set aside without a death: a boss's death runs its script, and Razorgore's phase-one death casts
@@ -925,7 +928,9 @@ std::size_t ClearRaidTrash(Run& run, Player* viewer)
             // The creatures whose deaths are the goal (Majordomo's Flamewakers) stand for the fight.
             (run.def->goal_adds_needed && (c->GetEntry() == run.def->goal_adds_a || c->GetEntry() == run.def->goal_adds_b)))
             continue;
-        if (boss_formation && c->GetFormation() == boss_formation)
+        if (boss_formation && c->GetFormation() == boss_formation &&
+            (run.def->clear_formation_beyond <= 0.f || std::hypot(c->GetHomePosition().GetPositionX() - boss_formation_x,
+                                                                  c->GetHomePosition().GetPositionY() - boss_formation_y) <= run.def->clear_formation_beyond))
             continue;
         // RaidRules::bosses names one entry per encounter (it lines up with the boss route), so the other members of a council (the bug trio,
         // the twins) are not in it: a creature of boss rank is set aside too, never killed into its encounter script. The rank, not the

@@ -95,6 +95,10 @@ struct ScenarioDef
     // Staging kills every hostile on the map but the goal boss, its formation and these entries (the boss's own adds); 0 = none.
     std::uint32_t keep_entry = 0;
     std::uint32_t keep_entry_b = 0, keep_entry_c = 0;
+    // Staging leaves the boss's formation alone (Garr's Firesworn stand in it round him). A world DB that links the room's trash, or a whole
+    // wing's, into the boss's formation (Faerlina's Acolytes 31 y off, Patchwerk's Bile Retchers 200 y down the hall) leaves that trash for
+    // the fight: members further than this from the boss's spawn are killed like any trash, kept entries excepted. 0 = the whole formation stays.
+    float clear_formation_beyond = 0.f;
     // A fight with no boss death to wait for (Majordomo Executus yields when his eight adds are dead): the goal is reached when this many
     // creatures of these two entries have died on the map. 0 = the goal boss's death.
     std::uint32_t goal_adds_a = 0, goal_adds_b = 0, goal_adds_needed = 0;
@@ -313,6 +317,7 @@ struct RaidBossRow
     std::uint32_t start_object = 0;     // see ScenarioDef::start_object
     std::uint32_t start_event = 0;      // see ScenarioDef::start_event
     std::uint32_t start_add = 0;        // see ScenarioDef::start_add
+    float clear_formation_beyond = 0.f; // see ScenarioDef::clear_formation_beyond
     // The instance data of the bosses a raid kills before this one (SetData type, value), set at the attack: see ScenarioDef::start_instance_data.
     std::array<std::pair<std::uint32_t, std::uint32_t>, 8> start_data{};
     std::uint8_t start_data_n = 0;
@@ -372,6 +377,13 @@ constexpr RaidBossRow StartsOnEvent(RaidBossRow r, std::uint32_t event_id)
 constexpr RaidBossRow OpensOn(RaidBossRow r, std::uint32_t add_entry)
 {
     r.start_add = add_entry;
+    return r;
+}
+
+// A row whose boss's formation in the world DB holds trash as well as his adds (ScenarioDef::clear_formation_beyond).
+constexpr RaidBossRow ClearsFormation(RaidBossRow r, float beyond_yards)
+{
+    r.clear_formation_beyond = beyond_yards;
     return r;
 }
 
@@ -452,6 +464,7 @@ inline ScenarioDef MakeRaidScenario(RaidBossRow const& r, RaidEntrance const& e,
     d.start_object = r.start_object;
     d.start_event = r.start_event;
     d.start_add = r.start_add;
+    d.clear_formation_beyond = r.clear_formation_beyond;
     d.start_instance_data.assign(r.start_data.begin(), r.start_data.begin() + r.start_data_n);
     d.order_attack = true;
     d.order_delay_ms = 20000;
@@ -685,11 +698,12 @@ inline constexpr RaidBossRow kAq40Bosses[] = {
 inline constexpr RaidBossRow kNaxxBosses[] = {
     Sight({ "naxx_anubrekhan", "Naxxramas: 40 level 60 raiders to Anub'Rekhan (Locust Swarm kite, Crypt Guards, scarabs)",
       15956, "Anub'Rekhan",            20, 16573 }, 63.f),   // Crypt Guard; sees 55 y
-    // The six Naxxramas Acolytes stand in her formation (the world DB links them to her), so the clearing leaves them and they are part of
-    // her pull; kept like her own adds, the raid may land near them (naxx_faerlina 2026-11-14: every ring spot was refused for an Acolyte
-    // inside 40 y, "cannot place the raid").
-    Keeps({ "naxx_faerlina", "Naxxramas: 40 level 60 raiders to Grand Widow Faerlina (Worshipper sacrifice after each Enrage, Rain of Fire)",
-      15953, "Grand Widow Faerlina", 20, 16506 }, 16505, 15981),   // Naxxramas Worshipper, Follower, Acolyte
+    // Six Naxxramas Acolytes 31 y off stand in her formation (the world DB links them to her), so the clearing left them, and every ring spot
+    // was refused for one inside 40 y (naxx_faerlina 2026-11-14 1114a). Keeping the Acolytes was wrong (1114c: the entry kept all 24 in the
+    // instance, and their Shadow Bolt Volley killed 37): they are trash a raid clears first, so the formation's members beyond 20 y of her
+    // go with the trash; her Worshippers and Followers stand at her side.
+    ClearsFormation(Keeps({ "naxx_faerlina", "Naxxramas: 40 level 60 raiders to Grand Widow Faerlina (Worshipper sacrifice after each Enrage, Rain of Fire)",
+      15953, "Grand Widow Faerlina", 20, 16506 }, 16505), 20.f),   // Naxxramas Worshipper, Follower
     Sight({ "naxx_maexxna",    "Naxxramas: 40 level 60 raiders to Maexxna (Web Wrap freed, Necrotic Poison dispelled, Poison Shock cone)",
       15952, "Maexxna",                20 }, 48.f),   // sees 40 y
     { "naxx_noth",       "Naxxramas: 40 level 60 raiders to Noth the Plaguebringer (the curse dispelled first, spread, balcony adds)",
@@ -704,8 +718,10 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
       16060, "Gothik the Harvester",   25 },
     Sight(Keeps({ "naxx_horsemen", "Naxxramas: 40 level 60 raiders to the Four Horsemen (marks, the tank rotation, Void Zones, Meteor)",
       16062, "Highlord Mograine", 25, 16063 }, 16064, 16065), 83.f),   // Zeliek, Korth'azz, Blaumeux; they see 75 y
-    { "naxx_patchwerk",  "Naxxramas: 40 level 60 raiders to Patchwerk (Hateful Strike soaked by three off tanks)",
-      16028, "Patchwerk",              15 },
+    // His formation in the world DB spans the hall's trash (Bile Retchers 16018, 16017, 16021, 16029, 3000-3171 x, up to 300 y from him),
+    // which the clearing left; it joined the fight on his patrol and Bile Vomit killed 21 (naxx_patchwerk 1114c). Cleared like trash.
+    ClearsFormation({ "naxx_patchwerk",  "Naxxramas: 40 level 60 raiders to Patchwerk (Hateful Strike soaked by three off tanks)",
+      16028, "Patchwerk",              15 }, 20.f),
     { "naxx_grobbulus",  "Naxxramas: 40 level 60 raiders to Grobbulus (Mutating Injection carrier runs, poison clouds, Slime Spray cone)",
       15931, "Grobbulus",              20 },
     Sight({ "naxx_gluth",      "Naxxramas: 40 level 60 raiders to Gluth (Mortal Wound tank swap, Frenzy tranquilized, Zombie Chows)",
