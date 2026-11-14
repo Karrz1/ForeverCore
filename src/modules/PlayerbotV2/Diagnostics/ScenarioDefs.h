@@ -682,8 +682,11 @@ inline constexpr RaidBossRow kAq40Bosses[] = {
 inline constexpr RaidBossRow kNaxxBosses[] = {
     Sight({ "naxx_anubrekhan", "Naxxramas: 40 level 60 raiders to Anub'Rekhan (Locust Swarm kite, Crypt Guards, scarabs)",
       15956, "Anub'Rekhan",            20, 16573 }, 63.f),   // Crypt Guard; sees 55 y
+    // The six Naxxramas Acolytes stand in her formation (the world DB links them to her), so the clearing leaves them and they are part of
+    // her pull; kept like her own adds, the raid may land near them (naxx_faerlina 2026-11-14: every ring spot was refused for an Acolyte
+    // inside 40 y, "cannot place the raid").
     Keeps({ "naxx_faerlina", "Naxxramas: 40 level 60 raiders to Grand Widow Faerlina (Worshipper sacrifice after each Enrage, Rain of Fire)",
-      15953, "Grand Widow Faerlina", 20, 16506 }, 16505),   // Naxxramas Worshipper, Follower
+      15953, "Grand Widow Faerlina", 20, 16506 }, 16505, 15981),   // Naxxramas Worshipper, Follower, Acolyte
     Sight({ "naxx_maexxna",    "Naxxramas: 40 level 60 raiders to Maexxna (Web Wrap freed, Necrotic Poison dispelled, Poison Shock cone)",
       15952, "Maexxna",                20 }, 48.f),   // sees 40 y
     { "naxx_noth",       "Naxxramas: 40 level 60 raiders to Noth the Plaguebringer (the curse dispelled first, spread, balcony adds)",

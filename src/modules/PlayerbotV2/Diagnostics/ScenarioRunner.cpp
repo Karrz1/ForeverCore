@@ -130,6 +130,8 @@ constexpr std::uint32_t kArriveTimeoutMs = 45u * 1000u;
 constexpr int kPullManaPct = 95;                           // every healer at or above this before the ordered Attack
 constexpr std::uint32_t kManaWaitMs = 120u * 1000u;      // the longest the Attack waits for it
 constexpr std::uint32_t kPrepWaitMs = 90u * 1000u;       // the longest it waits for the raid's buffs and consumables (PrepOwed)
+constexpr std::uint32_t kPatrolWaitMs = 180u * 1000u;    // the longest it waits for a patrolling boss to walk back toward the raid
+constexpr float kPatrolOrderYards = 60.f;                // a patrolling boss further than this from the main tank is waited for
 
 namespace Owned = ::Playerbot::V2::Gear::Owned;
 constexpr std::size_t kStageBatch = 4;                           // squads over five: members set up per step, so the world thread keeps ticking
@@ -194,6 +196,9 @@ struct Run
     std::uint32_t landing_rounds = 0;     // rounds logged (capped)
     std::uint32_t mana_wait_log_ms = 0;   // run_ms of the last 'waiting for the healers' mana' line
     std::uint32_t prep_wait_log_ms = 0;   // run_ms of the last 'waiting for the raid's buffs' line
+    bool patrol_centre_tried = false;     // PickArrival searched round the low end of the boss's patrol (his spawn is on a raised walk)
+    std::uint32_t patrol_wait_ms = 0;     // run_ms the Attack began waiting for the boss's patrol to come back (0 = not waiting)
+    std::uint32_t patrol_wait_log_ms = 0; // run_ms of the last 'waiting for the patrol' line
     bool kits_stocked = false;            // the role kits (flask, elixirs, food) went into the bags at 'in place' (StockRaidKits)
     bool trash_cleared = false;
     // The boss pull's statistics ([pull_stats]): started at the boss's first combat, reported 90 s later and when the run ends.
@@ -1403,6 +1408,33 @@ bool PickArrival(Run& run, Player* leader)
                                       height_rejected, los_rejected);
     if (patrol_rejected)
         run.arrive_blocker += fmt::format("; {} lay within {:.0f} y of its {}-node patrol", patrol_rejected, kPatrolClearance, patrol.size());
+    // A boss whose spawn is on a raised walk he patrols down from (Grobbulus: spawn at z 320 on the walkway, his 16-node path comes down
+    // the ramps to the room floor at 292.6; naxx_grobbulus 2026-11-14: 202 ring spots with no floor within 20 y of 320): the rings are
+    // searched again round the lowest node of his patrol, the floor of the room he fights in. Once; the spawn is put back either way.
+    if (!patrol.empty() && !run.patrol_centre_tried)
+    {
+        run.patrol_centre_tried = true;
+        WaypointNode const* low = &patrol.front();
+        for (WaypointNode const& node : patrol)
+            if (node.Z < low->Z)
+                low = &node;
+        if (run.boss_z - low->Z > 6.0f)
+        {
+            float const sx = run.boss_x, sy = run.boss_y, sz = run.boss_z;
+            std::string const spawn_blocker = run.arrive_blocker;
+            run.arrive_blocker.clear();
+            run.boss_x = low->X; run.boss_y = low->Y; run.boss_z = low->Z;
+            bool const found = PickArrival(run, leader);
+            run.boss_x = sx; run.boss_y = sy; run.boss_z = sz;
+            if (found)
+            {
+                TC_LOG_INFO("playerbot.v2", "[scenario] {} landing found round the low end of the patrol of creature {} at {:.1f},{:.1f},{:.1f} ({:.1f} y below its spawn)",
+                            run.def->name, run.arrive_entry, low->X, low->Y, low->Z, sz - low->Z);
+                return true;
+            }
+            run.arrive_blocker = spawn_blocker + "; round the low end of its patrol" + run.arrive_blocker;
+        }
+    }
     return false;
 }
 
@@ -3889,6 +3921,35 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                 else if (!boss && run.start_event_sent_ms)
                     TC_LOG_WARN("playerbot.v2", "[scenario] {} creature {} is still not out 30 s after game event {} was sent", run.def->name,
                                 run.def->goal_entry, run.def->start_event);
+            }
+            // A boss on patrol is pulled when his walk brings him back, as a raid waits for Patchwerk: the order onto him while he was 192 y
+            // down his path was refused (beyond the tank's sight) and the raid stood for 120 s (naxx_patchwerk 2026-11-14, ordered at 110 s
+            // after the buff and mana waits). Bounded; the Hold is kept up meanwhile.
+            if (attack_due && !run.checkpoint)
+            {
+                Player* tank = MainTank(run);
+                Creature* boss = FindBoss(run);
+                bool const patrols = boss && !boss->IsInCombat() && boss->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE;
+                if (tank && patrols && tank->GetDistance(boss) > kPatrolOrderYards)
+                {
+                    if (!run.patrol_wait_ms)
+                        run.patrol_wait_ms = run.run_ms ? run.run_ms : 1u;
+                    if (run.run_ms - run.patrol_wait_ms < kPatrolWaitMs)
+                    {
+                        for (Member const& m : run.members)
+                            if (BotAI* ai = ::Playerbot::Services::Registry().ai(m.id))
+                                ai->enter_manual(BotAI::OwnerCommand::Hold, ObjectGuid::Empty, GameTime::GetGameTimeMS(), 30000u);
+                        run.monitor->NoteDeliberateWait(run.run_ms);
+                        if (!run.patrol_wait_log_ms || run.run_ms - run.patrol_wait_log_ms >= 10000u)
+                        {
+                            run.patrol_wait_log_ms = run.run_ms ? run.run_ms : 1u;
+                            TC_LOG_INFO("playerbot.v2", "[scenario] {} the attack waits for {}'s patrol: {:.0f} y from the main tank at {:.1f},{:.1f},{:.1f}, {} s waited",
+                                        run.def->name, boss->GetName(), tank->GetDistance(boss), boss->GetPositionX(), boss->GetPositionY(),
+                                        boss->GetPositionZ(), (run.run_ms - run.patrol_wait_ms) / 1000u);
+                        }
+                        attack_due = false;
+                    }
+                }
             }
             if (attack_due && !IssueAttack(run))
             {
