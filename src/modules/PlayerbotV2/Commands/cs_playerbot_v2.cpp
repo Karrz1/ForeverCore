@@ -810,6 +810,22 @@ public:
         return true;
     }
 
+    // `.bot trade <seq hex> <what the window shows>`: right after the stock Trade click, the ForeverBots trade window sends what it
+    // shows, and a trade with a bot is accepted when that is still exactly the offer (AddonControl::BotTradeRequest). Alone the
+    // add-on sends it as a whisper to the player's own name from the click: a dot command runs before any whisper is made, so
+    // nothing is sent to anyone. The answer is a hidden TRADE_RESP frame, never plain text.
+    static bool HandleBotTrade(ChatHandler* handler, std::string seqHex, std::string seen)
+    {
+        WorldSession* sess = handler->GetSession();
+        Player* me = sess ? sess->GetPlayer() : nullptr;
+        if (!me || seqHex.empty() || seqHex.size() > 8 || seqHex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+            return true;   // quiet: only the add-on sends this
+        if (seen.empty() || seen.size() > 230 || seen.find_first_not_of("0123456789:") != std::string::npos)
+            return true;
+        Playerbot::V2::AddonControl::BotTradeRequest(me, uint32(std::strtoul(seqHex.c_str(), nullptr, 16)), seen);
+        return true;
+    }
+
     // ---- .bot: one-step companions ------------------------------------------------------------------------------
 
     static Playerbot::Role ParseRoleWord(std::string const& token, bool& ok)

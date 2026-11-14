@@ -258,6 +258,8 @@ local function ServerCommand(text)
     end
     Cmd.Say(text)
 end
+-- a dot command from a click, for the other files (ForeverBots_Trade.lua): see Cmd.Say
+Cmd.ns.Say = function(text) ServerCommand(text) end
 
 -- Stance button of the panel, three steps (Karrz 2026-11-03: "passive, defensive and aggressive"). ForeverBotsDB.stance is
 --   "nofight"    - Passive: the bots attack nothing at all, not even to defend; heals and buffs go on (taming a beast, a sheep that
