@@ -147,9 +147,12 @@ namespace Playerbot::Raid {
         // Shadow Flame 22539 cone, Bellowing Roar 22686 fear, Veil of Shadow 22687 on the tank, Tail Lash 23364, class calls every 25-35s
         // (boss_nefarian.cpp:348-368), at 20% he raises every dead drakonid as a Bone Construct (:371-376, summon spell 23363 on drakonid death).
         r.priority.push_back({ 11583, 3 });                                       // the boss must beat the constructs (boss_nefarian.cpp:371-376)
-        // Bone Constructs (phase 3): 6k hp each, up to 42. Every second caster clears them with area
-        // damage (first matching row wins, so this one comes first); everybody else stays on Nefarian while the tanks hold them.
-        r.priority.push_back({ 14605, 8, Who::AoeShare });
+        // Bone Constructs (phase 3): 6k hp each, up to 42. Every caster clears them with area damage (first matching row wins, so this
+        // one comes first); the melee and hunters stay on Nefarian while the tanks hold them. Half the casters (Who::AoeShare) was not
+        // enough: chris's kill 2026-11-14 15:45, 14-18 constructs rose on the three spare tanks, 10 s later they were still at 86-99%,
+        // the healers stood at 23-29% mana, and all three tanks died within 30 s (Roland 15:45:12, Narcissus 15:45:40, Xin 15:45:41);
+        // with no tank left the constructs and the next Shadow Flame killed eight more.
+        r.priority.push_back({ 14605, 8, Who::Caster });
         r.priority.push_back({ 14605, 0 });                                       // Bone Construct: up to 40 of them, 6k hp each; tanks hold them, DPS burn Nefarian (DB 14605)
         r.priority.push_back({ 14668, 6 });                                       // Corrupted Infernal (warlock call: 2 per warlock, stun+damage) (boss_nefarian.cpp:63,609-624)
         // Corrupted totems (shaman call, boss_nefarian.cpp:398-557): 200-2000 hp, root themselves, give Nefarian/drakonids Windfury, Stoneskin,
