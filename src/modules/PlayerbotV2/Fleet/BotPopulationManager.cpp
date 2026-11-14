@@ -1269,8 +1269,17 @@ void BotPopulationManager::RunGearBackfill(uint32 now_ms)
             // never touched, and neither is one whose account cannot be told.
             WorldSession const* sess = p->GetSession();
             if (sess && Services::Accounts().is_pool_account(sess->GetAccountId()) && s_dupes_checked.insert(id).second)
+            {
                 if (uint32 const dropped = DropDuplicateGearCopies(p))
                     TC_LOG_INFO("playerbot.v2", "[gear] {} (bot {}): {} extra copies of gear pieces taken out of the bags", p->GetName(), id, dropped);
+                // Bags too (BotSetupPipeline::EnsureBags: every bag slot gets a full-size bag, nothing is lost): only the starter kit
+                // gave them, so a bot that never had it carried 20 slots in all. Its bags were full and it could not take the Onyxia
+                // Scale Cloak (dev realm 2026-11-14: four warlocks with no grey item to drop, 13 refusals each, burnt at the landing).
+                uint32 const before = p->GetFreeInventorySlotCount();
+                BotSetupPipeline::EnsureBags(p);
+                if (uint32 const after = p->GetFreeInventorySlotCount(); after != before)
+                    TC_LOG_INFO("playerbot.v2", "[gear] {} (bot {}): bags filled up, free bag slots {} -> {}", p->GetName(), id, before, after);
+            }
         }
         if (gear_regear_count_ >= 25) continue;     // bound per sweep
         BackfillOne(id, p, now_ms, gear_regear_count_, /*ignore_cooldown*/ false);
@@ -2672,6 +2681,14 @@ uint32 BotPopulationManager::SwapFightCloak(Player* p, bool on)
         dest.clear();
         store_res = p->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, Classic::kOnyxiaScaleCloak, 1);
     }
+    // No grey item either: the bot may simply lack bags (only the starter kit gave them; four warlocks on the dev realm 2026-11-14
+    // carried 20 slots in all). Full-size bags lose nothing (BotSetupPipeline::EnsureBags), then the cloak has its room.
+    if (equip_res == EQUIP_ERR_OK && store_res != EQUIP_ERR_OK)
+    {
+        BotSetupPipeline::EnsureBags(p);
+        dest.clear();
+        store_res = p->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, Classic::kOnyxiaScaleCloak, 1);
+    }
     if (equip_res != EQUIP_ERR_OK || store_res != EQUIP_ERR_OK)
     {
         // What fills the bags, by item quality (0 grey .. 4 epic and up) and by kind, so the next step for full bags follows the data.
@@ -2698,7 +2715,7 @@ uint32 BotPopulationManager::SwapFightCloak(Player* p, bool on)
             if (Bag* bag = p->GetBagByPos(b))
                 for (uint32 s = 0; s < bag->GetBagSize(); ++s)
                     count(p->GetItemByPos(b, uint8(s)));
-        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} cannot put the Onyxia Scale Cloak on (equip result {}, bag result {}: no grey item to make room); "
+        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} cannot put the Onyxia Scale Cloak on (equip result {}, bag result {}: no grey item to make room, bags full size); "
                     "bags hold quality 0-4 {}/{}/{}/{}/{}, gear {}, consumables {}, trade goods {}, quest {}, other {}",
                     p->GetName(), uint32(equip_res), uint32(store_res), by_quality[0], by_quality[1], by_quality[2], by_quality[3], by_quality[4],
                     gear, consumables, trade_goods, quest, other);
