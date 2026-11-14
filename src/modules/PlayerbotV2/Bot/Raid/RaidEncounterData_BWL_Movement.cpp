@@ -60,6 +60,21 @@ namespace Playerbot::Raid {
         // camp (bwl_nefarian 1110a run 1: Shadow Flame killed three casters standing on the camp 9 y in front of him, Cleave and his swings
         // the healers at their post).
         r.faceAway.push_back({ 11583 });
+        // Everybody but his tank stands on his flank, in the wedge between the Shadow Flame cone (55 degrees each side, plus a 12 degree margin
+        // for his turn) and the Tail Lash arc (kOnyTailHalfDeg + kOnyConeMarginDeg), the Onyxia layout (StandFlank, RaidBrain 3d). Without it
+        // nothing placed the raid after the landing (the phase 1 posts end there) and the bots stood wherever they were, round his tank: in
+        // chris's dev raid 2026-11-14 15:10 the raid centre stood 6 y from him ("[raid_face] axis ... raid centre 6 yd out, 27 raiders"),
+        // Shadow Flame killed 5 and his swings and Cleave 10 more within 5-10 y of him, and his tank found no spot to turn him ("no spot on
+        // the axis behind Nefarian", 8 times). Melee 3-10 y, healers 21-25 y, ranged 23-29 y (inside their 30 y spells).
+        {
+            constexpr float kNefFrontEdgeDeg = 55.0f + kOnyConeMarginDeg + kOnyWedgeGapDeg;
+            constexpr float kNefTailEdgeDeg  = 180.0f - kOnyTailHalfDeg - kOnyConeMarginDeg - kOnyWedgeGapDeg;
+            constexpr float kNefWedgeCentreDeg = 0.5f * (kNefFrontEdgeDeg + kNefTailEdgeDeg);
+            constexpr float kNefWedgeHalfDeg   = 0.5f * (kNefTailEdgeDeg - kNefFrontEdgeDeg);
+            r.standFlank.push_back({ 11583, Who::Melee, 3.0f, 10.0f, kNefWedgeCentreDeg, kNefWedgeHalfDeg });
+            r.standFlank.push_back({ 11583, Who::Healer, 21.0f, 25.0f, kNefWedgeCentreDeg, kNefWedgeHalfDeg });
+            r.standFlank.push_back({ 11583, Who::Ranged, 23.0f, 29.0f, kNefWedgeCentreDeg, kNefWedgeHalfDeg });
+        }
         // Phase three (under 20%, classic_boss_nefarian.cpp: Raise Drakonid 23362): the Drakonid Bones (gameobject 179804) of phase one rise as
         // Bone Constructs, about 40 of them, each on a random raider. The one pass of the 0136 sweeps (sweep-bwl-0136-2) had the spare tanks
         // standing where the drakonids had died: the constructs rose next to them and the area taunts took 41 loose ones to 3 in three
