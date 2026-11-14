@@ -302,6 +302,7 @@ void SetIdleHostiles(Plan const& plan, Player* ref)
 // (Escape, Clearest, Usable), so a bot leaving a breath corridor takes the next way out instead of the nearest one, which for Onyxia's
 // north-south breath is the cave mouth and its whelps; ApplyKeepOut is the clamp for the moves that name a point (role spots, flanks).
 std::vector<Circle> g_keepOut;
+constexpr float kKeepOutScanYards = 120.0f;   // the creatures round the main tank checked against the keep-out circles (PublishTargets)
 
 void SetKeepOut(Plan const& plan)
 {
@@ -4098,6 +4099,22 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
         for (Unit* enemy : plan.enemies)
             if (enemy->GetEntry() == rule.enemy && SpareNow(rule, enemy->GetHealthPct(), gateAlive))
                 forbiddenAll.push_back(enemy->GetGUID());
+    }
+    // Nobody attacks a creature inside a keep-out circle (RaidRules::keepOut: Kel'Thuzad's alcoves, Onyxia's cave mouths), in the fight or
+    // not: a shot, a DoT or an area spell there wakes the idle pack round it (Kel'Thuzad's alcove adds attack whoever hits them, SpellHit in
+    // classic_kt_p1AddAI). naxx_kelthuzad 1114f: with the raid kept out of the alcoves, a warlock still had both Abominations and four
+    // Soldiers of one alcove on him 6 s in, and from 24 s on 20-30 adds were loose. An add the script sends walks out of the circle to its
+    // raider and is fought there.
+    if (!g_keepOut.empty() && !plan.members.empty())
+    {
+        Player* const scout = plan.mainTank ? plan.mainTank : plan.members.front().p;
+        std::list<Creature*> near;
+        FindCreatureOptions alive;
+        alive.IsAlive = FindCreatureAliveState::Alive;
+        scout->GetCreatureListWithOptionsInGrid(near, kKeepOutScanYards, alive);
+        for (Creature* c : near)
+            if (c->IsHostileTo(scout) && InsideAny(g_keepOut, c->GetPositionX(), c->GetPositionY(), 0.0f))
+                forbiddenAll.push_back(c->GetGUID());
     }
     auto const trailsHolder = [&packHolders](Unit* enemy)
     {
