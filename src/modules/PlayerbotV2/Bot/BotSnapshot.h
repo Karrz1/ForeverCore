@@ -1589,6 +1589,10 @@ struct NearbyObject
     uint16     gather_skill  = 0;
     uint16     gather_req    = 0;
     bool       gather_ready  = false;
+    // RITUAL (type 18) without an owner (the Altar of the Keepers / of Archaedas in Uldaman, the Blackrock Altar in UBRS): true when
+    // a person in the bot's group has used it, it still needs more users, and this bot is one of the group's bots picked to fill the
+    // missing places (in guid order, the same pick in every bot's snapshot), so no more bots go than places are open.
+    bool       ritual_join   = false;
 };
 struct NearbyObjectsState
 {

@@ -1697,6 +1697,58 @@ struct SnapRecyclePool
     }
 };
 
+// A RITUAL game object without an owner (Altar of the Keepers 130511 and Altar of Archaedas 133234 in Uldaman, the Blackrock Altar in
+// UBRS) fires its spell once `ritual.casters` different players of one group have used it. A person playing with bots cannot fill
+// the other places: the bots never used it, so Archaedas and the Stone Keepers never woke (Discord 1570946298532601866, 0.1.35).
+// True when a person in `p`'s group has used `go`, places are still open, and `p` is one of the group's bots picked to fill them.
+// Map update thread: the object is on the bot's map, so its user set is read on the thread that changes it.
+static bool RitualNeedsBot(Player const* p, GameObject const* go)
+{
+    GameObjectTemplate const* info = go->GetGOInfo();
+    if (!info || !go->GetOwnerGUID().IsEmpty() || info->ritual.casters < 2)
+        return false;   // a warlock's summoning portal (owned) is the warlock's call; one-user rituals need nobody
+    uint32 const used = go->GetUniqueUseCount();
+    if (used == 0 || used >= info->ritual.casters || go->IsUniqueUser(p->GetGUID()) || p->IsInCombat() || !p->IsAlive())
+        return false;
+    Group const* g = p->GetGroup();
+    if (!g)
+        return false;
+    bool person_started = false;
+    for (ObjectGuid const& user : go->GetUniqueUsers())
+    {
+        Player const* u = ObjectAccessor::GetPlayer(*go, user);
+        if (u && Scenario::PlaysAsHuman(u) && g->IsMember(user))
+        {
+            person_started = true;
+            break;
+        }
+    }
+    if (!person_started)
+        return false;
+    // The group's bots within reach that could fill a place, in guid order: every bot of the group computes the same order, so
+    // exactly the missing number go. Not by distance - the bots following the person keep moving, and a pick that changed with
+    // their steps would send a second bot for a place the first is already walking to. A bot that has used it leaves the list
+    // and the open count drops by one with it.
+    constexpr float kReach = 30.0f;
+    std::vector<ObjectGuid::LowType> candidates;
+    for (GroupReference const& ref : g->GetMembers())
+    {
+        Player const* m = ref.GetSource();
+        if (!m || m->GetMap() != go->GetMap() || Scenario::PlaysAsHuman(m) || !m->IsAlive() || m->IsInCombat()
+            || go->IsUniqueUser(m->GetGUID()))
+            continue;
+        if (m->GetExactDist(go) > kReach)
+            continue;
+        candidates.push_back(m->GetGUID().GetCounter());
+    }
+    std::sort(candidates.begin(), candidates.end());
+    uint32 const open = info->ritual.casters - used;
+    for (uint32 i = 0; i < candidates.size() && i < open; ++i)
+        if (candidates[i] == p->GetGUID().GetCounter())
+            return true;
+    return false;
+}
+
 SnapRecyclePool& RecyclePool()
 {
     // thread_local — one pool per worker thread (and the world thread when
@@ -8205,7 +8257,10 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
                 // the bot out of damage range. We DO want non-hostile
                 // traps in nearby_objects too (some quest scripts trigger
                 // off them), so the type passes the filter unconditionally.
-                t == GAMEOBJECT_TYPE_TRAP;
+                t == GAMEOBJECT_TYPE_TRAP           ||
+                // RITUAL (18): an altar that needs several users (Uldaman's two altars, the UBRS Blackrock Altar). The group's
+                // bots fill the places a person in the group leaves open (ritual_join below).
+                t == GAMEOBJECT_TYPE_RITUAL;
             if (!useful) continue;
             const float dx = go->GetPositionX() - p->GetPositionX();
             const float dy = go->GetPositionY() - p->GetPositionY();
@@ -8245,6 +8300,8 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             n.x = go->GetPositionX();
             n.y = go->GetPositionY();
             n.z = go->GetPositionZ();
+            if (n.go_type == GAMEOBJECT_TYPE_RITUAL)
+                n.ritual_join = RitualNeedsBot(p, go);
             // Destructible gate breach state (IoC / SoTA) so the siege-fire
             // rule skips already-down gates and advances to the next line.
             if (n.go_type == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING)

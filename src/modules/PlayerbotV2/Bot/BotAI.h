@@ -1036,7 +1036,8 @@ public:
     // Owner "use <object>" (BotCommandParser): walk to this game object and use it once (an altar, brazier, lever, orb); the
     // bot then stays put, so a ritual's channel is not broken by a follow. Written by the chat handler (world thread), run by
     // the bot worker (idle:owner_use); same mutex as the fallback. Ends on use, death, map change or after 30 s.
-    struct OwnerUseOrder { bool set = false; uint32 map = 0; ObjectGuid go; float x = 0.f, y = 0.f, z = 0.f; uint32 set_ms = 0; };
+    // ritual: taken by idle:ritual_join, not ordered - used only while the snapshot still picks this bot, and no Stay after it.
+    struct OwnerUseOrder { bool set = false; uint32 map = 0; ObjectGuid go; float x = 0.f, y = 0.f, z = 0.f; uint32 set_ms = 0; bool ritual = false; };
     bool owner_use_active() const { return owner_use_active_.load(std::memory_order_relaxed); }
     OwnerUseOrder owner_use_order() const
     { std::lock_guard<std::mutex> lk(fallback_mtx_); return owner_use_; }
