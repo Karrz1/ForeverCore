@@ -704,8 +704,10 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
       15931, "Grobbulus",              20 },
     Sight({ "naxx_gluth",      "Naxxramas: 40 level 60 raiders to Gluth (Mortal Wound tank swap, Frenzy tranquilized, Zombie Chows)",
       15932, "Gluth",                  20, 16360 }, 57.f),   // Zombie Chow; sees 49 y
-    Keeps({ "naxx_thaddius", "Naxxramas: 40 level 60 raiders to Thaddius (Stalagg and Feugen first, Static Field, Polarity Shift sides)",
-      15928, "Thaddius", 25, 15929 }, 15930),   // Stalagg, Feugen
+    // Thaddius sits immune to players until Stalagg and Feugen are dead (classic_boss_thaddius.cpp): the raid opens on Stalagg, as a raid
+    // does (naxx-grep-1114a: the order onto Thaddius was refused at 110 s and the raid stood for 120 s).
+    OpensOn(Keeps({ "naxx_thaddius", "Naxxramas: 40 level 60 raiders to Thaddius (Stalagg and Feugen first, Static Field, Polarity Shift sides)",
+      15928, "Thaddius", 25, 15929 }, 15930), 15929),   // Stalagg, Feugen
     { "naxx_kelthuzad",  "Naxxramas: 40 level 60 raiders to Kel'Thuzad (phase 1 adds, Detonate Mana, Shadow Fissures, Guardians shackled)",
       15990, "Kel'Thuzad",            30 },
 };
