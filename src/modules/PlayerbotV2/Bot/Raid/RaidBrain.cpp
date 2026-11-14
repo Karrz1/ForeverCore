@@ -3121,6 +3121,18 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 minDist = std::max(minDist, 23.0f);
                 maxDist = std::max(maxDist, 29.0f);
             }
+            // A bot already in the wedge stays where it is. Its slot index counts the members on its side, which changes every time one
+            // of them steps out of a cone or crosses over, and without this check the slot moved and the bot walked again every 4 s:
+            // chris's dev raid 2026-11-14 15:40-15:42, the mage Gorham took 20 "flank boss" steps in 80 s, every one cut his Frostbolt
+            // short, and he did nothing for two minutes at full mana.
+            {
+                float const dBot = Dist2D(ex, ey, bot->GetPositionX(), bot->GetPositionY());
+                float const offBot = std::fabs(geo::NormalizeAngle(geo::Bearing(ex, ey, bot->GetPositionX(), bot->GetPositionY()) - eo));
+                if (dBot >= minDist && dBot <= maxDist && offBot >= centre - half && offBot <= centre + half &&
+                    !(!circles.empty() && InsideAny(circles, bot->GetPositionX(), bot->GetPositionY(), 0.5f)) &&
+                    !InAnyLiveCone(rules, plan, self, enemy, bot->GetPositionX(), bot->GetPositionY()))
+                    break;
+            }
             float const depth = std::max(maxDist - minDist, 1.0f);
             uint32_t const rows = std::clamp(uint32_t(std::ceil(depth / 5.0f)), 1u, 4u);
             uint32_t const cols = std::max(1u, (count + rows - 1) / rows);
