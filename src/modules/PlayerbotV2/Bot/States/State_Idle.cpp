@@ -2496,6 +2496,37 @@ static NearbyUnit const* FrontArcBossAt(BotSnapshotView const& s, GroupSnapshotV
     return boss;
 }
 
+// A point inside a cone the map's raid rules list (Raid::RaidRules::avoidFrontal: the encounter's real reach and arc, Nefarian's
+// Shadow Flame 46 y), for a bot that is not a tank or a melee DPS. FrontArcBossAt is the generic 20 y guess; a step chosen with only
+// that walked a healer into Nefarian's breath (bwl_nefarian 2026-11-14 11:12: Mchealse's line of sight step to (-7535,-1251), 27 y
+// in front of him, and Shadow Flame killed it there from full health).
+static bool InRuledFrontalCone(BotSnapshotView const& s, float px, float py)
+{
+    Raid::RaidRules const* rules = Raid::RulesForMap(s.map_id());
+    if (!rules || rules->avoidFrontal.empty())
+        return false;
+    for (auto const& u : s.raw().combat.nearby_enemies)
+    {
+        if (u.hp <= 0 || u.max_hp <= 0 || u.is_player || !u.unit_in_combat) continue;
+        float const hp_pct = 100.0f * float(u.hp) / float(u.max_hp);
+        for (Raid::AvoidFrontal const& rule : rules->avoidFrontal)
+        {
+            if (rule.enemy != u.entry || hp_pct > rule.hpMax || hp_pct < rule.hpMin) continue;
+            if (rule.who == Raid::Who::Tank || rule.who == Raid::Who::MainTank || rule.who == Raid::Who::OffTank || rule.who == Raid::Who::Melee)
+                continue;
+            float const rx = px - u.x, ry = py - u.y;
+            float const d2 = rx * rx + ry * ry;
+            if (d2 > rule.radius * rule.radius) continue;
+            if (d2 < 1.0f) return true;
+            float const dir = u.o + rule.facingOffsetDeg * float(M_PI) / 180.0f;
+            float const cosOff = (std::cos(dir) * rx + std::sin(dir) * ry) / std::sqrt(d2);
+            if (cosOff >= std::cos(Raid::ConeEdgeDeg(rule) * float(M_PI) / 180.0f))
+                return true;
+        }
+    }
+    return false;
+}
+
 // ---------- Ground hazards (snapshot combat.ground_hazards) ----------
 // A zone counts from its radius + kHazardMargin; a stand point chosen to
 // leave one clears the edge by a further kHazardExitPad so the next tick's
@@ -4160,7 +4191,7 @@ bool RaidCastLosStep(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView cons
         // it straight back out of LoS (a two-rule ping-pong).
         {
             float ad2, afx, afy;
-            if (FrontArcBossAt(s, g, px, py, ad2, afx, afy)) { ++rej_arc; continue; }
+            if (FrontArcBossAt(s, g, px, py, ad2, afx, afy) || InRuledFrontalCone(s, px, py)) { ++rej_arc; continue; }
         }
         if (DungeonStepRefused(s, ai, px, py, pz, now_ms)) { ++rej_dungeon; continue; }
         G3D::Vector3 end;
@@ -4197,7 +4228,7 @@ bool RaidCastLosStep(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView cons
             float ad2, afx, afy;
             if (clear_of_elites(pt.x, pt.y) && !RaidPointBlocked(s, pt.x, pt.y, pt.z, kHazardMargin) &&
                 !RaidPointInUnpulledReach(s, pt.x, pt.y, pt.z) &&
-                !FrontArcBossAt(s, g, pt.x, pt.y, ad2, afx, afy) &&
+                !FrontArcBossAt(s, g, pt.x, pt.y, ad2, afx, afy) && !InRuledFrontalCone(s, pt.x, pt.y) &&
                 !DungeonStepRefused(s, ai, pt.x, pt.y, pt.z, now_ms))
             {
                 if (DungeonMoveOwnedElsewhere(s, ai, pt.x, pt.y, pt.z, now_ms, "raid:los_step"))
