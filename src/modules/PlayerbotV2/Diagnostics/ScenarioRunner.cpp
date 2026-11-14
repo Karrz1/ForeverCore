@@ -794,7 +794,12 @@ constexpr float kArriveClearance = 40.f;
 // spreads a few yards round the landing spot. Patchwerk walks 215 y along the slime (creature_addon path 800882980, a 60 s wait at the far
 // end) and his spawn is one end of it, so a spot 40 y from the spawn was 11 y from the walk (naxx_patchwerk 2026-10-20 124: engaged 6 s
 // after the landing, 3 y past the waypoint he had just reached).
+// The clearance is the boss's own aggro reach against the leader (Creature::GetAttackDistance) plus kPatrolSpreadMargin, 30 y when the boss
+// is not in the world: his patrol through his own room left no spot in his sight 30 y off the walk (naxx_patchwerk 1114e: the raid landed
+// out of his sight on the floor 1.6 y below, and 9-12 heals per healer failed for line of sight in the first 10 s while the tanks died),
+// and the order goes out while he is still kPatrolOrderYards off, so only his reach matters while he walks past.
 constexpr float kPatrolClearance = 30.f;
+constexpr float kPatrolSpreadMargin = 12.f;   // the squad's spread round the landing spot (8 y) plus a step
 
 // A dungeon checkpoint lands the squad among the trash the group would meet anyway (it is bot-led from the first second), so it must
 // only be out of every pack's aggro, not 40 y clear: a 5-man has hostiles everywhere (deadmines_full@sneed: the nearest to any candidate
@@ -1276,10 +1281,14 @@ bool PickArrival(Run& run, Player* leader)
     std::uint32_t path_rejected = 0, height_rejected = 0, los_rejected = 0, patrol_rejected = 0;
     // The boss's patrol, when he walks one: the live creature's path, else the path of his creature row.
     std::vector<WaypointNode> patrol;
+    float patrol_clearance = kPatrolClearance;
     {
         uint32 path_id = 0;
         if (Creature const* boss = FindBoss(run))
+        {
             path_id = boss->GetWaypointPathId();
+            patrol_clearance = boss->GetAttackDistance(leader) + kPatrolSpreadMargin;
+        }
         if (!path_id && run.boss_spawn_id)
             if (CreatureAddon const* addon = sObjectMgr->GetCreatureAddon(run.boss_spawn_id))
                 path_id = addon->PathId;
@@ -1356,7 +1365,7 @@ bool PickArrival(Run& run, Player* leader)
                     continue;
                 h = over;
             }
-            if (!patrol.empty() && patrol_distance(cx, cy) < kPatrolClearance)
+            if (!patrol.empty() && patrol_distance(cx, cy) < patrol_clearance)
             {
                 if (need_los)
                     ++patrol_rejected;
@@ -1399,8 +1408,9 @@ bool PickArrival(Run& run, Player* leader)
                             "(no floor in its sight in the rings)", run.def->name, run.arrive_entry, std::fabs(h - run.boss_z),
                             h < run.boss_z ? "below" : "above", route, straight);
             if (!patrol.empty())
-                TC_LOG_INFO("playerbot.v2", "[scenario] {} landing {:.0f} y clear of the {}-node patrol of creature {}", run.def->name,
-                            patrol_distance(cx, cy), patrol.size(), run.arrive_entry);
+                TC_LOG_INFO("playerbot.v2", "[scenario] {} landing {:.0f} y clear of the {}-node patrol of creature {} (clearance {:.0f} y; spots "
+                            "refused before it: {} near the patrol, {} out of sight, {} without floor)", run.def->name, patrol_distance(cx, cy),
+                            patrol.size(), run.arrive_entry, patrol_clearance, patrol_rejected, los_rejected, height_rejected);
             return true;
         }
     }
@@ -1412,7 +1422,7 @@ bool PickArrival(Run& run, Player* leader)
     run.arrive_blocker += fmt::format("; {} candidate spots had no floor within 20 y of the creature's height, {} had no line of sight to it",
                                       height_rejected, los_rejected);
     if (patrol_rejected)
-        run.arrive_blocker += fmt::format("; {} lay within {:.0f} y of its {}-node patrol", patrol_rejected, kPatrolClearance, patrol.size());
+        run.arrive_blocker += fmt::format("; {} lay within {:.0f} y of its {}-node patrol", patrol_rejected, patrol_clearance, patrol.size());
     // A boss whose spawn is on a raised walk he patrols down from (Grobbulus: spawn at z 320 on the walkway, his 16-node path comes down
     // the ramps to the room floor at 292.6; naxx_grobbulus 2026-11-14: 202 ring spots with no floor within 20 y of 320): the rings are
     // searched again round the lowest node of his patrol, the floor of the room he fights in. Once; the spawn is put back either way.
