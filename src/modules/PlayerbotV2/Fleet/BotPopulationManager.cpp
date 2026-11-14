@@ -2663,11 +2663,19 @@ uint32 BotPopulationManager::SwapFightCloak(Player* p, bool on)
     }
     uint16 eq_dest = 0;
     ItemPosCountVec dest;
-    // The replaced cloak goes to the bag slot the copy came from: no free slot, no swap.
-    if (p->CanEquipNewItem(EQUIPMENT_SLOT_BACK, eq_dest, Classic::kOnyxiaScaleCloak, /*swap*/ cur != nullptr) != EQUIP_ERR_OK ||
-        p->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, Classic::kOnyxiaScaleCloak, 1) != EQUIP_ERR_OK)
+    // The replaced cloak goes to the bag slot the copy came from: no free slot, no swap. Full bags give up their cheapest grey
+    // item for it, as a regear does (dev realm 2026-11-13: 23 of 39 raiders pulled Nefarian without the cloak, bags full).
+    InventoryResult const equip_res = p->CanEquipNewItem(EQUIPMENT_SLOT_BACK, eq_dest, Classic::kOnyxiaScaleCloak, /*swap*/ cur != nullptr);
+    InventoryResult store_res = p->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, Classic::kOnyxiaScaleCloak, 1);
+    if (equip_res == EQUIP_ERR_OK && store_res != EQUIP_ERR_OK && FreeOneJunkBagSlot(p))
     {
-        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} cannot put the Onyxia Scale Cloak on (no bag room, or the slot refuses it)", p->GetName());
+        dest.clear();
+        store_res = p->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, Classic::kOnyxiaScaleCloak, 1);
+    }
+    if (equip_res != EQUIP_ERR_OK || store_res != EQUIP_ERR_OK)
+    {
+        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} cannot put the Onyxia Scale Cloak on (equip result {}, bag result {}: no grey item to make room)",
+                    p->GetName(), uint32(equip_res), uint32(store_res));
         return 0;
     }
     Item* copy = p->StoreNewItem(dest, Classic::kOnyxiaScaleCloak, true);
@@ -2686,8 +2694,9 @@ uint32 BotPopulationManager::SwapFightCloak(Player* p, bool on)
     ResistSwapState st;
     st.pieces.push_back({ uint8(EQUIPMENT_SLOT_BACK), own, copy->GetGUID() });
     s_fight_cloak[id] = std::move(st);
-    TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} wears the Onyxia Scale Cloak in Blackwing Lair{}", p->GetName(),
-                cur ? "" : " (no cloak of its own)");
+    // The protection is the cloak's equip aura 22683 (what Shadow Flame checks), so the line says whether it is on.
+    TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} wears the Onyxia Scale Cloak in Blackwing Lair{}, aura {} {}", p->GetName(),
+                cur ? "" : " (no cloak of its own)", Classic::kOnyxiaScaleCloakAura, p->HasAura(Classic::kOnyxiaScaleCloakAura) ? "on" : "MISSING");
     return 1;
 }
 
