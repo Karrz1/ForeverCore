@@ -35,6 +35,7 @@ What is in this folder (repack\bot-bridge\)
   bot_bridge_example.py   a tiny program with fixed answers: a starting point for your own program
   models.txt              the model behind each tier of the launcher's AI BOTS tab (you can change them)
   backup.txt              optional: a second service for when your PC is too slow or Ollama is off (empty = never used)
+  api.txt                 optional: your own AI service INSTEAD of Ollama (empty = Ollama on this PC)
   BOT_BRIDGE.md           the full technical guide: every file, field, action and limit
 
 What you need
@@ -153,6 +154,18 @@ On a slow PC, or when Ollama is not running, bots answer with a short fixed line
 (DeepSeek, OpenRouter, ...) or a bigger PC at home running Ollama, put it in backup.txt (url, model, key) and restart the
 AI bots. Then only those lines go there; everything else stays on your PC. An online service may charge for what it
 answers. Bots chatting with each other never use it. Leave url empty and nothing is ever sent anywhere.
+
+Your own AI service or your own program
+---------------------------------------
+In the launcher's AI BOTS tab, Service:
+- This PC (Ollama): the default, everything above.
+- My own AI service: any OpenAI-style service (another PC with Ollama, LM Studio, an online service with your key). Type its
+  address, model and key; the launcher writes them to server\BotBridge\api.txt and runs the bots' program with it. Nothing
+  is downloaded. All of the bots' talk goes to that service.
+- My own program: the launcher turns the bridge and its actions on and does NOT start our program, so your own code can
+  read the events and write the replies (BOT_BRIDGE.md; bot_bridge_example.py is the starting point). Start your program
+  yourself while the realm runs.
+By hand: api.txt here or in server\BotBridge\ (url, model, key) does the same as "My own AI service".
 
 To turn it off
 --------------

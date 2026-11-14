@@ -534,7 +534,23 @@ def read_backup_settings(folder, opts):
     got = {"url": opts.backup_url or "", "model": opts.backup_model or "", "key": opts.backup_key or ""}
     if got["url"]:
         return got
-    for path in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup.txt"), os.path.join(folder, "backup.txt")):
+    return read_service_file("backup.txt", folder, got)
+
+
+def read_main_settings(folder, opts):
+    """url / model / key of the player's own AI service as the MAIN one, instead of the local Ollama: --url etc., else api.txt
+    in the BotBridge folder or next to this program, the same lines as backup.txt (the launcher's AI BOTS tab writes it when
+    the player picks "My own AI service"). Its model wins over --model, as the two belong together. Empty url: the local
+    Ollama (the default)."""
+    got = {"url": "", "model": "", "key": ""}
+    if opts.url:
+        return got
+    return read_service_file("api.txt", folder, got)
+
+
+def read_service_file(name, folder, got):
+    """`got` filled from the first `name` (next to this program, then in the BotBridge folder) that sets a url."""
+    for path in (os.path.join(os.path.dirname(os.path.abspath(__file__)), name), os.path.join(folder, name)):
         found = {}
         try:
             with open(path, encoding="utf-8-sig") as f:
@@ -1332,6 +1348,11 @@ def main():
         log("another bridge program already answers for %s (the launcher's AI bots, or a window left open); this one stops" % folder)
         sys.exit(0)
     url = opts.url or "http://%s:%d/v1" % (opts.host or "127.0.0.1", opts.port or 11434)
+    own = read_main_settings(folder, opts)
+    if own["url"]:
+        url, opts.key = own["url"], own["key"] or opts.key
+        opts.model = own["model"] or opts.model
+        log("your own AI service from api.txt: %s at %s%s" % (opts.model, url, " (with a key)" if opts.key else ""))
     actions_on = not opts.no_actions
     api = ChatApi(url, opts.model, opts.key, opts.timeout)
     api.no_think = not opts.think
