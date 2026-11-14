@@ -3682,8 +3682,11 @@ Result API::start_attack(ObjectGuid target, uint8 avoid_school_mask)
 
     // A mounted player cannot attack (Unit::Attack returns false), so a bot riding past an enemy emitted start_attack every
     // tick and nothing happened: bots ran past each other mounted in WSG (playtest, 2026-10-08). Like a real player who clicks
-    // an enemy, the bot gets off its mount first.
-    if ((p_->IsMounted() || p_->HasAuraType(SPELL_AURA_MOUNTED)) && tu->IsHostileTo(p_))
+    // an enemy, the bot gets off its mount first. Any valid attack target (checked above), a neutral (yellow) one too: the owner's
+    // Attack on a neutral beast was refused while the bot rode behind him (Unit::Attack fails mounted), the refusal armed the 30 s
+    // start_attack lockout, and the grouped bots ignored the order (Discord 6_1_8_8_1, 2026-11-14: "sometimes do not attack after
+    // using the Attack command" in the open world).
+    if (p_->IsMounted() || p_->HasAuraType(SPELL_AURA_MOUNTED))
         p_->RemoveAurasByType(SPELL_AURA_MOUNTED);
 
     // Ranged white damage. A real hunter's client casts Auto Shot (75, an
