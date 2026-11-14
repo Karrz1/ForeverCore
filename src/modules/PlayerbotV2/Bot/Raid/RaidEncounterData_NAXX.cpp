@@ -202,6 +202,19 @@ namespace Playerbot::Raid {
         r.priority.push_back({ 16427, 6, Who::Ranged });
         r.priority.push_back({ 16427, 3 });     // Soldier of the Frozen Wastes
         r.priority.push_back({ 16428, 2 });     // Unstoppable Abomination
+        // The seven alcoves are out of bounds (naxx-kt-1114d: the tanks met the first Soldier at the south alcove, 3704,-5170, pulled its
+        // 3 Abominations and its Soul Weaver and the raid died in 18 s). Each alcove keeps 10 Soldiers wandering within 14 y of its
+        // centre, 3 Abominations and a Soul Weaver (classic_boss_kelthuzad.cpp:518-556); they wake for anyone within their own aggro
+        // range (about 13-15 y) and 30 y 2D (classic_kt_p1AddAI). 30 y round each centre covers both; the centres lie 61-65 y from Kel'Thuzad,
+        // so the middle keeps about 31 y of room, where the raid fights the adds the script sends at it. The static adds stay up
+        // through phase 2, so the circles hold on Kel'Thuzad too: in phase 1 he is not in the raid's combat (immune), the sent
+        // Soldiers are.
+        for (auto const& alcove : { std::pair{ 3768.40f, -5072.00f }, { 3729.30f, -5044.10f }, { 3683.00f, -5054.05f }, { 3654.15f, -5093.48f },
+                                    { 3664.55f, -5140.50f }, { 3704.00f, -5170.00f }, { 3751.95f, -5158.90f } })
+        {
+            r.keepOut.push_back({ 16427, alcove.first, alcove.second, 30.0f });
+            r.keepOut.push_back({ 15990, alcove.first, alcove.second, 30.0f });
+        }
         // Soul Weaver: Wail of Souls 28459, damage and a knockback in front of it within 30 yd (vanilla data, radius index 10).
         r.avoidFrontal.push_back({ 16429, 30.0f, 60.0f, Who::NonTank });
         // Shackle at most 3 Guardians: a 4th frees them all (classic_boss_kelthuzad.cpp:1027-1100).
