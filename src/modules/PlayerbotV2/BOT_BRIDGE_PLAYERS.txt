@@ -157,11 +157,18 @@ answers. Bots chatting with each other never use it. Leave url empty and nothing
 
 Your own AI service or your own program
 ---------------------------------------
-In the launcher's AI BOTS tab, Service:
+In the launcher's AI BOTS tab, the AI service... button:
 - This PC (Ollama): the default, everything above.
-- My own AI service: any OpenAI-style service (another PC with Ollama, LM Studio, an online service with your key). Type its
-  address, model and key; the launcher writes them to server\BotBridge\api.txt and runs the bots' program with it. Nothing
-  is downloaded. All of the bots' talk goes to that service.
+- Another PC with Ollama: your own server or a stronger PC on your network. Type its address (for example 192.168.1.20;
+  port 11434 when none is given) and pick a tier and model as usual. Turning it on connects to that PC, downloads the model
+  onto it if it is missing (tick "Also download all four tier models there" to get them all at once) and points the bots'
+  program and the server's own chat at it. The tab watches that PC: whether it answers, how many models it has and which
+  one it runs now. Install Ollama on that PC once (ollama.com) and let it listen on the network: set the environment
+  variable OLLAMA_HOST=0.0.0.0, start Ollama again and allow port 11434 in its firewall. Nothing is installed on this PC
+  for Ollama; only the small Python for the bots' program.
+- My own AI service: any OpenAI-style service (LM Studio, an online service with your key, ...). Type its address, model and
+  key; the launcher writes them to server\BotBridge\api.txt and runs the bots' program with it. Only Python is
+  downloaded. All of the bots' talk goes to that service.
 - My own program: the launcher turns the bridge and its actions on and does NOT start our program, so your own code can
   read the events and write the replies (BOT_BRIDGE.md; bot_bridge_example.py is the starting point). Start your program
   yourself while the realm runs.
