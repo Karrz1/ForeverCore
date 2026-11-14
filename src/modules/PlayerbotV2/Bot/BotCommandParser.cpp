@@ -35,6 +35,7 @@
 #include "Util.h"  // Trinity::Tokenize for /diag multi-line output
 #include "BotSnapshot.h"
 #include "Gear/BotGearGenerator.h"   // PlanEquipOrder (equip orders)
+#include "ResistGear.h"              // the Onyxia Scale Cloak ("use <item link>")
 #include "BotSnapshotView.h"
 #include "BotAI.h"
 #include "Dungeon/MarkCc.h"  // MarkCc::IsMarkCcClass for "assign" default roles
@@ -2876,6 +2877,31 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
     if (normalized == "equip" || normalized.rfind("equip ", 0) == 0 || normalized == "use your best gear" ||
         normalized == "wear your best gear")
         return OrderEquip(sender, bot, normalized == "equip" || normalized.rfind("equip ", 0) == 0 ? normalized : std::string("equip best"));
+    // "use <item link>" of a piece to wear is an equip order: in Blackwing Lair chris told his raid "use [Onyxia Scale Cloak]" in party chat
+    // and nothing happened, because "use" only knew game objects (dev realm 2026-11-13). Any other link goes on to the "use" verb as before.
+    if (normalized.rfind("use ", 0) == 0)
+        if (size_t const p = normalized.find("item:"); p != std::string::npos)
+        {
+            uint32 entry = 0;
+            for (size_t i = p + 5; i < normalized.size() && std::isdigit(static_cast<unsigned char>(normalized[i])) && entry < 100000000u; ++i)
+                entry = entry * 10 + uint32(normalized[i] - '0');
+            ItemTemplate const* tpl = entry ? sObjectMgr->GetItemTemplate(entry) : nullptr;
+            if (tpl && (tpl->GetClass() == ITEM_CLASS_ARMOR || tpl->GetClass() == ITEM_CLASS_WEAPON) && tpl->GetInventoryType() != INVTYPE_NON_EQUIP)
+            {
+                // Said to the whole raid: a bot that wears it already stays quiet, and so does one whose Onyxia Scale Cloak the cloak rule
+                // puts on (idle:classic_onyxia_cloak), instead of 39 whispers saying so.
+                if (auto snap = Services::Snapshots().latest(bot->GetGUID().GetCounter()))
+                {
+                    for (auto const& worn : snap->inventory.equipped)
+                        if (worn.entry == entry)
+                            return true;
+                    if (entry == ::Playerbot::Classic::kOnyxiaScaleCloak && Services::Config().raid_onyxia_cloak() &&
+                        ::Playerbot::Classic::FightCloakMap(bot->GetMapId()))
+                        return true;
+                }
+                return OrderEquip(sender, bot, "equip" + normalized.substr(3));
+            }
+        }
 
     // Formation and spacing orders (Playerbot.Behavior.Formation), main tank (Playerbot.Behavior.OwnerMainTank).
     // Exact phrases / prefixes, ahead of the verb table ("tight" and "spread" were the old stack / ring formations).
