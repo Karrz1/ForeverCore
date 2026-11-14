@@ -75,7 +75,7 @@ Unit* AreaJobTarget(Plan& plan, Member const& m, RaidOrder const& o)
     };
     for (Priority const& row : plan.rules->priority)
     {
-        if ((row.who != Who::AoeShare && row.who != Who::Caster) || row.value <= 0 || !Matches(row.who, m, plan.mainTank))
+        if (row.who != Who::AoeShare || row.value <= 0 || !Matches(row.who, m, plan.mainTank))
             continue;
         if (auto prev = g_jobPick.find(self); prev != g_jobPick.end())
             for (Unit* e : plan.enemies)
