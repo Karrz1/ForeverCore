@@ -3801,19 +3801,23 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                     std::uint32_t const since = run.run_ms - run.start_npc_done_ms;
                     if (run.def->goal_wait_ms)
                     {
-                        if (!boss && since < run.def->goal_wait_ms)
+                        // Out, and attackable: a boss that is there from the start but immune until his phase (Kel'Thuzad's 5:35 of
+                        // phase 1) is waited for like one that is summoned later (Nefarian).
+                        bool const fightable = boss && tank && boss->IsHostileTo(tank) && !boss->IsImmuneToPC() && !boss->IsUninteractible() &&
+                                               !boss->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                        if (!fightable && since < run.def->goal_wait_ms)
                         {
                             run.monitor->NoteDeliberateWait(run.run_ms);
                             if (!run.goal_wait_log_ms || run.run_ms - run.goal_wait_log_ms >= 30000u)
                             {
                                 run.goal_wait_log_ms = run.run_ms ? run.run_ms : 1u;
-                                TC_LOG_INFO("playerbot.v2", "[scenario] {} the raid fights the start of the encounter; creature {} ({}) is not out yet, {} s after the start",
+                                TC_LOG_INFO("playerbot.v2", "[scenario] {} the raid fights the start of the encounter; creature {} ({}) is not out or not attackable yet, {} s after the start",
                                             run.def->name, run.def->goal_entry, run.def->goal_name, since / 1000u);
                             }
                             attack_due = false;
                         }
-                        else if (!boss)
-                            TC_LOG_WARN("playerbot.v2", "[scenario] {} creature {} is still not out {} s after the start", run.def->name,
+                        else if (!fightable)
+                            TC_LOG_WARN("playerbot.v2", "[scenario] {} creature {} is still not out or not attackable {} s after the start", run.def->name,
                                         run.def->goal_entry, since / 1000u);
                     }
                     else

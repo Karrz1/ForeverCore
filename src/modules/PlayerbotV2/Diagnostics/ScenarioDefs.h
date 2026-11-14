@@ -708,9 +708,24 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
     // does (naxx-grep-1114a: the order onto Thaddius was refused at 110 s and the raid stood for 120 s).
     OpensOn(Keeps({ "naxx_thaddius", "Naxxramas: 40 level 60 raiders to Thaddius (Stalagg and Feugen first, Static Field, Polarity Shift sides)",
       15928, "Thaddius", 25, 15929 }, 15930), 15929),   // Stalagg, Feugen
-    { "naxx_kelthuzad",  "Naxxramas: 40 level 60 raiders to Kel'Thuzad (phase 1 adds, Detonate Mana, Shadow Fissures, Guardians shackled)",
-      15990, "Kel'Thuzad",            30 },
 };
+
+// ---- Naxxramas, Kel'Thuzad: the whole fight from the start of phase 1, 40 level 60 raiders ----
+// His room's area trigger starts the encounter (OnKTAreaTrigger, classic_boss_kelthuzad.cpp); a raid placed in sight of him never walks
+// through it, so the runner starts it as the trigger does (DoAction CLASSIC_NAXX_ACTION_KT_START). Phase 1: 5:20 of skeletons,
+// abominations and banshees from the alcoves while he channels, immune to players; the raid fights them on its own. Then his intro and
+// phase 2 15 s later, when he turns attackable; the order goes onto him. naxx-grep-1114a: the plain row ordered the tank onto him at 20 s,
+// was refused (immune, the encounter never started) and the raid stood for 429 s.
+inline ScenarioDef MakeNaxxKelThuzadScenario()
+{
+    static constexpr RaidBossRow kKt = { "naxx_kelthuzad", "Naxxramas: 40 level 60 raiders to Kel'Thuzad (phase 1 adds, Detonate Mana, Shadow Fissures, Guardians shackled)",
+                                         15990, "Kel'Thuzad", 30 };
+    ScenarioDef d = MakeRaidScenario(kKt, kNaxxEntrance, RaidSquad(kMcRaid, sizeof(kMcRaid) / sizeof(kMcRaid[0])));
+    d.start_npc = 15990;
+    d.start_npc_action = 1;        // CLASSIC_NAXX_ACTION_KT_START
+    d.goal_wait_ms = 8u * 60u * 1000u;   // phase 2 opens 5:35 after the start
+    return d;
+}
 
 inline std::vector<ScenarioDef> MakeOtherRaidScenarios()
 {
@@ -727,6 +742,7 @@ inline std::vector<ScenarioDef> MakeOtherRaidScenarios()
         v.push_back(MakeRaidScenario(r, kAq40Entrance, squad40()));
     for (RaidBossRow const& r : kNaxxBosses)
         v.push_back(MakeRaidScenario(r, kNaxxEntrance, squad40()));
+    v.push_back(MakeNaxxKelThuzadScenario());
     return v;
 }
 
