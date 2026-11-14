@@ -2862,9 +2862,19 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
             if (off <= 4.0f)
                 return;
             float sz = 0.0f;
-            if (!Usable(bot, spot->GetPositionX(), spot->GetPositionY(), spot->GetPositionZ(), sz))
-                continue;
             uint32_t& logged = g_guardRiseLog[bot->GetGUID().GetCounter()];
+            if (!Usable(bot, spot->GetPositionX(), spot->GetPositionY(), spot->GetPositionZ(), sz))
+            {
+                // Said, so a spare tank that never reaches the bones is seen (bwl_nefarian 2026-11-14 11:04: one of three guarded).
+                if (now - logged >= 10000)
+                {
+                    logged = now;
+                    TC_LOG_INFO("playerbot.v2.raid", "[raid_guard_rise] {} cannot stand on the {} bones at ({:.0f},{:.0f}), {:.0f} y off: the spot is "
+                                "not usable ({} at {:.0f}%)", bot->GetName(), dead.size(), spot->GetPositionX(), spot->GetPositionY(), off,
+                                boss->GetName(), boss->GetHealthPct());
+                }
+                continue;
+            }
             if (now - logged >= 10000)
             {
                 logged = now;

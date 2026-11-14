@@ -389,7 +389,21 @@ void PveGroupCoordinator::Update(uint32 now_ms)
                         engaged.push_back(u.guid);
                 }
             }
-            const size_t want = std::max<size_t>(3, engaged.size() + 1);
+            size_t want = std::max<size_t>(3, engaged.size() + 1);
+            // A boss whose phase-one corpses rise (RaidRules::guardRise, Nefarian under 20%) needs every tank: the ones that do not hold him
+            // guard the bones. From the guard window on, every live tank is on the roster. bwl_nefarian 2026-11-14 11:04: the bear tank died
+            // in phase one, came back to a full roster of three (one mob, Nefarian) and played DPS; the constructs rose on one guarding
+            // tank, all four tanks were dead 25 s after the rise and the raid wiped at 12%.
+            if (Raid::RaidRules const* rules = Raid::RulesForMap(b.map_id); rules && !rules->guardRise.empty())
+                for (auto const& sn : snaps)
+                {
+                    if (sn->position.map_id != b.map_id) continue;
+                    for (auto const& u : sn->combat.nearby_enemies)
+                        for (Raid::GuardRise const& rule : rules->guardRise)
+                            if (u.entry == rule.boss && u.hp > 0 && u.max_hp > 0 && u.unit_in_combat &&
+                                100.0f * float(u.hp) / float(u.max_hp) <= rule.hpMax)
+                                want = std::max<size_t>(want, mem.size());
+                }
             auto live_tank = [&](uint64 low)
             {
                 for (auto const& e : mem)
