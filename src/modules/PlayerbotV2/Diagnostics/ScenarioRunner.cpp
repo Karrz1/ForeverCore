@@ -1245,6 +1245,41 @@ bool InMagmaContact(Map* map, PhaseShift const& ps, float x, float y, float z)
         (ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Magma) || ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Slime));
 }
 
+// The ground round a staged boss, for choosing its staging spot and posts: a grid of 5 y cells within 60 y of his spawn, north row first, one
+// line per row. Each cell is ' ' (no floor within 20 y of his height), or the floor's height against his in whole yards ('0'-'9' above or level,
+// 'a'-'j' 1-10 y below), upper case ('A'-'J' below, and '#' for level or above) when the floor sees him (eye height to eye height). B is his
+// spawn, S the staging spot. Written once per run (naxx_patchwerk 1114e-g: three landings out of his sight, and no map data off the PC).
+void LogSightGrid(Run const& run, Map* map, PhaseShift const& ps)
+{
+    constexpr int kHalf = 12;
+    constexpr float kStep = 5.f;
+    TC_LOG_INFO("playerbot.v2", "[scenario_grid] {} round creature {} at {:.1f},{:.1f},{:.1f}: {} x {} cells of {:.0f} y, x {:.0f} to {:.0f} left to right, "
+                "y {:.0f} (top) to {:.0f}", run.def->name, run.arrive_entry, run.boss_x, run.boss_y, run.boss_z, 2 * kHalf + 1, 2 * kHalf + 1, kStep,
+                run.boss_x - kHalf * kStep, run.boss_x + kHalf * kStep, run.boss_y + kHalf * kStep, run.boss_y - kHalf * kStep);
+    for (int j = kHalf; j >= -kHalf; --j)
+    {
+        std::string row;
+        for (int i = -kHalf; i <= kHalf; ++i)
+        {
+            float const cx = run.boss_x + i * kStep, cy = run.boss_y + j * kStep;
+            if (i == 0 && j == 0) { row += 'B'; continue; }
+            if (run.has_stage && std::fabs(cx - run.stage_x) < kStep * 0.5f && std::fabs(cy - run.stage_y) < kStep * 0.5f) { row += 'S'; continue; }
+            float const h = map->GetHeight(ps, cx, cy, run.boss_z + 6.0f, true, 26.0f);
+            if (h <= INVALID_HEIGHT || std::fabs(h - run.boss_z) > 20.f) { row += ' '; continue; }
+            bool const sight = map->isInLineOfSight(ps, cx, cy, h + 2.0f, run.boss_x, run.boss_y, run.boss_z + 2.0f, LINEOFSIGHT_ALL_CHECKS,
+                                                    VMAP::ModelIgnoreFlags::Nothing);
+            int const d = int(std::lround(h - run.boss_z));
+            char c;
+            if (d >= 0)
+                c = sight ? '#' : char('0' + std::min(d, 9));
+            else
+                c = char((sight ? 'A' : 'a') + std::min(-d, 10) - 1);
+            row += c;
+        }
+        TC_LOG_INFO("playerbot.v2", "[scenario_grid] {} y {:7.1f} |{}|", run.def->name, run.boss_y + j * kStep, row);
+    }
+}
+
 bool PickArrival(Run& run, Player* leader)
 {
     Map* map = leader->GetMap();
@@ -1253,6 +1288,7 @@ bool PickArrival(Run& run, Player* leader)
     PhaseShift const& ps = leader->GetPhaseShift();
     if (run.has_stage)
     {
+        LogSightGrid(run, map, ps);
         // The listed spot on the route: no search. Path-checked once, and the nearest hostile is logged so a landing in a pack shows.
         PathGenerator pg(leader);
         ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, run.stage_x, run.stage_y, run.stage_z, run.boss_x, run.boss_y, run.boss_z);
