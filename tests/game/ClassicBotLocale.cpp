@@ -154,6 +154,17 @@ TEST_CASE("BotLocale: the tank lead lines keep the tank's name", "[BotLocale]")
     CHECK(Translate(Lang::Ru, "Raveni leads on.") == "Raveni ведет дальше.");
     CHECK(Translate(Lang::Ru, "Raveni pauses the lead: say 'go' when it should lead on.") ==
           "Raveni ждет: скажите 'go' (или 'вперед'), когда ему вести дальше.");
+    // The raid lead: the main tank stops before each boss.
+    CHECK(Translate(Lang::Ru, "Raveni leads the raid now: it pulls pack by pack, waits for mana and for you, and stops before each boss for you to pull "
+                              "(or say 'go'). Say 'lead pause' to hold, 'lead off' to lead yourself.") ==
+          "Raveni ведет рейд: пулит по одной группе мобов, ждет ману и вас и останавливается перед каждым боссом, чтобы его пульнули вы (или скажите 'go'). "
+          "Скажите 'lead pause', чтобы он ждал, 'lead off', чтобы вести самому.");
+    CHECK(Translate(Lang::Ru, "Raveni pulls the boss.") == "Raveni пулит босса.");
+    CHECK(Translate(Lang::Ru, "Raveni leads once you are inside a dungeon or a raid. Say 'lead off' to lead yourself.") ==
+          "Raveni поведет группу, когда вы войдете в подземелье или рейд. Скажите 'lead off', чтобы вести самому.");
+    CHECK(Translate(Lang::Ru, "the boss is next: pull it when you are ready, or say go") == "дальше босс: пульте его, когда будете готовы, или скажите go");
+    CHECK(Translate(Lang::Ru, "In a raid the tank leads a raid group: convert your party to a raid first, then say 'lead on'.") ==
+          "В рейде танк ведет рейдовую группу: сначала преобразуйте группу в рейд, затем скажите 'lead on'.");
 }
 
 TEST_CASE("BotLocale: captured words are translated, names and numbers are not", "[BotLocale]")

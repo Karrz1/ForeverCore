@@ -60,7 +60,7 @@ The `.bot` commands for your own bots work for every account, no GM needed; each
 | `.bot add <class> [tank\|healer\|dps] [race] [male\|female]` | Creates a companion bound to you, levels it to you, teaches spells, sets role/talents/gear, brings it over and groups it. The role is kept across relog and `.bot call`. |
 | `.bot lfg [tank\|healer\|dps]` | Fills the missing tank / healer / damage places of your group (1 tank, 1 healer, 3 damage) with level-matched companions, now. The word is your own role. The Group Finder does the same on its own: post a dungeon listing and, if nobody joins within `Playerbot.Lfg.BotFillSeconds` (default 180), the missing roles are filled. |
 | `.bot dungeon [list \| <name\|any> [tank\|healer\|dps] \| leave \| cancel]` | Dungeon finder. `.bot dungeon any` (a random 5-player dungeon for your level) or `.bot dungeon <word>` (`rfc`, `vc`/`dm` Deadmines, `smgy`, `smlib`, `dme`, `strat`, `ubrs`...; `.bot dungeon list` shows them): the missing tank / healer / damage places are filled with your companions at your level, and once the group is complete (at most 90 s) you are put inside the dungeon's door and your bots are brought after you. Real players in your group get a summon. `.bot dungeon leave` takes you back to where you queued, bots follow; `cancel` stops a queue still forming. Only the group leader queues. `Playerbot.Lfg.Finder.Enable` turns it off. |
-| `.bot lead [on\|pause\|off]` | Tank leads: in a 5-man dungeon your tank bot leads and you follow (the same as `lead on` / `lead pause` / `lead off` in party chat and the Orders tab's Tank leads button). See section 8. |
+| `.bot lead [on\|pause\|off]` | Tank leads: in a 5-man dungeon or a raid your tank bot leads and you follow (in a raid it stops before each boss for you) (the same as `lead on` / `lead pause` / `lead off` in party chat and the Orders tab's Tank leads button). See section 8. |
 | `.bot call <name\|all>` | Brings back a companion (logs it in, joins your group). `all` = your saved roster plus every bot in your group. |
 | `.bot summon <name\|all\|saved>` | Every player, own bots only: `.bot summon all` brings only the bots that are in your group right now (it never logs anyone in), `.bot summon saved` your saved roster plus the grouped bots (logging them in), `.bot summon <name>` one of your companions. Any other name: "You can only summon your own bots". The GM `.summon` (other players) is unchanged and stays GM-only. |
 | `.bot goto <name>` | Every player, own bots only (companions and summoned alts): takes you to that bot, the other way round from `.bot summon`. Not in combat, dead or on a flight path, and not into or out of a battleground or arena. Into a dungeon or raid only when the bot is in your group, and the dungeon's own entry rules still apply. The GM `.appear` stays GM-only. |
@@ -290,8 +290,12 @@ A group chat order reaches every bot of yours; to address only some, whisper the
   in party chat it says `waiting for mana` or `waiting for you`. `lead pause` holds it where it stands (it still fights what
   comes); `go` (also `lead on`, `вперед`) goes on. `lead off`, or leaving the dungeon, gives the lead back to you. `follow`,
   `stay`, `hold` and `come` (the buttons too) pause the lead and do their own thing; `go` picks it up again. `go` is the lead's
-  word only while the lead is on or paused. It needs one of your bots in the tank role, and is for
-  5-man dungeons only (a raid group runs its own pulls).
+  word only while the lead is on or paused. It needs one of your bots in the tank role.
+  In a raid group on a raid map the main tank (the raid frame's Main Tank mark, else a tank bot of yours) leads the trash the
+  same way, but stops before every boss where it would pull from and says `the boss is next: pull it when you are ready, or
+  say go`. Pull the boss yourself and the raid fights it as usual, or say `go` and the tank pulls it (still after the mana and
+  the dead). After a wipe it stops again at the same boss. A party that is not a raid group on a raid map is not led: convert
+  it to a raid first.
 
 ## 9. Battleground behaviour
 

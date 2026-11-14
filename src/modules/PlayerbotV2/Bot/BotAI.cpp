@@ -700,7 +700,8 @@ void BotAI::tick(BotSnapshotView snapshot,
 
 bool BotAI::tank_leads_here(BotSnapshotView const& s) const
 {
-    return tank_lead_engaged() && s.is_in_dungeon() && !s.is_in_raid() && !s.in_battleground();
+    // Map::IsDungeon covers raid maps too; there only a raid group is led (a party there stays on its owner, raid_map_party_hold).
+    return tank_lead_engaged() && s.is_in_dungeon() && !s.in_battleground() && (!s.is_in_raid() || s.in_raid_group());
 }
 
 void BotAI::update_dungeon_autopilot_hold(BotSnapshotView s, GroupSnapshotView g)
@@ -734,6 +735,18 @@ void BotAI::update_dungeon_autopilot_hold(BotSnapshotView s, GroupSnapshotView g
     {
         tank_lead_inside_ms_ = 0;
         tank_lead_away_ms_ = 0;
+    }
+    // The raid lead's boss stop ends with the lead and once the boss fight is on (the player pulled, or "go" let the tank pull): the
+    // next boss, or the same one after a wipe, stops again.
+    if (tank_lead_boss_wait() != 0 || tank_lead_boss_go() != 0)
+    {
+        bool const boss_fight = s.is_encounter_in_progress() ||
+                                (s.in_combat() && !s.current_boss_guid().IsEmpty() && s.victim() == s.current_boss_guid());
+        if (!tank_leads_now_ || tank_lead() != TankLead::On || !s.is_in_raid() || boss_fight)
+        {
+            set_tank_lead_boss_wait(0);
+            set_tank_lead_boss_go(0);
+        }
     }
 
     // An owner Stay / Hold: the dungeon autopilot (converge, rejoin, advance, pull) walks nobody who was told to stay.

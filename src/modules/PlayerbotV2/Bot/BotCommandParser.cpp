@@ -2469,10 +2469,13 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
         answer.PSendSysMessage("%s", "You have no group yet: add a bot first.");
         return true;
     }
-    // A raid group runs its own pulls (the raid autopilot); a companion party in a raid map follows its owner (raid_map_party_hold).
-    if (grp->isRaidGroup())
+    // A raid group is led too (chris, 2026-11-14): its main tank leads the trash and stops before each boss for the player. A party that
+    // is not a raid group on a raid map follows its owner (raid_map_party_hold), so the lead waits for the raid group there.
+    bool const raid = grp->isRaidGroup();
+    Map const* here = sender->GetMap();
+    if (want != BotAI::TankLead::Off && !raid && here && here->IsRaid())
     {
-        answer.PSendSysMessage("%s", "'lead' is for a 5-man dungeon: in a raid group the bots run the pulls on their own.");
+        answer.PSendSysMessage("%s", "In a raid the tank leads a raid group: convert your party to a raid first, then say 'lead on'.");
         return true;
     }
     std::vector<Player*> bots;
@@ -2483,7 +2486,12 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
         if (!m || m == sender) continue;
         if (!Services::Registry().has(m->GetGUID().GetCounter()) || !ControlsForGroupOrder(sender, m)) continue;
         bots.push_back(m);
-        if (BotRole(m) == Role::Tank && (!tank || (!tank->IsAlive() && m->IsAlive())))
+        if (BotRole(m) != Role::Tank)
+            continue;
+        // In a raid the main tank (the raid frame's Main Tank mark) leads: the autopilot's pulls are its own (pve_order.main_tank).
+        bool const main = raid && (grp->GetMemberFlags(m->GetGUID()) & MEMBER_FLAG_MAINTANK) != 0;
+        bool const tank_main = tank && raid && (grp->GetMemberFlags(tank->GetGUID()) & MEMBER_FLAG_MAINTANK) != 0;
+        if (!tank || (main && !tank_main) || (main == tank_main && !tank->IsAlive() && m->IsAlive()))
             tank = m;
     }
     if (bots.empty())
@@ -2505,8 +2513,18 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
             return true;
         }
     }
-    Map const* here = sender->GetMap();
-    bool const in_dungeon = here && here->IsDungeon() && !here->IsRaid();
+    bool const in_dungeon = here && here->IsDungeon();   // a 5-man or a raid map
+    bool const in_raid = in_dungeon && here->IsRaid();
+    // "go" at a raid boss: the tank stands before it (tank_lead_boss_wait) and the player hands it the pull.
+    uint32 boss_go = 0;
+    if (go_word && raid)
+        for (Player* m : bots)
+            if (BotAI const* ai = Services::Registry().ai(m->GetGUID().GetCounter()); ai && ai->tank_lead() == BotAI::TankLead::On &&
+                ai->tank_lead_boss_wait() != 0)
+            {
+                boss_go = ai->tank_lead_boss_wait();
+                break;
+            }
     uint32 changed = 0;
     for (Player* m : bots)
     {
@@ -2520,8 +2538,15 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
             ai->exit_manual();
             ai->release_owner_lead(false);
             Map const* bm = m->GetMap();
-            if (bm && bm->IsDungeon() && !bm->IsRaid() && ai->dungeon_run_mode() != BotAI::DungeonRunMode::Active)
+            if (bm && bm->IsDungeon() && ai->dungeon_run_mode() != BotAI::DungeonRunMode::Active)
                 ai->set_dungeon_run_mode(BotAI::DungeonRunMode::Active);
+            if (boss_go != 0)
+                ai->set_tank_lead_boss_go(boss_go);
+        }
+        else
+        {
+            ai->set_tank_lead_boss_wait(0);
+            ai->set_tank_lead_boss_go(0);
         }
     }
     std::string const name = tank ? tank->GetName() : std::string();
@@ -2529,9 +2554,17 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
     switch (want)
     {
         case BotAI::TankLead::On:
-            reply = go_word ? fmt::format("{} leads on.", name) : in_dungeon
-                ? fmt::format("{} leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.", name)
-                : fmt::format("{} leads once you are inside a dungeon. Say 'lead off' to lead yourself.", name);
+            if (boss_go != 0)
+                reply = fmt::format("{} pulls the boss.", name);
+            else if (go_word)
+                reply = fmt::format("{} leads on.", name);
+            else if (in_raid)
+                reply = fmt::format("{} leads the raid now: it pulls pack by pack, waits for mana and for you, and stops before each boss for you to pull "
+                                    "(or say 'go'). Say 'lead pause' to hold, 'lead off' to lead yourself.", name);
+            else if (in_dungeon)
+                reply = fmt::format("{} leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.", name);
+            else
+                reply = fmt::format("{} leads once you are inside a dungeon or a raid. Say 'lead off' to lead yourself.", name);
             break;
         case BotAI::TankLead::Paused:
             reply = fmt::format("{} holds here and pulls nothing until you say 'go'.", name);
@@ -2540,9 +2573,10 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
             reply = "You lead again: your bots follow you.";
             break;
     }
-    TC_LOG_INFO("playerbot.v2", "[tank_lead] {} ({}): lead {} for {} bot(s) ({} changed), tank {}, {}", sender->GetName(), via ? via : "?",
+    TC_LOG_INFO("playerbot.v2", "[tank_lead] {} ({}): lead {} for {} bot(s) ({} changed), tank {}, {}{}", sender->GetName(), via ? via : "?",
                 want == BotAI::TankLead::On ? "on" : want == BotAI::TankLead::Paused ? "pause" : "off", bots.size(), changed,
-                name.empty() ? "-" : name, in_dungeon ? "in a dungeon" : "outside a dungeon");
+                name.empty() ? "-" : name, in_raid ? "in a raid" : in_dungeon ? "in a dungeon" : "outside a dungeon",
+                boss_go != 0 ? fmt::format(", boss pull for entry {}", boss_go) : std::string());
     answer.PSendSysMessage("%s", reply.c_str());
     return true;
 }

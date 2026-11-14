@@ -138,6 +138,46 @@ static bool PullManaGate(BotSnapshotView const& s, BotAI const& ai, GroupSnapsho
     return true;
 }
 
+// "Tank leads" in a raid (chris, 2026-11-14: "Can it be done for RAIDs as well?"): the main tank leads the trash pack by pack, but a
+// boss is the player's to pull. Called by every out-of-combat boss pull of the autopilot right before it would start the fight: while
+// the lead is on in a raid and the player has not said "go" for this boss, the tank stays where it would have pulled from, says once
+// that the boss is next, and pulls nothing. The player pulls himself (the raid joins the fight as any boss fight), or says "go"
+// (BotCommandParser::ApplyLeadOrder sets tank_lead_boss_go) and the tank pulls it through the same gates (mana, the dead, the player).
+// BotAI::update_dungeon_autopilot_hold clears both once the fight is on.
+static bool LeadHoldsBossPull(BotSnapshotView const& s, BotAI& ai, BotIntentEmitter& emit, ObjectGuid boss, uint32 now_ms)
+{
+    if (!s.is_in_raid() || !ai.tank_leads_here(s) || ai.tank_lead() != BotAI::TankLead::On || boss.IsEmpty())
+        return false;
+    uint32 const entry = boss.GetEntry();
+    if (entry != 0 && ai.tank_lead_boss_go() == entry)
+        return false;
+    // Said once per stop, and again after a minute of waiting, in party chat like the other waits of the lead. Its own clock (not
+    // tank_lead_said): a mana wait in between must not make the tank say the boss line again each time the mana comes back.
+    constexpr uint32 kSayAgainMs = 60000;
+    static std::mutex said_mu;
+    static std::unordered_map<uint64, uint32> said_ms;   // tank -> when it last said the boss line
+    bool say = false;
+    {
+        std::lock_guard<std::mutex> lock(said_mu);
+        uint32& last = said_ms[uint64(s.raw().guid.GetCounter())];
+        if (ai.tank_lead_boss_wait() != entry || last == 0 || now_ms - last >= kSayAgainMs)
+        {
+            last = now_ms ? now_ms : 1u;
+            say = true;
+        }
+    }
+    if (ai.tank_lead_boss_wait() != entry)
+    {
+        ai.set_tank_lead_boss_wait(entry);
+        TC_LOG_INFO("playerbot.v2", "[tank_lead] {} stops before boss entry {} ({}): waits for the player's pull or 'go'",
+                    s.name(), entry, boss.GetCounter());
+    }
+    if (say)
+        emit.say("the boss is next: pull it when you are ready, or say go");
+    ai.set_last_rule_fired("idle:tank_lead_boss_stop");
+    return true;
+}
+
 // Score an item against the bot's spec stat weights. Used by the
 // equip-upgrade rule (Phase 1 of ITEM_VENDOR_SYSTEM_PLAN.md). Decision
 // flow:
@@ -5022,6 +5062,10 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                     if (trash_on_tank && healer_in_pull && s.victim() != pb_boss->GetGUID() && ai.tank_diag_due(now_ms))
                         TC_LOG_INFO("playerbot.v2", "[pull_gate] {} holds the boss pull: {} mob(s) still on the tank",
                                     s.name(), s.fightable_attackers_count());
+                    // Raid lead: the boss is the player's to pull (LeadHoldsBossPull).
+                    if (healer_in_pull && !dps_wait && !trash_on_tank && s.victim() != pb_boss->GetGUID() &&
+                        LeadHoldsBossPull(s, ai, emit, pb_boss->GetGUID(), now_ms))
+                        return true;
                     if (healer_in_pull && !dps_wait && !trash_on_tank && s.victim() != pb_boss->GetGUID() &&
                         !ai.action_recently_tried(BotAI::ActionKind::PveTargetSwitch, pull_key, now_ms) &&
                         emit.start_attack(pb_boss->GetGUID()))
@@ -9291,7 +9335,9 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
         // The leading tank says what it waits for, once per hold (and again after kSayAgainMs of the same hold), in party chat, as a
         // real tank would: the player who handed it the lead sees why nothing moves. Out of combat and with the autopilot running
         // only; "paused" is the player's own order and the order's answer already said it.
-        if (tank_leads && ai.effective_role(s) == Role::Tank && ai.dungeon_active() && s.is_alive() && !s.in_combat())
+        // In a raid only the main tank leads; a spare tank on off-tank duty says nothing.
+        if (tank_leads && ai.effective_role(s) == Role::Tank && ai.dungeon_active() && s.is_alive() && !s.in_combat() &&
+            !(s.raw().pve_order.active && !s.raw().pve_order.main_tank.IsEmpty() && s.raw().pve_order.main_tank != s.guid()))
         {
             constexpr uint32 kSayAgainMs = 45000;
             char const* const said = ai.tank_lead_said();
@@ -10240,6 +10286,9 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             // tank engages the boss directly below.
                             if (engage_target && bd2 <= kBossEngageR2 && in_los)
                             {
+                                // Raid lead: the tank stands here until the player pulls or says "go" (LeadHoldsBossPull).
+                                if (LeadHoldsBossPull(s, ai, emit, engage_target->GetGUID(), now_ms))
+                                    return true;
                                 // Pull: stationary boss, chasing can't overshoot.
                                 if (!emit.start_attack(engage_target->GetGUID()))
                                     return false;
@@ -12429,6 +12478,8 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
             // Lockout-gate so a refused boss-engage doesn't claim
             // dispatch every tick. note_engage on success aligns this
             // with idle:tank_pull_next and idle:quest_kill.
+            // Raid lead: the boss is the player's to pull (LeadHoldsBossPull).
+            if (LeadHoldsBossPull(s, ai, emit, s.current_boss_guid(), now_ms)) return true;
             if (!emit.start_attack(s.current_boss_guid())) return false;
             ai.note_engage(s.current_boss_guid(), now_ms);
             ai.set_last_rule_fired("idle:dungeon_engage_boss");

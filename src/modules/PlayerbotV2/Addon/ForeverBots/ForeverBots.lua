@@ -1459,8 +1459,9 @@ function UI.Hint(pane, y, text)
     return fs
 end
 
--- Tank leads (server: "lead on|pause|off", BotCommandParser::ApplyLeadOrder): in a 5-man dungeon the tank bot leads the group, the
--- player follows. A click turns it on or off, a right-click pauses it or goes on. The button shows what was last sent: green on,
+-- Tank leads (server: "lead on|pause|off", BotCommandParser::ApplyLeadOrder): in a 5-man dungeon or a raid group the tank bot leads,
+-- the player follows (in a raid it stops before each boss for the player's pull or "go"). A click turns it on or off, a right-click
+-- pauses it or goes on. The button shows what was last sent: green on,
 -- blue paused. The server ends the lead when the group leaves the dungeon, and so does the button (UI.LeadZone).
 UI.leadState, UI.leadInside = "off", false
 function UI.RefreshLead()
@@ -1500,11 +1501,11 @@ function UI.LeadPausedByOrder()
         UI.RefreshLead()
     end
 end
--- Loading screens: inside a 5-man the lead is in force; leaving the dungeon again ends it (as on the server).
+-- Loading screens: inside a 5-man or a raid the lead is in force; leaving it again ends it (as on the server).
 function UI.LeadZone()
     local inside, kind = false, nil
     if IsInInstance then inside, kind = IsInInstance() end
-    if inside and kind == "party" then
+    if inside and (kind == "party" or kind == "raid") then
         UI.leadInside = true
     elseif UI.leadInside then
         UI.leadInside = false
@@ -1560,7 +1561,7 @@ function UI.BuildOrders()
     UI.leadBtn = Btn(ordersGrid, 162, 18 + 4 * 32, 76, 26, L["short:Tank leads"], { size = 11 })
     UI.leadBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     UI.leadBtn:SetScript("OnClick", function(_, button) UI.LeadClick(button) end)
-    Tip(UI.leadBtn, L["Tank leads"], L["In a dungeon your tank bot leads: it walks on, pulls pack by pack, waits for mana and for you, and goes boss to boss. You follow.\nClick: on or off. Right-click: pause (it holds where it stands) or go on.\nGreen: on. Blue: paused. It ends when you leave the dungeon. Follow, Stay and Come pause it: say go (or right-click) and it leads on."])
+    Tip(UI.leadBtn, L["Tank leads"], L["In a dungeon or a raid your tank bot leads: it walks on, pulls pack by pack, waits for mana and for you, and goes boss to boss. You follow. In a raid it stops before each boss: pull it yourself, or say go.\nClick: on or off. Right-click: pause (it holds where it stands) or go on.\nGreen: on. Blue: paused. It ends when you leave the dungeon or raid. Follow, Stay and Come pause it: say go (or right-click) and it leads on."])
     UI.RefreshLead()
 
     -- Two on/off check boxes at the bottom (the client's own check box). Area spells: on (the server's start setting) the bots use

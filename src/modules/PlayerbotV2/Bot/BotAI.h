@@ -862,6 +862,8 @@ public:
     // bots alone: it walks the route, pulls pack by pack and goes boss to boss, and the player follows. It still waits for the
     // healer's and the casters' mana (PullManaGate), for the dead, and for the player when he is dead, outside or over
     // kTankLeadPlayerHoldYd away. Paused: the lead stays with the tank, which starts no new pull and walks no further until "lead on".
+    // In a raid group on a raid map the main tank leads the trash the same way, but stops before each boss: it stands where it would
+    // pull from and waits until the player pulls himself or says "go" (tank_lead_boss_wait / tank_lead_boss_go; chris 2026-11-14).
     // Ends on its own when the bot leaves the dungeon (update_dungeon_autopilot_hold). Every bot of the group holds it: the tank
     // leads, the rest stay on the tank and fight its pulls. Written by the chat handler (world thread), read by the bot worker.
     enum class TankLead : uint8 { Off = 0, On = 1, Paused = 2 };
@@ -871,9 +873,17 @@ public:
     // Returns true when the value changed.
     bool set_tank_lead(TankLead m) { return tank_lead_.exchange(uint8(m), std::memory_order_relaxed) != uint8(m); }
     bool tank_lead_engaged() const { return tank_lead() != TankLead::Off; }
-    // The bot is in a 5-man dungeon with the lead on (or paused): the human hold, the human-led passivity and the human-led
-    // mana exemption do not apply.
+    // The bot is in a 5-man dungeon, or in a raid group on a raid map, with the lead on (or paused): the human hold, the human-led
+    // passivity and the human-led mana exemption do not apply. A party that is not a raid group on a raid map is not led
+    // (raid_map_party_hold keeps it on its owner).
     bool tank_leads_here(BotSnapshotView const& s) const;
+    // Raid lead, the boss stop: the entry of the boss the leading tank stands before (0: none), written by the tank's worker and read by
+    // the chat handler, which answers "go" with the pull; and the entry the player said "go" for, which lets that one pull through.
+    // Both are cleared once the boss fight starts, so a wipe stops again at the same boss.
+    uint32 tank_lead_boss_wait() const { return tank_lead_boss_wait_.load(std::memory_order_relaxed); }
+    void   set_tank_lead_boss_wait(uint32 entry) { tank_lead_boss_wait_.store(entry, std::memory_order_relaxed); }
+    uint32 tank_lead_boss_go() const { return tank_lead_boss_go_.load(std::memory_order_relaxed); }
+    void   set_tank_lead_boss_go(uint32 entry) { tank_lead_boss_go_.store(entry, std::memory_order_relaxed); }
     // The reason the leading tank last told the group it waits ("mana", "you", ...) and when, so it says it once per hold
     // (States: the advance gate). Bot worker only.
     char const* tank_lead_said() const { return tank_lead_said_; }
@@ -3675,6 +3685,8 @@ private:
     bool           human_lead_hold_       = false;   // see human_lead_hold()
     uint32         human_seen_ms_         = 0;       // last tick a leading human was in range (0 = never)
     std::atomic<uint8> tank_lead_{0};                // TankLead
+    std::atomic<uint32> tank_lead_boss_wait_{0};     // see tank_lead_boss_wait()
+    std::atomic<uint32> tank_lead_boss_go_{0};       // see tank_lead_boss_go()
     uint32         tank_lead_inside_ms_   = 0;       // last tick inside a 5-man dungeon while the lead was on (0 = not yet)
     uint32         tank_lead_away_ms_     = 0;       // first tick outside it since (0 = inside); the lead ends after kTankLeadLeaveMs
     char const*    tank_lead_said_        = nullptr; // see tank_lead_said()
