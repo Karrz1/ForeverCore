@@ -318,6 +318,7 @@ struct RaidBossRow
     std::uint32_t start_event = 0;      // see ScenarioDef::start_event
     std::uint32_t start_add = 0;        // see ScenarioDef::start_add
     float clear_formation_beyond = 0.f; // see ScenarioDef::clear_formation_beyond
+    float stage_x = 0.f, stage_y = 0.f, stage_z = 0.f;   // a listed landing spot instead of the ring search; see ScenarioDef::stage_x
     // The instance data of the bosses a raid kills before this one (SetData type, value), set at the attack: see ScenarioDef::start_instance_data.
     std::array<std::pair<std::uint32_t, std::uint32_t>, 8> start_data{};
     std::uint8_t start_data_n = 0;
@@ -384,6 +385,14 @@ constexpr RaidBossRow OpensOn(RaidBossRow r, std::uint32_t add_entry)
 constexpr RaidBossRow ClearsFormation(RaidBossRow r, float beyond_yards)
 {
     r.clear_formation_beyond = beyond_yards;
+    return r;
+}
+
+// A row whose room the ring search cannot land the raid in (every spot in the boss's sight is on his walk, or has no floor): the raid lands
+// on the listed spot, where its encounter rules fight him (RaidRules stand / tank posts).
+constexpr RaidBossRow Staged(RaidBossRow r, float x, float y, float z)
+{
+    r.stage_x = x; r.stage_y = y; r.stage_z = z;
     return r;
 }
 
@@ -465,6 +474,7 @@ inline ScenarioDef MakeRaidScenario(RaidBossRow const& r, RaidEntrance const& e,
     d.start_event = r.start_event;
     d.start_add = r.start_add;
     d.clear_formation_beyond = r.clear_formation_beyond;
+    d.stage_x = r.stage_x; d.stage_y = r.stage_y; d.stage_z = r.stage_z;
     d.start_instance_data.assign(r.start_data.begin(), r.start_data.begin() + r.start_data_n);
     d.order_attack = true;
     d.order_delay_ms = 20000;
@@ -720,8 +730,12 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
       16062, "Highlord Mograine", 25, 16063 }, 16064, 16065), 83.f),   // Zeliek, Korth'azz, Blaumeux; they see 75 y
     // His formation in the world DB spans the hall's trash (Bile Retchers 16018, 16017, 16021, 16029, 3000-3171 x, up to 300 y from him),
     // which the clearing left; it joined the fight on his patrol and Bile Vomit killed 21 (naxx_patchwerk 1114c). Cleared like trash.
-    ClearsFormation({ "naxx_patchwerk",  "Naxxramas: 40 level 60 raiders to Patchwerk (Hateful Strike soaked by three off tanks)",
-      16028, "Patchwerk",              15 }, 20.f),
+    // His walk runs through his room on the raised floor (z 294.1), and no ring spot both sees him and keeps off it: the raid landed out
+    // of his sight twice (1114e, 1114f: 17 spots near the walk, 43 out of sight, 158 without floor) and the healers' heals failed for line
+    // of sight while the tanks died at the edge of the walk. It lands on the room's lower floor south of the walk (z 292.6, where he
+    // walked after the raiders in 1114e), and the tanks hold him there (RaidEncounterData_NAXX.cpp).
+    Staged(ClearsFormation({ "naxx_patchwerk",  "Naxxramas: 40 level 60 raiders to Patchwerk (Hateful Strike soaked by three off tanks)",
+      16028, "Patchwerk",              15 }, 20.f), 3285.0f, -3297.0f, 292.6f),
     { "naxx_grobbulus",  "Naxxramas: 40 level 60 raiders to Grobbulus (Mutating Injection carrier runs, poison clouds, Slime Spray cone)",
       15931, "Grobbulus",              20 },
     Sight({ "naxx_gluth",      "Naxxramas: 40 level 60 raiders to Gluth (Mortal Wound tank swap, Frenzy tranquilized, Zombie Chows)",
