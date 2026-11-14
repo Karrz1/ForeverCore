@@ -8,6 +8,7 @@
 
 #include "RaidBrain.h"
 #include "Api/BotLanguage.h"
+#include "Api/ClassicSpec.h"
 #include "DispelWorth.h"
 #include "RaidBrainInternal.h"
 #include "RaidBanter.h"
@@ -4003,6 +4004,29 @@ uint8_t MemberDamageSchools(Member const& m, Player* mainTank)
         case CLASS_DRUID:   return caster ? uint8_t(SPELL_SCHOOL_MASK_NATURE | SPELL_SCHOOL_MASK_ARCANE) : uint8_t(SPELL_SCHOOL_MASK_NORMAL);
         case CLASS_PALADIN: return uint8_t(SPELL_SCHOOL_MASK_NORMAL | SPELL_SCHOOL_MASK_HOLY);
         default:            return uint8_t(SPELL_SCHOOL_MASK_NORMAL);
+    }
+}
+
+// The school(s) of a caster's main nuke, by its spec. MemberDamageSchools counts every school the class has, so a frost mage still
+// "can hurt" a Blue Drakonid (400 frost) with fire and arcane, but its rotation is Frostbolt and its talents back frost: chris noticed in
+// his 11-14 pulls that one drakonid colour took far less from him than the other. Phase 1 resistances (creature_template_resistance,
+// VMaNGOS): Blue 14261 frost 400 (arcane 100), Green 14262 nature 400, Bronze 14263 arcane 400, Red 14264 fire 400, Black 14265 fire and
+// shadow 400, Chromatic 14302 250 in every magic school.
+uint8_t MemberMainSchools(Member const& m, Player* mainTank)
+{
+    if (!Matches(Who::Caster, m, mainTank))
+        return MemberDamageSchools(m, mainTank);
+    switch (::Playerbot::Classic::EffectiveSpecId(m.p))
+    {
+        case 62:  return uint8_t(SPELL_SCHOOL_MASK_ARCANE);                           // Arcane mage: Arcane Missiles
+        case 63:  return uint8_t(SPELL_SCHOOL_MASK_FIRE);                             // Fire mage: Fireball, Scorch
+        case 64:  return uint8_t(SPELL_SCHOOL_MASK_FROST);                            // Frost mage: Frostbolt
+        case 265: case 266: case 267:
+                  return uint8_t(SPELL_SCHOOL_MASK_SHADOW);                           // every warlock: Shadow Bolt
+        case 258: return uint8_t(SPELL_SCHOOL_MASK_SHADOW);                           // Shadow priest: Mind Blast, Mind Flay
+        case 102: return uint8_t(SPELL_SCHOOL_MASK_NATURE | SPELL_SCHOOL_MASK_ARCANE); // Balance druid: Wrath, Starfire
+        case 262: return uint8_t(SPELL_SCHOOL_MASK_NATURE);                           // Elemental shaman: Lightning Bolt
+        default:  return MemberDamageSchools(m, mainTank);
     }
 }
 

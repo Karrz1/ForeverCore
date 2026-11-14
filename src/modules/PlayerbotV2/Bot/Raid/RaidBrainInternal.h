@@ -84,6 +84,8 @@ bool TauntImmune(Unit const* enemy);
 void EnemySchoolMasks(Unit* enemy, Unit const* caster, uint8_t& prefer, uint8_t& avoid, uint8_t* reflect = nullptr);
 Unit const* SchoolReferenceCaster(Plan const& plan);
 uint8_t MemberDamageSchools(Member const& m, Player* mainTank);
+// The school(s) of a caster's main nuke by its spec (a frost mage: frost); MemberDamageSchools for everybody else.
+uint8_t MemberMainSchools(Member const& m, Player* mainTank);
 
 // One election round for a plan: no two bots get the same job.
 struct Election

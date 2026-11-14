@@ -256,7 +256,10 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
                 if (enemy->GetGUID() != ownerMark)
                     o.forbidden_targets.push_back(enemy->GetGUID());
 
-        uint8_t const schools = fight->schoolAware ? MemberDamageSchools(m, plan.mainTank) : uint8_t(0);
+        // A caster counts the schools of its main nuke (MemberMainSchools: a frost mage leaves the Blue Drakonids to the others); when
+        // every enemy it can reach resists those, all its class's schools count again.
+        uint8_t const allSchools = fight->schoolAware ? MemberDamageSchools(m, plan.mainTank) : uint8_t(0);
+        uint8_t const mainSchools = fight->schoolAware ? MemberMainSchools(m, plan.mainTank) : uint8_t(0);
         std::vector<Script::Enemy> view;
         view.reserve(mine.size());
         for (size_t i = 0; i < mine.size(); ++i)
@@ -271,10 +274,21 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
             // Not one that cannot be hit now (Arlokk vanished: invisible, uninteractible, not attackable).
             e.eligible = enemy->IsAlive() && !forbidden && !(c && c->IsInEvadeMode()) && enemy->IsVisible() && !enemy->IsUninteractible() &&
                          !enemy->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
-            if (fight->schoolAware && schools && (schools & ~avoid[i]) == 0)
-                e.eligible = false;
             e.held = std::find(held.begin(), held.end(), enemy) != held.end();
             view.push_back(e);
+        }
+        // Before the camp filter, as before: a bot whose schools the camp's enemies all resist still finds one in its reach.
+        if (fight->schoolAware && allSchools)
+        {
+            bool mainFits = false;
+            for (size_t i = 0; i < view.size(); ++i)
+                if (view[i].eligible && (mainSchools & ~avoid[i]) != 0 &&
+                    (fight->campReach <= 0.f || m.p->IsWithinDistInMap(mine[i], kCampSpellReach)))
+                    mainFits = true;
+            uint8_t const schools = mainFits ? mainSchools : allSchools;
+            for (size_t i = 0; i < view.size(); ++i)
+                if ((schools & ~avoid[i]) == 0)
+                    view[i].eligible = false;
         }
         // Fight::campReach: only the enemies at the camp this bot can see, while there is one (see RaidFightScript.h, Nefarian).
         // Else the ones in its sight and spell reach (it is not sent walking: its post would walk it back), else every one.
