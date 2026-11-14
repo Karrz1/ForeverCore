@@ -2982,6 +2982,11 @@ bool BeginScenario(std::string const& full_name, int slot, std::string& error)
         run.has_stage = true;
         run.stage_x = cp->stage_x; run.stage_y = cp->stage_y; run.stage_z = cp->stage_z;
     }
+    else if (!cp && def->stage_z != 0.f)
+    {
+        run.has_stage = true;
+        run.stage_x = def->stage_x; run.stage_y = def->stage_y; run.stage_z = def->stage_z;
+    }
     run.from_key = from_key;
     if (run.arrive_entry && !FindBossSpawn(run))
     {

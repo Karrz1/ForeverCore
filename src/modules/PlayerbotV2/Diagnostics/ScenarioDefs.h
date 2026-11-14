@@ -84,6 +84,9 @@ struct ScenarioDef
     // The raid lands at least this far from that creature (0 = the default 40 y). A boss that aggroes on sight (Onyxia: 58 y) is not held, so a
     // landing inside its reach starts the fight on whoever stands nearest instead of on the tank walking in (onyxia_full n6, 2026-10-14).
     float arrive_min_yards = 0.f;
+    // A fixed landing spot instead of the ring search (z != 0), path-checked to the creature once, as a checkpoint's staging spot: a room
+    // whose own corners are the danger (Kel'Thuzad's alcoves full of phase 1 adds that a raid on the rings walks into).
+    float stage_x = 0.f, stage_y = 0.f, stage_z = 0.f;
     // The school the squad gears resistance for, as a vanilla raid dressed for the fight (nature for Princess Huhuran); 0 = none. Every
     // armour and jewellery slot takes the piece with the most of it under the tier's item level (GearGenerationContext::resist_school).
     std::uint8_t resist_school = 0;
@@ -726,6 +729,10 @@ inline ScenarioDef MakeNaxxKelThuzadScenario()
     ScenarioDef d = MakeRaidScenario(kKt, kNaxxEntrance, RaidSquad(kMcRaid, sizeof(kMcRaid) / sizeof(kMcRaid[0])));
     d.start_npc = 15990;
     d.start_npc_action = 1;        // CLASSIC_NAXX_ACTION_KT_START
+    // The raid stands in the middle round him, as in Classic, away from the alcoves: placed by the ring search 40 y out (3707,-5104), it
+    // stood within reach of an alcove's resting Soldiers, pulled them at 3 s and lost 33 raiders to their Dark Blast by 12 s
+    // (naxx_kelthuzad 1114c). He is immune and passive in phase 1, so 10 y from him is safe; same floor (z 142).
+    d.stage_x = 3736.4f; d.stage_y = -5113.4f; d.stage_z = 142.0f;
     d.goal_wait_ms = 8u * 60u * 1000u;   // phase 2 opens 5:35 after the start
     return d;
 }
