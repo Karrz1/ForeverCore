@@ -37,6 +37,11 @@ namespace Playerbot::Raid {
         // the raid and wiped it. 38 y, not 30: bots that had reached 32.0-32.7 y were still ticked there (Mchuntd 5260 at 32.0 y,
         // Mcshadb 3090 at 32.1 y), so the hit reaches past 30 by the two hit boxes; the margin also covers the boss stepping after them.
         r.avoidEnemyAura.push_back({ 15956, 28785, 38.0f, Who::Anyone });
+        // His tank holds him on the far side from the raid, so the kite's way out (straight away from him, then toward his pull spot)
+        // leads him away from the raid. naxx_anubrekhan 1114b: his tank stood between him and the raid, left the circle with the raid to
+        // the west, he followed it at 34% into the raid, and 40 bots ended against the west wall with "no way out" (44 lines) and 31
+        // Locust Swarm deaths.
+        r.faceAway.push_back({ 15956 });
         r.priority.push_back({ 16573, 3 });     // Crypt Guard: Acid Spit / Web / Cleave (classic_boss_anubrekhan.cpp:65)
         r.priority.push_back({ 16698, 2 });     // Corpse Scarab: spawned from corpses (classic_instance_naxxramas.cpp:1237)
 
