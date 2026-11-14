@@ -483,6 +483,11 @@ public:
     // equip-upgrade rule leaves the worn pieces alone, as for the resistance gear.
     bool   fight_cloak() const { return fight_cloak_; }
     void   set_fight_cloak(bool v) { fight_cloak_ = v; }
+    // Whether an equip rule must leave this equipment slot alone: every slot while the resistance gear is on, the back slot while the
+    // Onyxia Scale Cloak is. The own piece in the bags scores higher than the worn swap piece, so any score-based equip rule would put
+    // it straight back on (dev realm 2026-11-13: idle:dungeon_auto_equip took the cloak off again within seconds, and the raid pulled
+    // Nefarian in its own cloaks).
+    bool   gear_slot_held(uint8 slot) const { return resist_gear_school_ != 0 || (fight_cloak_ && slot == 14 /*EQUIPMENT_SLOT_BACK*/); }
 
     // Mailbox-open hesitation slot.
     uint32 pending_mail_open_at_ms() const { return pending_mail_open_at_ms_; }

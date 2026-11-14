@@ -636,6 +636,32 @@ bool FightCloakGate(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
     // Wanted but not worn: the swap was refused (combat, bags) or something took the cloak off since. The flag alone said "done" and the
     // bot pulled in its own cloak (dev realm 2026-11-13); the back slot is what counts.
     bool const worn = s.raw().inventory.equipped[14 /*EQUIPMENT_SLOT_BACK*/].entry == Classic::kOnyxiaScaleCloak;
+    if (want && worn && !s.has_aura(Classic::kOnyxiaScaleCloakAura))
+    {
+        // Worn but its equip aura is gone, so Shadow Flame burns the bot anyway (dev realm 2026-11-13: eight cloaked bots died of the
+        // burn). Logged once a minute per bot until the cause is known; the line's time places the loss among the fight's events.
+        static std::mutex sMissingMutex;
+        static std::unordered_map<uint64, uint32> sMissingLogged;
+        bool log_now = false;
+        {
+            std::lock_guard<std::mutex> lock(sMissingMutex);
+            if (sMissingLogged.size() > 4096)
+                sMissingLogged.clear();
+            uint32& at = sMissingLogged[s.guid().GetCounter()];
+            if (!at || now_ms - at > 60000)
+            {
+                at = now_ms;
+                log_now = true;
+            }
+        }
+        if (log_now)
+            TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} wears the Onyxia Scale Cloak but aura {} is MISSING (alive {}, in combat {})",
+                s.name(), Classic::kOnyxiaScaleCloakAura, s.is_alive(), s.in_combat());
+    }
+    // Worn and wanted, but the flag is not set: a relog (a fresh BotAI) with the copy still on. Without the flag the equip rules see the
+    // own cloak in the bags as an upgrade and take the copy off (BotAI::gear_slot_held).
+    if (want && worn && !ai.fight_cloak())
+        ai.set_fight_cloak(true);
     bool const differs = want ? !worn : ai.fight_cloak();
     return differs && !ai.action_recently_tried(BotAI::ActionKind::ClassUpkeep, uint64(want) | kFightCloakKeyBit, now_ms);
 }
