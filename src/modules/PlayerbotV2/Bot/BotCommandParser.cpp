@@ -2349,6 +2349,16 @@ bool BotCommandParser::ApplyPlaceOrder(Player* sender, std::string const& line, 
         if (anchor.empty() && (word == "here" || word == "target" || word == "cursor")) { anchor = word; continue; }
         who.push_back(word);
     }
+    // One order, one answer: the same place order from the same player again within kSameOrderMs is the same click reaching more than one
+    // bot (a whisper to each, the add-on's route), not a new order. chris, 2026-11-14 15:24: "39 bot(s) in a line (tight gap) in front of
+    // you. ..." seven times and more in his chat for one click.
+    constexpr uint32 kSameOrderMs = 3000;
+    static std::unordered_map<uint64, std::pair<std::string, uint32>> s_lastPlace;
+    uint32 const nowMs = GameTime::GetGameTimeMS();
+    auto& last = s_lastPlace[sender->GetGUID().GetCounter()];
+    if (last.first == n && nowMs - last.second < kSameOrderMs)
+        return true;
+    last = { n, nowMs };
     PlaceResult const r = PlaceBots(sender, shape, gap, anchor, who, via);
     ChatHandler(sender->GetSession()).PSendSysMessage("%s", r.line.c_str());
     return true;
