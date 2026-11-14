@@ -55,6 +55,16 @@ namespace Playerbot::Raid {
         // Worshippers are the enrage counter: after each Enrage 28798 a priest mind-controls one and sacrifices it with Widow's
         // Embrace 28732 on her (RaidMechanics_Naxx.cpp). They have no bot logic; never a DPS target.
         r.priority.push_back({ 16506, -1 });
+        // Each tank holds its own pile, apart (Classic: her tank keeps her, the off tanks keep the Worshippers and Followers away from her
+        // and each other). naxx_faerlina 1114e: all four tanks stood within 5 y of each other at her feet (3350-3355,-3639), so each
+        // Challenging Shout took the whole pack of seven, the tank under it died in 3-4 s (Mctankwa at 4 s, Mctankwc at 10 s), the next
+        // tank shouted and died the same way, and from 38 s on no tank was left. An arc round the raid's camp, 22 y north of it toward her
+        // dais (she spawns at 3353,-3620, the raid lands at 3354,-3660; the floor there is z 259.1), one slot per tank 16 y apart, wider
+        // than a Challenging Shout's 10 y, so no shout reaches the next tank's pile. The ranged and the healers keep to the camp.
+        constexpr float kFaerCampX = 3354.0f, kFaerCampY = -3664.0f, kFaerHealY = -3672.0f, kFaerFloorZ = 259.1f;
+        r.tankSpot.push_back({ 15953, 15953, 22.0f, 16.0f, true, kFaerCampX, kFaerCampY, 90.0f, { 16506u, 16505u } });
+        r.stand.push_back({ 15953, Who::Ranged, kFaerCampX, kFaerCampY, kFaerFloorZ, 6.0f, false, 0 });
+        r.stand.push_back({ 15953, Who::Healer, kFaerCampX, kFaerHealY, kFaerFloorZ, 6.0f, false, 0 });
 
         // ---------------------------------------------------------------------------------------------------------------
         // MAEXXNA (15952): Web Wrap cocoons (16486) hold players until killed; Necrotic Poison 28776 on the tank (-90% healing,
