@@ -169,6 +169,10 @@ namespace Playerbot::Raid {
         // his healers and the ranged on him stand 32 yards off (his tank is still within their 40).
         r.avoidEnemy.push_back({ 15930, 32.0f, Who::Ranged });
         r.avoidEnemy.push_back({ 15930, 32.0f, Who::Healer });
+        // Stalagg and Feugen go down together: each one fakes death at 1 hp for 5 s and stands up at full health unless the other is down
+        // too (classic_boss_thaddius.cpp fakeDeathTimer, HandleReviveEvent). naxx_thaddius 1114d: the raid took them one at a time,
+        // Stalagg 4% -> 99%, Feugen 9% -> 99%, five times over 600 s, and wiped. Damage is spread, neither more than 10% below the other.
+        r.killTogether.push_back({ 15929, 0, 10.0f, { 15930 } });
 
         // ---------------------------------------------------------------------------------------------------------------
         // SAPPHIRON (15989): Life Drain 28542, Blizzard creatures 16474 that drift around (naxx/classic_boss_sapphiron.cpp),
