@@ -5,6 +5,7 @@
 
 #pragma once
 #include "ClassicBuffLedger.h"
+#include "ResistGear.h"   // KeepFightCloak (gear_slot_held)
 
 #include "IdleWatch.h"
 #include "Dungeon/TankStill.h"
@@ -486,8 +487,14 @@ public:
     // Whether an equip rule must leave this equipment slot alone: every slot while the resistance gear is on, the back slot while the
     // Onyxia Scale Cloak is. The own piece in the bags scores higher than the worn swap piece, so any score-based equip rule would put
     // it straight back on (dev realm 2026-11-13: idle:dungeon_auto_equip took the cloak off again within seconds, and the raid pulled
-    // Nefarian in its own cloaks).
-    bool   gear_slot_held(uint8 slot) const { return resist_gear_school_ != 0 || (fight_cloak_ && slot == 14 /*EQUIPMENT_SLOT_BACK*/); }
+    // Nefarian in its own cloaks). The worn Onyxia Scale Cloak in Blackwing Lair is held whoever put it on (Classic::KeepFightCloak): a
+    // bot with no owner never runs the cloak rule, and a scenario raid's cloak (ScenarioDef::wear_entry) came off the same way
+    // (bwl_nefarian 2026-11-14: Mchealpa and Mcmaged died of the 22682 burn, with no "wears the Onyxia Scale Cloak" line from Shadow Flame).
+    bool   gear_slot_held(uint8 slot, uint32 map_id, uint32 worn_entry) const
+    {
+        return resist_gear_school_ != 0 ||
+               (slot == 14 /*EQUIPMENT_SLOT_BACK*/ && (fight_cloak_ || ::Playerbot::Classic::KeepFightCloak(map_id, worn_entry)));
+    }
 
     // Mailbox-open hesitation slot.
     uint32 pending_mail_open_at_ms() const { return pending_mail_open_at_ms_; }

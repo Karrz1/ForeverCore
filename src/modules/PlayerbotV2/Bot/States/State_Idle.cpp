@@ -819,8 +819,8 @@ bool MaintainAutoEquipUpgrades(BotSnapshotView const& s, BotAI& ai,
         // and the rule goes quiet until the next ding / periodic re-check.
         if (ai.equip_recently_tried(it.entry, equip_now_ms)) continue;
         // The raid swap pieces (resistance gear, the Onyxia Scale Cloak) stay on while they are wanted.
-        if (ai.gear_slot_held(it.equip_slot)) continue;
         EquippedItem const& cur = raw.inventory.equipped[it.equip_slot];
+        if (ai.gear_slot_held(it.equip_slot, s.map_id(), cur.entry)) continue;
         // A piece a player chose for the bot (trade or "equip <item>") stays on.
         if (ai.worn_is_kept(it.equip_slot, cur.entry)) continue;
         // Score-based upgrade test (was pure item_level). 12.0 level-scaling
@@ -12867,8 +12867,8 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                     if (ai.equip_recently_tried(bi.entry, now_ms)) continue;
                     // The raid swap pieces (resistance gear, the Onyxia Scale Cloak) stay on while they are wanted: this rule put
                     // the own cloak back on in Blackwing Lair within seconds of the swap (dev realm 2026-11-13).
-                    if (ai.gear_slot_held(bi.equip_slot)) continue;
                     EquippedItem const& cur_eq = eq_raw.inventory.equipped[bi.equip_slot];
+                    if (ai.gear_slot_held(bi.equip_slot, s.map_id(), cur_eq.entry)) continue;
                     if (ai.worn_is_kept(bi.equip_slot, cur_eq.entry)) continue;
                     if (::Playerbot::V2::Gear::RaidGearActive(eq_raw.identity.level))
                     {

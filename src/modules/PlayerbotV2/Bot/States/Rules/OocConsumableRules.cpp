@@ -613,8 +613,8 @@ bool EquipUpgradeFire(BotSnapshotView const& s, BotAI& ai,
         if (it.item_level == 0) continue;
         if (it.quality == 0) continue;
         if (ai.equip_recently_tried(it.entry, equip_now_ms)) continue;
-        if (ai.gear_slot_held(it.equip_slot)) continue;
         EquippedItem const& cur = s.equipped(it.equip_slot);
+        if (ai.gear_slot_held(it.equip_slot, s.map_id(), cur.entry)) continue;
         // A piece a player chose for the bot (trade or "equip <item>") stays on.
         if (ai.worn_is_kept(it.equip_slot, cur.entry)) continue;
         const float score_new = ScoreItem(it.stats, it.item_level, weights, dps_w);
