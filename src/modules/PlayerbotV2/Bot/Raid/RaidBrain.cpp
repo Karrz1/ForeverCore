@@ -2863,15 +2863,33 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 return;
             float sz = 0.0f;
             uint32_t& logged = g_guardRiseLog[bot->GetGUID().GetCounter()];
-            if (!Usable(bot, spot->GetPositionX(), spot->GetPositionY(), spot->GetPositionZ(), sz))
+            // The bones lie on the fight's floor, a fixed place (no sight line or fight-area test), and the guard must get there before the
+            // rise (urgent: the routine probe budget of a 40-player plan ran out first). The bone's own spot can sit on a clutter of
+            // objects the navmesh leaves out: the ring 3 y round it is as good, the area taunt reaches 10 y. bwl_nefarian 2026-11-14 11:55:
+            // two of three spare tanks could not use their bone and never moved.
+            float gx = spot->GetPositionX(), gy = spot->GetPositionY();
+            bool usable = Usable(bot, gx, gy, spot->GetPositionZ(), sz, /*urgent*/ true, /*hazard*/ false, /*fixedPlace*/ true);
+            int why = g_usableWhy;
+            for (int k = 0; !usable && k < 8; ++k)
+            {
+                float const a = float(k) * float(M_PI) / 4.0f;
+                float const rx = spot->GetPositionX() + 3.0f * std::cos(a), ry = spot->GetPositionY() + 3.0f * std::sin(a);
+                if (Usable(bot, rx, ry, spot->GetPositionZ(), sz, /*urgent*/ true, /*hazard*/ false, /*fixedPlace*/ true))
+                {
+                    usable = true;
+                    gx = rx;
+                    gy = ry;
+                }
+            }
+            if (!usable)
             {
                 // Said, so a spare tank that never reaches the bones is seen (bwl_nefarian 2026-11-14 11:04: one of three guarded).
                 if (now - logged >= 10000)
                 {
                     logged = now;
-                    TC_LOG_INFO("playerbot.v2.raid", "[raid_guard_rise] {} cannot stand on the {} bones at ({:.0f},{:.0f}), {:.0f} y off: the spot is "
-                                "not usable ({} at {:.0f}%)", bot->GetName(), dead.size(), spot->GetPositionX(), spot->GetPositionY(), off,
-                                boss->GetName(), boss->GetHealthPct());
+                    TC_LOG_INFO("playerbot.v2.raid", "[raid_guard_rise] {} cannot stand on the {} bones at ({:.0f},{:.0f}) nor 3 y round them, {:.0f} y "
+                                "off: the spot is not usable (reason {}, last {}) ({} at {:.0f}%)", bot->GetName(), dead.size(), spot->GetPositionX(),
+                                spot->GetPositionY(), off, why, g_usableWhy, boss->GetName(), boss->GetHealthPct());
                 }
                 continue;
             }
@@ -2882,7 +2900,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                             bot->GetName(), dead.size(), rule.bones, spot->GetPositionX(), spot->GetPositionY(), off, boss->GetName(),
                             boss->GetHealthPct());
             }
-            SetMove(out, spot->GetPositionX(), spot->GetPositionY(), sz, "guard rise");
+            SetMove(out, gx, gy, sz, "guard rise");
             return;
         }
 
