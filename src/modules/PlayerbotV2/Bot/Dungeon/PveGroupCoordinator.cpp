@@ -2897,6 +2897,15 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
             if (e.src->victim.IsEmpty() && !e.src->is_casting) ++dps_none;
             if (e.src->max_mana > 0) { dps_mana_sum += Pct(e.src->mana, e.src->max_mana); ++dps_mana_n; }
         }
+        // The most DPS bots on one enemy. A raid fight script (RaidFightScript.cpp) names its own focus, which last_raid_focus_ never holds:
+        // nef-chris-1114c read "on the focus 0" for the whole pull. This count shows how many share one target either way.
+        uint32 dps_top = 0;
+        {
+            std::unordered_map<uint64, uint32> on;
+            for (auto const& e : mem)
+                if (!e.tank && !e.healer && e.alive && e.is_bot && !e.src->victim.IsEmpty())
+                    dps_top = std::max(dps_top, ++on[e.src->victim.GetCounter()]);
+        }
         uint64 dmg_window = 0;
         for (auto const& m : mobs)
         {
@@ -2916,13 +2925,13 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
 
         TC_LOG_INFO("playerbot.v2",
             "[raid_fight] group={} map={} t={}s alive={}/{} deaths={} | tanks: {} | mobs {} (loose {}): {} | "
-            "healers {} mana avg {}% under20% {} casting {} | dps bots {} casting {} hitting {} idle {} (on the focus {}) mana avg {}% | "
+            "healers {} mana avg {}% under20% {} casting {} | dps bots {} casting {} hitting {} idle {} (on the focus {}, top target {}) mana avg {}% | "
             "raid damage {}/s now, {}/s avg, {} per dps bot",
             group_low, map_id, (now_ms - fl.started_ms) / 1000, alive, uint32(mem.size()), fl.deaths,
             tanks.empty() ? std::string("none alive") : tanks, uint32(mobs.size()), loose,
             mob_txt.empty() ? std::string("-") : mob_txt, healers,
             healers ? int32(mana_sum / healers) : 0, low_mana, casting,
-            dps_n, dps_cast, dps_hit, dps_none, dps_focus, dps_mana_n ? int32(dps_mana_sum / dps_mana_n) : 0,
+            dps_n, dps_cast, dps_hit, dps_none, dps_focus, dps_top, dps_mana_n ? int32(dps_mana_sum / dps_mana_n) : 0,
             win_dps, uint32(fl.dmg_total / secs), dps_n ? uint32(win_dps / dps_n) : 0);
     }
 

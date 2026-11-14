@@ -31,6 +31,11 @@ std::unordered_map<uint64_t, uint64_t> g_ownPick;     // bot -> its last pick wh
 
 constexpr uint32_t kFightGapMs = 8000;   // no engaged enemy for this long: the next pull starts a new fight
 constexpr float kCampSpellReach = 30.0f;  // Fight::campReach: an enemy farther than this is not one a bot at the camp casts at
+// Fight::campReach: the raid's focus stays "at the camp" out to campReach + this. nef-chris-1114c (chris's 12:43 pull): the tanks held their
+// drakonids 21-32 y from the camp centre, right across the 28 y edge, and a held drakonid stepping out by a yard dropped it from every bot's
+// list while another stood inside. The focus changed 30 times in 100 s, often back and forth before a kill (660 -> 661 -> 660), the damage
+// was split over two or three drakonids, 3,000 raid damage a second against the waves, and the adds went from 5 to 20.
+constexpr float kCampFocusKeep = 8.0f;
 constexpr uint8_t kSkullIcon = 7, kCrossIcon = 6;
 
 std::unordered_map<uint64_t, uint64_t> g_jobPick;   // bot -> the enemy of its area job (Who::AoeShare row) it was last given
@@ -273,6 +278,7 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         }
         // Fight::campReach: only the enemies at the camp this bot can see, while there is one (see RaidFightScript.h, Nefarian).
         // Else the ones in its sight and spell reach (it is not sent walking: its post would walk it back), else every one.
+        uint64_t const raidFocus = st.focus.IsEmpty() ? 0 : st.focus.GetCounter();
         if (fight->campReach > 0.f)
         {
             std::vector<bool> atCamp(view.size(), false), seen(view.size(), false);
@@ -282,7 +288,8 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
                 if (!view[i].eligible || !m.p->IsWithinDistInMap(mine[i], kCampSpellReach) || !m.p->IsWithinLOSInMap(mine[i]))
                     continue;
                 seen[i] = anySeen = true;
-                if (Dist2D(mine[i]->GetPositionX(), mine[i]->GetPositionY(), fight->campX, fight->campY) <= fight->campReach)
+                float const keep = view[i].guid == raidFocus ? fight->campReach + kCampFocusKeep : fight->campReach;
+                if (Dist2D(mine[i]->GetPositionX(), mine[i]->GetPositionY(), fight->campX, fight->campY) <= keep)
                     atCamp[i] = anyAtCamp = true;
             }
             if (anyAtCamp || anySeen)
@@ -290,7 +297,7 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
                     view[i].eligible = anyAtCamp ? atCamp[i] : seen[i];
         }
         // The raid's focus is this bot's previous pick while it can take it; a bot that cannot keeps its own pick until that one dies.
-        uint64_t previous = st.focus.IsEmpty() ? 0 : st.focus.GetCounter();
+        uint64_t previous = raidFocus;
         uint64_t const self = m.p->GetGUID().GetCounter();
         if (fight->schoolAware && previous)
         {
