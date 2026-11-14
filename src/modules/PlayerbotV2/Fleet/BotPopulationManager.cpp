@@ -2674,8 +2674,34 @@ uint32 BotPopulationManager::SwapFightCloak(Player* p, bool on)
     }
     if (equip_res != EQUIP_ERR_OK || store_res != EQUIP_ERR_OK)
     {
-        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} cannot put the Onyxia Scale Cloak on (equip result {}, bag result {}: no grey item to make room)",
-                    p->GetName(), uint32(equip_res), uint32(store_res));
+        // What fills the bags, by item quality (0 grey .. 4 epic and up) and by kind, so the next step for full bags follows the data.
+        std::array<uint32, 5> by_quality{};
+        uint32 gear = 0, consumables = 0, trade_goods = 0, quest = 0, other = 0;
+        auto count = [&](Item const* it)
+        {
+            if (!it) return;
+            ItemTemplate const* t = it->GetTemplate();
+            if (!t) return;
+            ++by_quality[std::min<uint32>(t->GetQuality(), 4u)];
+            switch (t->GetClass())
+            {
+                case ITEM_CLASS_ARMOR: case ITEM_CLASS_WEAPON: ++gear; break;
+                case ITEM_CLASS_CONSUMABLE: ++consumables; break;
+                case ITEM_CLASS_TRADE_GOODS: case ITEM_CLASS_REAGENT: ++trade_goods; break;
+                case ITEM_CLASS_QUEST: ++quest; break;
+                default: ++other; break;
+            }
+        };
+        for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+            count(p->GetItemByPos(INVENTORY_SLOT_BAG_0, i));
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 s = 0; s < bag->GetBagSize(); ++s)
+                    count(p->GetItemByPos(b, uint8(s)));
+        TC_LOG_INFO("playerbot.v2", "[fight_cloak] {} cannot put the Onyxia Scale Cloak on (equip result {}, bag result {}: no grey item to make room); "
+                    "bags hold quality 0-4 {}/{}/{}/{}/{}, gear {}, consumables {}, trade goods {}, quest {}, other {}",
+                    p->GetName(), uint32(equip_res), uint32(store_res), by_quality[0], by_quality[1], by_quality[2], by_quality[3], by_quality[4],
+                    gear, consumables, trade_goods, quest, other);
         return 0;
     }
     Item* copy = p->StoreNewItem(dest, Classic::kOnyxiaScaleCloak, true);
