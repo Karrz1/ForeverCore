@@ -4079,6 +4079,29 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
                 snap->combat.group_tank = mp->GetGUID();
         }
     }
+    // Healer victim seeding. A grouped healer in a dungeon or raid never opens on a mob itself (State_InCombat holds it at
+    // combat:raid_healer_hold instead of start_attack, which would drag it into melee and threat), so it had no victim and every
+    // damage rule of its rotation (wand, Smite, Wrath, Lightning Bolt; all gated on HasLiveTarget) stood idle while the group was
+    // healthy: voldemargreed, SFK 2026-11-13, "healers just stand around waiting for someone's health to drop". In combat with no
+    // victim and no hostile selection it takes the tank's victim, the group's kill target: no Attack, no chase, only the target its
+    // ranged rules aim at. Heals keep their own targets and their priority (the damage rules wait until everyone is above 90 %).
+    if (snap->combat.victim.IsEmpty() && p->IsInCombat() && !snap->combat.group_tank.IsEmpty() &&
+        snap->combat.group_tank != p->GetGUID() && p->GetMap()->Instanceable() && !p->GetMap()->IsBattlegroundOrArena())
+    {
+        Role const role = (bot_ai && bot_ai->role_override() != Role::Unknown) ? bot_ai->role_override() : snap->group.my_role;
+        if (role == Role::Healer)
+            if (Player const* tank = ObjectAccessor::GetPlayer(*p, snap->combat.group_tank))
+                if (Unit const* mob = tank->GetVictim();
+                    mob && mob->IsAlive() && mob->IsInMap(p) && p->IsValidAttackTarget(mob) && !mob->HasBreakableByDamageCrowdControlAura())
+                {
+                    snap->combat.victim = mob->GetGUID();
+                    snap->combat.victim_pos_known = true;
+                    snap->combat.victim_x = mob->GetPositionX();
+                    snap->combat.victim_y = mob->GetPositionY();
+                    snap->combat.victim_z = mob->GetPositionZ();
+                    snap->combat.victim_reach = mob->GetCombatReach();
+                }
+    }
     Pet const* threat_pet = p->GetPet();
     auto fill_threat = [&](NearbyUnit& u, Unit* t)
     {
@@ -4556,7 +4579,11 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
         snap->auras.own_auras_index.push(snap->auras.own_auras[i].spell_id, i);
     snap->auras.own_auras_index.finalize();
 
+    // The snapshot's victim, not only the melee one: a seeded victim (a ranged attacker's selection, a healer's tank target, above)
+    // needs its auras too, or "is my Shadow Word: Pain on it" read no and the dot was cast again every tick.
     Unit* victim = p->GetVictim();
+    if (!snap->combat.victim.IsEmpty() && (!victim || victim->GetGUID() != snap->combat.victim))
+        victim = ObjectAccessor::GetUnit(*p, snap->combat.victim);
     Unit* tu = nullptr;
     if (!snap->combat.current_target.IsEmpty() && snap->combat.current_target != snap->guid)
         tu = ObjectAccessor::GetUnit(*p, snap->combat.current_target);
