@@ -29,8 +29,14 @@ namespace Playerbot::Raid {
 
         // ---------------------------------------------------------------------------------------------------------------
         // ANUB'REKHAN (15956): Locust Swarm 28785 is a self buff that pulses damage around him (naxx/classic_boss_anubrekhan.cpp);
-        // the tank kites him, everyone else keeps away until it ends. Radius 30 is the usual swarm range (UNVERIFIED).
-        r.avoidEnemyAura.push_back({ 15956, 28785, 30.0f, Who::NonTank });
+        // the tank kites him, everyone else keeps away until it ends (Classic: 30 y, 20 s after a 3 s cast, Anub slowed 40%, a pacifying
+        // 875-1125 per 2 s DoT that stacks without cap; warcraft.wiki.gg Anub'Rekhan (Classic)).
+        // Everybody leaves, tanks too: the circle's way out for a tank goes sideways to the raid and back toward his pull spot (Escape, the
+        // Geddon idiom), so the boss walks after his tank at 60% speed, which is the kite. naxx_anubrekhan 1114a under Who::NonTank: all four
+        // tanks stood in it (the new Crypt Guard rose at his feet) and died 19 s in with 6.4-7.5k ticks; Anub, loose at 13%, walked into
+        // the raid and wiped it. 38 y, not 30: bots that had reached 32.0-32.7 y were still ticked there (Mchuntd 5260 at 32.0 y,
+        // Mcshadb 3090 at 32.1 y), so the hit reaches past 30 by the two hit boxes; the margin also covers the boss stepping after them.
+        r.avoidEnemyAura.push_back({ 15956, 28785, 38.0f, Who::Anyone });
         r.priority.push_back({ 16573, 3 });     // Crypt Guard: Acid Spit / Web / Cleave (classic_boss_anubrekhan.cpp:65)
         r.priority.push_back({ 16698, 2 });     // Corpse Scarab: spawned from corpses (classic_instance_naxxramas.cpp:1237)
 
