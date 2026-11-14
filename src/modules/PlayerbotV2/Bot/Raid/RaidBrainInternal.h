@@ -118,6 +118,8 @@ void BwlMechanicsElect(Election& e, uint32_t now);
 void BwlPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump, uint32_t now);
 // A boss fight script (RaidFightScript.h): after the rule passes, overwrites the DPS bots' target and start wait for the scripted boss.
 void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, uint32_t now, std::ostringstream& dump);
+// A boss that joined the fight late (Nefarian's landing) and that the DPS still keep off until a tank has held it (RaidFightScript.cpp).
+bool LateBossHeld(uint64_t enemyGuidLow);
 // Zul'Gurub (RaidMechanics_ZG.cpp): the enemy a scripted fight's DPS must kill now whatever the kill order says (a Son of Hakkar before Blood
 // Siphon; nullptr = none), and the movement the fight needs (the raid gathers on that Son as it dies).
 Unit* ZgForcedFocus(Plan const& plan, uint32_t now);

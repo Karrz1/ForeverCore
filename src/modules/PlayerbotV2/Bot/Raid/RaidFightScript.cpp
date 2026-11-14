@@ -46,6 +46,17 @@ std::unordered_map<uint64_t, uint64_t> g_jobPick;   // bot -> the enemy of its a
 // tanks taunted him in turn over the next 45 s while the DPS kept their full damage on him, he went back to a DPS bot after each taunt and
 // killed five of them, and the raid reached the Bone Constructs at 20% with 31 of 40 alive.
 std::unordered_map<uint64_t, uint32_t> g_bossOffTank;
+
+// A boss that joins a fight already under way (Nefarian landing in Victor's fight): enemy -> when it was first seen engaged, and since when a
+// tank of the raid has held it (0 = not now). The DPS keep off it until a tank has held it for kLateBossTankMs, at least kLateBossMinMs after
+// it came and at most kLateBossMaxMs (no tank ever taking it must not freeze the raid). chris, 2026-11-14 15:20, after the 15:10 wipe: when
+// Nefarian lands everyone but the tanks should stand back, the tank picks him up and turns him, then the raid goes in. In that pull the raid
+// stood round him as he landed and 6 died to his swings before a tank had him, and 5 more to the first Shadow Flame.
+struct LateBoss { uint32_t seen = 0; uint32_t onTank = 0; uint32_t last = 0; bool released = false; };
+std::unordered_map<uint64_t, LateBoss> g_lateBoss;
+constexpr uint32_t kLateBossTankMs = 4000;
+constexpr uint32_t kLateBossMinMs = 6000;
+constexpr uint32_t kLateBossMaxMs = 20000;
 uint32_t g_retakeLogMs = 0;
 constexpr uint32_t kBossRetakeMs = 20000;
 
@@ -147,6 +158,37 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
     }
     st.last = now;
     bool const wait = Script::StartWait(st.since, now, fight->startWaitMs);
+    // The late bosses of this fight the DPS still keep off (see g_lateBoss).
+    std::vector<ObjectGuid> lateHold;
+    for (Unit* enemy : mine)
+    {
+        Creature const* c = enemy->ToCreature();
+        if (!c || enemy->GetEntry() == fight->boss || !IsBoss(c, plan.rules))
+            continue;
+        LateBoss& lb = g_lateBoss[enemy->GetGUID().GetCounter()];
+        if (!lb.seen || now - lb.last > kFightGapMs)
+            lb = LateBoss{ now, 0, now, now - st.since < fight->startWaitMs };   // there from the start: the start wait covers it
+        lb.last = now;
+        if (lb.released)
+            continue;
+        bool onTank = false;
+        if (Player* vp = enemy->GetVictim()->ToPlayer())
+            if (Member const* vm = FindMember(plan, vp); vm && vm->tank)
+                onTank = true;
+        lb.onTank = onTank ? (lb.onTank ? lb.onTank : now) : 0;
+        uint32_t const age = now - lb.seen;
+        if ((lb.onTank && now - lb.onTank >= kLateBossTankMs && age >= kLateBossMinMs) || age >= kLateBossMaxMs)
+        {
+            lb.released = true;
+            TC_LOG_INFO("playerbot.v2", "[fight_script] group={} map={} {}: {} released to the DPS after {} ms ({})", plan.groupLow, plan.mapId,
+                        fight->name, enemy->GetName(), age, lb.onTank ? "a tank holds it" : "no tank took it in time");
+            continue;
+        }
+        lateHold.push_back(enemy->GetGUID());
+    }
+    if (g_lateBoss.size() > 64)
+        for (auto it = g_lateBoss.begin(); it != g_lateBoss.end();)
+            it = (now - it->second.last > 120000) ? g_lateBoss.erase(it) : std::next(it);
     // A timed kill the fight needs now, whatever the kill order says (Zul'Gurub: a Son of Hakkar before Blood Siphon).
     Unit* const forced = plan.mapId == 309 ? ZgForcedFocus(plan, now) : nullptr;
 
@@ -354,6 +396,8 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         o.fallback_target = focus;
         // The one hold of a scripted fight: the start wait. No threat ratio, no over-threat release clocks.
         o.hold_target = wait ? focus : ObjectGuid::Empty;
+        if (std::find(lateHold.begin(), lateHold.end(), focus) != lateHold.end())
+            o.hold_target = focus;
         // A boss that was on a non-tank less than kBossRetakeMs ago and is back on a tank: a DPS bot at the tank's threat holds (see
         // g_bossOffTank). The hold's own clocks (PublishThreatHolds) still release it.
         if (!wait && threatHold == focus)
@@ -406,6 +450,12 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
             fight->startWaitMs);
     }
     dump << "  fight script " << fight->name << ": focus " << chosen.GetCounter() << (wait ? " (start wait)" : "") << "\n";
+}
+
+bool LateBossHeld(uint64_t enemyGuidLow)
+{
+    auto it = g_lateBoss.find(enemyGuidLow);
+    return it != g_lateBoss.end() && !it->second.released;
 }
 
 } // namespace Playerbot::Raid::detail

@@ -3113,12 +3113,20 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                     index = count;
                 ++count;
             }
-            float const depth = std::max(rule.maxDist - rule.minDist, 1.0f);
+            // A late boss the DPS keep off (Nefarian as he lands, LateBossHeld): the melee wait in the ranged band of the same wedge, out of his
+            // swings and Cleave, until his tank holds him and has turned him; then they walk in to their own band.
+            float minDist = rule.minDist, maxDist = rule.maxDist;
+            if (Matches(Who::Melee, self, plan.mainTank) && LateBossHeld(enemy->GetGUID().GetCounter()))
+            {
+                minDist = std::max(minDist, 23.0f);
+                maxDist = std::max(maxDist, 29.0f);
+            }
+            float const depth = std::max(maxDist - minDist, 1.0f);
             uint32_t const rows = std::clamp(uint32_t(std::ceil(depth / 5.0f)), 1u, 4u);
             uint32_t const cols = std::max(1u, (count + rows - 1) / rows);
             uint32_t const row = index % rows, col = index / rows;
             float const angle = centre - half + (float(col) + 0.5f) / float(cols) * 2.0f * half;
-            float const dist = rule.minDist + (float(row) + 0.5f) / float(rows) * depth;
+            float const dist = minDist + (float(row) + 0.5f) / float(rows) * depth;
             float const slotAngle = eo + side * angle;
             // A slot is only a slot where nothing would move the bot out again: no hazard circle, no whelp-cave circle (a move that ends in one is
             // pushed out to its rim, which at her spawn spot put the casters in front of her) and no cone as she faces right now
@@ -3137,7 +3145,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 for (float sign : { -1.0f, 1.0f })
                 {
                     float const d = dist + sign * 2.0f * float(k);
-                    if (d >= rule.minDist && d <= rule.maxDist && validAt(d, px, py))
+                    if (d >= minDist && d <= maxDist && validAt(d, px, py))
                     {
                         found = true;
                         break;
