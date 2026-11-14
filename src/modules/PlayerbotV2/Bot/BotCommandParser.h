@@ -75,6 +75,11 @@ public:
     // "place <shape> [tight|normal|wide] [here|target] [who...]" / "place follow [who...]": PlaceBots once, answered as a system line.
     // Returns false for any other line.
     static bool ApplyPlaceOrder(Player* sender, std::string const& line, char const* via);
+    // "raid reset" (also "reset raid"): the sender, outside, gets his bots out of every raid instance they are in, the emptied instance
+    // is closed, and his and their locks on that raid are cleared, so the next entry opens a fresh one. Answered once; finished by
+    // TickRaidResets on the world thread.
+    static bool ApplyRaidResetOrder(Player* sender, std::string const& line, char const* via);
+    static void TickRaidResets();
 
     // May `sender` give this bot a group order (the panel, a party / raid line)? Its owner, or for a bot with no owner a player
     // who is its controller in the group they share (GroupControl.h): the group leader when human, else the first human

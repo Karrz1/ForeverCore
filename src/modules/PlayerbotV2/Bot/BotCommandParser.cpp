@@ -58,6 +58,8 @@
 #include "Group.h"
 #include "Chat.h"
 #include "Map.h"
+#include "MapManager.h"
+#include "InstanceLockMgr.h"
 #include "DB2Stores.h"
 #include "World.h"
 #include "GameTime.h"
@@ -2591,6 +2593,154 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
     return true;
 }
 
+namespace
+{
+// One owner's raid reset in progress (ApplyRaidResetOrder): the instances to close, who to unbind, until when to keep trying.
+struct RaidResetJob
+{
+    ObjectGuid owner;
+    std::vector<ObjectGuid> who;                           // the owner and his bots
+    std::vector<std::pair<uint32, uint32>> instances;      // map id, instance id
+    std::vector<uint32> maps;                              // the raid maps whose locks are cleared
+    uint32 next_ms = 0;
+    uint32 give_up_ms = 0;
+};
+std::vector<RaidResetJob> s_raidResets;
+constexpr uint32 kRaidResetStepMs = 1000;
+constexpr uint32 kRaidResetGiveUpMs = 30000;
+}
+
+bool BotCommandParser::ApplyRaidResetOrder(Player* sender, std::string const& line, char const* via)
+{
+    std::string n = line;
+    std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if ((n != "raid reset" && n != "reset raid") || !sender || !sender->GetSession())
+        return false;
+    ChatHandler handler(sender->GetSession());
+    uint32 const now = GameTime::GetGameTimeMS();
+    for (RaidResetJob const& job : s_raidResets)
+        if (job.owner == sender->GetGUID())
+        {
+            handler.PSendSysMessage("%s", "A raid reset is already under way.");
+            return true;
+        }
+    if (sender->GetMap() && sender->GetMap()->IsRaid())
+    {
+        handler.PSendSysMessage("%s", "Leave the raid first, then reset it: your bots come out to you.");
+        return true;
+    }
+    RaidResetJob job;
+    job.owner = sender->GetGUID();
+    job.who.push_back(sender->GetGUID());
+    uint32 pulled = 0;
+    if (Group* grp = sender->GetGroup())
+        for (GroupReference const& itr : grp->GetMembers())
+        {
+            Player* m = itr.GetSource();
+            if (!m || m == sender || !Services::Registry().has(m->GetGUID().GetCounter()) || !ControlsForGroupOrder(sender, m))
+                continue;
+            job.who.push_back(m->GetGUID());
+            Map* map = m->GetMap();
+            if (!map || !map->IsRaid())
+                continue;
+            std::pair<uint32, uint32> const inst{ map->GetId(), map->GetInstanceId() };
+            if (std::find(job.instances.begin(), job.instances.end(), inst) == job.instances.end())
+                job.instances.push_back(inst);
+            if (!m->IsAlive())
+                m->ResurrectPlayer(1.0f);
+            m->CombatStop(true);
+            m->TeleportTo(sender->GetMapId(), sender->GetPositionX(), sender->GetPositionY(), sender->GetPositionZ(), sender->GetOrientation());
+            ++pulled;
+        }
+    // The raids to clear: the ones the bots were in, else every raid the owner holds a lock on.
+    for (auto const& [map, inst] : job.instances)
+        if (std::find(job.maps.begin(), job.maps.end(), map) == job.maps.end())
+            job.maps.push_back(map);
+    if (job.maps.empty())
+        for (InstanceLock const* lock : sInstanceLockMgr.GetInstanceLocksForPlayer(sender->GetGUID()))
+            if (MapEntry const* me = sMapStore.LookupEntry(lock->GetMapId()); me && me->IsRaid() && !lock->IsExpired() &&
+                std::find(job.maps.begin(), job.maps.end(), lock->GetMapId()) == job.maps.end())
+            {
+                job.maps.push_back(lock->GetMapId());
+                if (sMapMgr->FindMap(lock->GetMapId(), lock->GetInstanceId()))
+                    job.instances.push_back({ lock->GetMapId(), lock->GetInstanceId() });
+            }
+    if (job.maps.empty())
+    {
+        handler.PSendSysMessage("%s", "Nothing to reset: you and your bots hold no raid lock.");
+        return true;
+    }
+    job.next_ms = now + kRaidResetStepMs;
+    job.give_up_ms = now + kRaidResetGiveUpMs;
+    TC_LOG_INFO("playerbot.v2", "[raid_reset] {} ({}): {} bots pulled out, {} instance(s), {} raid(s), {} characters", sender->GetName(),
+                via ? via : "?", pulled, job.instances.size(), job.maps.size(), job.who.size());
+    handler.PSendSysMessage("Raid reset: %u bot(s) come out to you; the raid is closed and your locks are cleared in a few seconds.", pulled);
+    s_raidResets.push_back(std::move(job));
+    return true;
+}
+
+void BotCommandParser::TickRaidResets()
+{
+    if (s_raidResets.empty())
+        return;
+    uint32 const now = GameTime::GetGameTimeMS();
+    for (auto it = s_raidResets.begin(); it != s_raidResets.end();)
+    {
+        RaidResetJob& job = *it;
+        if (now < job.next_ms)
+        {
+            ++it;
+            continue;
+        }
+        job.next_ms = now + kRaidResetStepMs;
+        // 1. Close each emptied instance: Expire is the one reset a raid with a boss down allows, and an empty map unloads at the next
+        //    update, which releases the locks it holds ("lock in use by map" while it stays loaded).
+        bool waiting = false;
+        for (auto const& [mapId, instanceId] : job.instances)
+            if (Map* map = sMapMgr->FindMap(mapId, instanceId))
+            {
+                waiting = true;
+                if (InstanceMap* im = map->ToInstanceMap(); im && !im->HavePlayers())
+                    im->Reset(InstanceResetMethod::Expire);
+            }
+        Player* owner = ObjectAccessor::FindConnectedPlayer(job.owner);
+        if (waiting && now < job.give_up_ms)
+        {
+            ++it;
+            continue;
+        }
+        // 2. Clear the locks and the group's memory of the old instance, so the next entry opens a fresh one.
+        uint32 cleared = 0, inUse = 0;
+        for (uint32 mapId : job.maps)
+            for (ObjectGuid const& guid : job.who)
+            {
+                std::vector<InstanceLock const*> done, failed;
+                sInstanceLockMgr.ResetInstanceLocksForPlayer(guid, mapId, {}, &done, &failed);
+                cleared += uint32(done.size());
+                for (InstanceLock const* lock : failed)
+                    inUse += lock->GetMapId() == mapId;
+                if (Player* p = ObjectAccessor::FindConnectedPlayer(guid))
+                    p->SetRecentInstance(mapId, 0);
+            }
+        if (owner)
+            if (Group* grp = owner->GetGroup())
+                for (uint32 mapId : job.maps)
+                    grp->SetRecentInstance(mapId, owner->GetGUID(), 0);
+        TC_LOG_INFO("playerbot.v2", "[raid_reset] {}: {} lock(s) cleared, {} still in use{}", owner ? owner->GetName() : job.owner.ToString(),
+                    cleared, inUse, waiting ? " (an instance did not close in time)" : "");
+        if (owner && owner->GetSession())
+        {
+            ChatHandler handler(owner->GetSession());
+            if (inUse || waiting)
+                handler.PSendSysMessage("Raid reset: %u lock(s) cleared, but someone is still inside, so that raid stays as it is. "
+                                        "Get everyone out and reset again.", cleared);
+            else
+                handler.PSendSysMessage("Raid reset done: %u lock(s) cleared. The next time you go in, the raid is fresh.", cleared);
+        }
+        it = s_raidResets.erase(it);
+    }
+}
+
 bool BotCommandParser::Dispatch(Player* sender, Player* bot, std::string const& msg, char const* via)
 {
     if (!sender || !bot) return false;
@@ -2599,6 +2749,8 @@ bool BotCommandParser::Dispatch(Player* sender, Player* bot, std::string const& 
         return true;
     // "place <shape> ..." (the Positions tab's words typed or whispered): the owner's whole set at once, answered once.
     if (ApplyPlaceOrder(sender, msg, via))
+        return true;
+    if (ApplyRaidResetOrder(sender, msg, via))
         return true;
     // "lead on|pause|off": the whole group's lead, set on every bot of the sender's at once, answered once.
     if (ApplyLeadOrder(sender, msg, via))

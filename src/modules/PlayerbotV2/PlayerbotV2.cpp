@@ -1786,6 +1786,7 @@ void Module::OnWorldUpdate(std::chrono::milliseconds diff)
     static TickId      next_tick    = 1;
     total += diff;
     BotLanguage::Update();   // the login queries for the players' client language
+    BotCommandParser::TickRaidResets();   // "raid reset": close the emptied instances, then clear the locks
     {
         static std::chrono::milliseconds last_hint_check{0};
         if (total - last_hint_check >= std::chrono::milliseconds(2000))
@@ -4114,6 +4115,8 @@ void Module::RouteGroupOrder(Player* sender, Group* group, std::string order)
     if (BotCommandParser::ApplyIgnoreOrder(sender, order, "group"))
         return;
     if (BotCommandParser::ApplyPlaceOrder(sender, order, "group"))
+        return;
+    if (BotCommandParser::ApplyRaidResetOrder(sender, order, "group"))
         return;
     if (BotCommandParser::ApplyLeadOrder(sender, order, "group"))
         return;
