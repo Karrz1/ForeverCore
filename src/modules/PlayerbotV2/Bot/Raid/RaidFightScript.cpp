@@ -166,7 +166,20 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         if (!c || enemy->GetEntry() == fight->boss || !IsBoss(c, plan.rules))
             continue;
         LateBoss& lb = g_lateBoss[enemy->GetGUID().GetCounter()];
-        if (!lb.seen || now - lb.last > kFightGapMs)
+        // Its clock starts where it can be fought: not while it flies in, untouchable. chris's pull 2026-11-14 15:40: Nefarian was engaged
+        // (victim Roland) from his take-off at 15:40:23, the hold "released after 6405 ms (a tank holds it)" at 15:40:29, and he landed
+        // only at 15:40:35: the raid walked in under him as he came down, and his first swings and Shadow Flame took three of it.
+        bool const fightable = !enemy->IsFlying() && !enemy->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) && !enemy->IsUninteractible() &&
+                               !(c->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC));
+        if (lb.seen && now - lb.last > kFightGapMs)
+            lb = LateBoss{};
+        if (!lb.seen && !fightable)
+        {
+            if (now - st.since >= fight->startWaitMs)
+                lateHold.push_back(enemy->GetGUID());   // still coming in: nobody goes near it
+            continue;
+        }
+        if (!lb.seen)
             lb = LateBoss{ now, 0, now, now - st.since < fight->startWaitMs };   // there from the start: the start wait covers it
         lb.last = now;
         if (lb.released)
