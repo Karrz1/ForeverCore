@@ -211,6 +211,10 @@ namespace Playerbot::Raid {
         // the Soul Weavers and the Abominations (first matching row per bot wins, so the ranged row comes first).
         r.priority.push_back({ 16427, 6, Who::Ranged });
         r.priority.push_back({ 16427, 3 });     // Soldier of the Frozen Wastes
+        // No tank holds a Soldier: each one is sent at a random raider and blows up on arrival (classic_kt_p1AddAI, Dark Blast 28457), so
+        // the raid shoots them on the way in and the tanks keep the Abominations (naxx-kt-1114e: the tanks chased Soldiers 26-59 y out and
+        // the DPS held their damage waiting for them, 0 damage a second for 18 s).
+        r.noTank.push_back(16427);
         r.priority.push_back({ 16428, 2 });     // Unstoppable Abomination
         // The seven alcoves are out of bounds (naxx-kt-1114d: the tanks met the first Soldier at the south alcove, 3704,-5170, pulled its
         // 3 Abominations and its Soul Weaver and the raid died in 18 s). Each alcove keeps 10 Soldiers wandering within 14 y of its

@@ -772,6 +772,12 @@ ThreatHold EvaluateThreatHold(BotAI& ai, BotSnapshotView const& s, ObjectGuid ta
         return ThreatHold::ShieldUp;
     }
 
+    // An add the encounter's DPS burn down without a tank (RaidRules::noTank: Molten Core's Lava Spawn, Kel'Thuzad's Soldiers of the
+    // Frozen Wastes) is never held for one: no tank comes for it, so a hold only waits while it reaches its raider. naxx_kelthuzad 1114e:
+    // the Soldiers, each sent at a random raider to blow up on arrival, were held "loose on member, tank in reach" by the melee and the
+    // ranged alike, and the raid did 0 damage a second for the first 18 s of phase 1.
+    if (s.is_in_raid() && Raid::NoTank(s.map_id(), u->entry)) return ThreatHold::None;
+
     if (s.is_in_raid() && LooseRaidEliteOnMember(s, *u, g) && !LooseHoldExpired(s, target, Raid::Retaunts(s.map_id(), u->entry)))
     {
         if (RaidLogDue(RaidLogKey(s, RaidLogKind::ThreatHold), s.published_at_ms(), 5000u))
