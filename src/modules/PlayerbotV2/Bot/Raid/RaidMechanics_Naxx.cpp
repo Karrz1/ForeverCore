@@ -931,7 +931,12 @@ constexpr float    kGluthCampX     = 3290.0f, kGluthCampY = -3110.0f;   // RaidE
 constexpr float    kGluthDragX     = 3330.0f, kGluthDragY = -3125.0f;   // by the east wall, 43 y from the camp, 65-80 y from the chow spawns
 constexpr float    kGluthFloorZ    = 297.8f;
 constexpr float    kGluthArrived   = 20.0f;   // he stands this close to the drag spot: where he stands now is his spot
-constexpr float    kGluthDrifted   = 12.0f;   // he moved this far from his spot: drag him again
+// He left the east wall: farther than this from the drag spot, drag him again. Not a distance from the spot where he stopped: he steps
+// after his tank by up to its 10 y step, and at 12 y from that spot (0085) the step itself sent the tank back to the wall, every few
+// seconds (naxx_gluth 1115h: the holder moved 62 of 90 s between the wall and its step, 15 white hits and no Sunder in 90 s at 86 rage,
+// and every DPS stood 26-29 s in the threat hold under it). He settles within 20 y of the drag spot and his tank stands 10 y past him:
+// even on top of his tank he is within 30 y of it.
+constexpr float    kGluthLeftWall  = 32.0f;
 constexpr float    kGluthTankStep  = 10.0f;   // the holder stands this far from his spot toward the camp (his reach is 17.7)
 constexpr float    kGluthSwapSide  = 5.0f;    // the swap tank stands this far beside the holder's spot
 constexpr float    kGluthSpotTol   = 3.0f;
@@ -954,7 +959,7 @@ Unit* FindGluth(Plan const& plan)
     return nullptr;
 }
 
-// His spot, once he has come to the east wall: settled while he stays within kGluthDrifted of where he stopped.
+// His spot, once he has come to the east wall: where he stopped, settled while he stays within kGluthLeftWall of the drag spot.
 GluthAnchor& GluthSpot(Unit* gluth, uint32_t now)
 {
     GluthAnchor& a = g_gluthAnchor[(uint64_t(gluth->GetInstanceId()) << 32) ^ gluth->GetGUID().GetCounter()];
@@ -962,7 +967,7 @@ GluthAnchor& GluthSpot(Unit* gluth, uint32_t now)
         a = GluthAnchor{};
     a.seen = now ? now : 1u;
     float const gx = gluth->GetPositionX(), gy = gluth->GetPositionY();
-    if (a.settled && Dist2D(gx, gy, a.x, a.y) > kGluthDrifted)
+    if (a.settled && Dist2D(gx, gy, kGluthDragX, kGluthDragY) > kGluthLeftWall)
         a.settled = false;
     if (!a.settled && Dist2D(gx, gy, kGluthDragX, kGluthDragY) <= kGluthArrived)
     {
