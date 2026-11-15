@@ -176,6 +176,11 @@ struct PullStat
     std::uint32_t rage_sum = 0, rage_max = 0, rage_ge25 = 0;   // a rage user's rage in display units, sampled once a second
     std::map<std::string, std::uint32_t> rules;   // last bot rule fired, one count per second
     std::uint32_t mana_sum = 0, mana_min = 101, mana_lt20 = 0;   // a mana user's mana percent, sampled once a second
+    // Threat on the boss, sampled once a second: the raider's own (its pet's when higher), its peak as a percent of the threat of whoever
+    // the boss is on, and the seconds it stood at kThreatCappedPct or more of it (a non-tank there is held or about to be: its damage is
+    // capped by the tank's threat, not by its rotation). For the boss's victim: the seconds it was the victim.
+    float threat_last = 0.f;
+    std::uint32_t threat_peak_pct = 0, threat_capped = 0, victim_seconds = 0;
     // Damage and healing by spell, the breakdown a combat log parse shows (what each raider's damage came from, how much of a heal was
     // overheal). Added from the map threads, hence the lock. Key: spell id, bit 31 set for the raider's pet; 0 = a melee swing.
     struct SpellTally { std::uint64_t damage = 0; std::uint32_t hits = 0; std::uint64_t heal_raw = 0, heal_eff = 0; std::uint32_t heals = 0; };
@@ -2348,6 +2353,8 @@ void PlayRoute(Run& run)
 // What the owner's Attack does in a raid: the main tank is ordered onto the boss (an Engage order, the same one `attack` whispers).
 // ---- The boss pull's statistics ----
 constexpr std::uint32_t kPullReportAfterMs = 90u * 1000u;
+// A non-tank at this percent of the boss victim's threat counts as threat-capped (the raid hold starts a typical hit short of 100 %).
+constexpr std::uint32_t kThreatCappedPct = 85u;
 
 char const* ClassName(std::uint8_t cls)
 {
@@ -2453,6 +2460,15 @@ void ReportPull(Run& run, char const* when)
         if (st.rage_max)
             rules += fmt::format(" | rage avg {} max {} seconds at 25+ {}", st.seconds ? st.rage_sum / st.seconds : 0u, st.rage_max, st.rage_ge25);
         std::uint32_t const alive = st.seconds - std::min(st.seconds, st.dead);
+        if (st.threat_last > 0.f)
+        {
+            if (st.victim_seconds)
+                rules += fmt::format(" | threat {} ({}/s) boss on it {} s", std::uint64_t(st.threat_last),
+                                     st.seconds ? std::uint64_t(st.threat_last) / st.seconds : 0u, st.victim_seconds);
+            else
+                rules += fmt::format(" | threat {} ({}/s) peak {}% of the boss's victim, seconds at {}%+ {}", std::uint64_t(st.threat_last),
+                                     st.seconds ? std::uint64_t(st.threat_last) / st.seconds : 0u, st.threat_peak_pct, kThreatCappedPct, st.threat_capped);
+        }
         if (st.mana_min <= 100)
             rules += fmt::format(" | mana avg {}% min {}% seconds under 20% {}", alive ? st.mana_sum / alive : 0u, st.mana_min, st.mana_lt20);
         TC_LOG_INFO("playerbot.v2", "[pull_stats] {} {} {} {} damage={} boss={} hits={} seconds={} casting={} moving={} held={} dead={} rules{}",
@@ -2479,6 +2495,11 @@ void SamplePull(Run& run)
         return;
     }
     std::uint32_t const now = GameTime::GetGameTimeMS();
+    // The threat of whoever the boss is on, the reference every raider's threat is measured against.
+    Creature* const boss = FindBoss(run);
+    bool const boss_threat = boss && boss->IsAlive() && boss->CanHaveThreatList();
+    Unit* const boss_victim = boss_threat ? boss->GetVictim() : nullptr;
+    float const victim_threat = boss_victim ? boss->GetThreatManager().GetThreat(boss_victim) : 0.f;
     for (Member const& m : run.members)
     {
         auto it = run.pull.find(m.id);
@@ -2491,6 +2512,21 @@ void SamplePull(Run& run)
         {
             ++st.dead;
             continue;
+        }
+        if (boss_threat)
+        {
+            float t = boss->GetThreatManager().GetThreat(p);
+            if (Pet* pet = p->GetPet())
+                t = std::max(t, boss->GetThreatManager().GetThreat(pet));
+            st.threat_last = t;
+            if (boss_victim == p)
+                ++st.victim_seconds;
+            else if (victim_threat > 0.f && t > 0.f)
+            {
+                std::uint32_t const pct = std::uint32_t(t * 100.f / victim_threat);
+                st.threat_peak_pct = std::max(st.threat_peak_pct, pct);
+                st.threat_capped += pct >= kThreatCappedPct ? 1u : 0u;
+            }
         }
         if (p->IsNonMeleeSpellCast(false))
             ++st.casting;
