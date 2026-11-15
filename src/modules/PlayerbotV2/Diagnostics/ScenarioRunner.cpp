@@ -1245,7 +1245,7 @@ bool InMagmaContact(Map* map, PhaseShift const& ps, float x, float y, float z)
     return (st & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && BotMovement::LiquidHurts(ld);
 }
 
-// The ground round a staged boss, for choosing its staging spot and posts: a grid of 5 y cells within 60 y of his spawn, north row first, one
+// The ground round a boss, for choosing its staging spot and posts: a grid of 5 y cells within 60 y of his spawn, north row first, one
 // line per row. Each cell is ' ' (no floor within 20 y of his height), or the floor's height against his in whole yards ('0'-'9' above or level,
 // 'a'-'j' 1-10 y below), upper case ('A'-'J' below, and '#' for level or above) when the floor sees him (eye height to eye height). B is his
 // spawn, S the staging spot. Written once per run (naxx_patchwerk 1114e-g: three landings out of his sight, and no map data off the PC).
@@ -1286,9 +1286,11 @@ bool PickArrival(Run& run, Player* leader)
     if (!map || !run.boss_spawn_known)
         return false;
     PhaseShift const& ps = leader->GetPhaseShift();
+    // Every boss run logs the ground round him, staged or not: where his room lets the raid stand is read from it (naxx_gluth 1115a: the
+    // tanks held him between two of the three Zombie Chow spawns and he ate every one).
+    LogSightGrid(run, map, ps);
     if (run.has_stage)
     {
-        LogSightGrid(run, map, ps);
         // The listed spot on the route: no search. Path-checked once, and the nearest hostile is logged so a landing in a pack shows.
         PathGenerator pg(leader);
         ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, run.stage_x, run.stage_y, run.stage_z, run.boss_x, run.boss_y, run.boss_z);
