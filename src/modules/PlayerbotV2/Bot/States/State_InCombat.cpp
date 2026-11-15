@@ -1431,6 +1431,11 @@ struct CombatIdleProbe
     {
         BotAI::CombatIdleState& st = ai.combat_idle();
         uint32 const now = s.published_at_ms();
+        if (s.is_alive() && s.is_in_raid() && ai.effective_role(s) == Role::Healer)
+        {
+            HealerIdle(st, now);
+            return;
+        }
         bool const dps = s.is_alive() && ai.effective_role(s) == Role::Dps;
         bool const melee = IsMeleeSpec(s.cls(), s.spec());
         // A swing or an Auto Shot is an action no intent shows, and "victim in reach" or "auto-repeat flag set" is not proof it lands: the 225
@@ -1480,6 +1485,43 @@ struct CombatIdleProbe
             s.name(), rule ? rule : derived, rule ? " / " : "", rule ? derived : "", idle_ms / 1000.f,
             v.IsEmpty() ? std::string("none") : (u ? std::to_string(u->entry) + "/" : std::string()) + std::to_string(v.GetCounter()),
             dist, u ? int(u->in_los) : 0, int(s.is_moving()), has_mana ? s.power_pct(0) : -1);
+    }
+
+    // [heal_idle_reason]: the same streak for a raid healer, counted only while somebody in its reach is hurt (under 80%). The Naxxramas runs of
+    // 2026-11-15 had 12 healers cast 3-15 heals a minute each (naxx_patchwerk 1115a: 3.3 a minute while Hateful Strike killed the soakers), and
+    // no line said what held them: the rule that fired, or what the snapshot shows (the hurt member out of sight or range, moving, out of mana).
+    void HealerIdle(BotAI::CombatIdleState& st, uint32 now) const
+    {
+        NearbyUnit const* hurt = s.lowest_hp_friend();
+        int const hurt_pct = hurt ? int((int64(hurt->hp) * 100) / std::max<int64>(1, hurt->max_hp)) : 100;
+        bool const acting = emit.combat_action_count() != actions_before || s.is_casting() || s.gcd_active();
+        if (acting || hurt_pct >= 80)
+        {
+            st.idle_since_ms = 0;
+            return;
+        }
+        if (st.idle_since_ms == 0)
+        {
+            st.idle_since_ms = now ? now : 1u;
+            return;
+        }
+        uint32 const idle_ms = now - st.idle_since_ms;
+        if (idle_ms < 3000u || (st.logged_ms != 0 && now - st.logged_ms < 10000u))
+            return;
+        st.logged_ms = now ? now : 1u;
+        float bx, by, bz; s.position(bx, by, bz);
+        float const dx = hurt->x - bx, dy = hurt->y - by, dz = hurt->z - bz;
+        float const dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        char const* derived =
+            !hurt->in_los              ? "hurt member out of LoS" :
+            dist > 40.f                ? "hurt member out of range" :
+            s.is_moving()              ? "moving" :
+            s.power_pct(0) < 10        ? "OOM" :
+                                         "no rule acted";
+        char const* rule = ai.rule_fire_seq() != rules_before ? ai.last_rule_fired() : nullptr;
+        TC_LOG_INFO("playerbot.v2", "[heal_idle_reason] {} not healing because {}{}{} ({:.1f}s) lowest={} {}% dist={:.1f} los={} moving={} mana={}",
+            s.name(), rule ? rule : derived, rule ? " / " : "", rule ? derived : "", idle_ms / 1000.f,
+            hurt->guid.GetCounter(), hurt_pct, dist, int(hurt->in_los), int(s.is_moving()), s.power_pct(0));
     }
 };
 
