@@ -146,6 +146,7 @@ struct CrowdControl { uint32_t enemy; CcKind kind; uint32_t skipIfAura; uint32_t
 // (tanks may still hold it, e.g. Golemagg's Core Ragers). Priority >= 2 feeds the group's synchronized kill focus.
 // who / gateEnemy / hpMax / hpMin make an entry conditional: it applies only to matching bots, and, when gateEnemy is not 0, only while a
 // living enemy of that entry is inside the health window (Onyxia's whelps outrank her for the melee in phase 2, not for the casters).
+// A gateEnemy equal to enemy reads the window on that one enemy's own health instead (a Zombie Chow at 5% after Decimate, not a fresh one).
 // The first matching entry per enemy wins, so list the specific ones first. Only unconditional entries feed the synchronized kill focus.
 struct Priority { uint32_t enemy; int value; Who who = Who::Anyone; uint32_t gateEnemy = 0; float hpMax = 100.0f; float hpMin = 0.0f; };
 

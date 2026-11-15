@@ -738,12 +738,12 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
       16028, "Patchwerk",              15 }, 20.f), 3285.0f, -3297.0f, 292.6f),
     { "naxx_grobbulus",  "Naxxramas: 40 level 60 raiders to Grobbulus (Mutating Injection carrier runs, poison clouds, Slime Spray cone)",
       15931, "Grobbulus",              20 },
-    // Gluth sees 49 y, and his room is about 120 y across: wherever the raid lands, he comes. It lands at its camp (RaidEncounterData_NAXX.cpp,
-    // 3294,-3141 in the room's sunken middle), where its healers stand for the whole fight: from the ring search's spot 57 y out the healers
-    // walked 62 y to the camp in the first 10 s while he was already on the raid, and 12 healers cast 17 heals in the first 23 s (1115d: the
-    // main tank died at 22 s, the raid at 149 s with Gluth at 100%). The main tank takes him from there to his spot 33 y north-east.
+    // Gluth sees 49 y (MoveInLineOfSight, classic_boss_gluth.cpp) from his spawn 3283.1,-3157.0 in the middle of his room. The raid lands
+    // just outside that, on the north wall by the way in (3262,-3108: 53 y from him), 19 y from its camp (RaidEncounterData_NAXX.cpp,
+    // 3280,-3115), so the main tank opens and the healers have a short walk. 0080 landed it on the old camp 3294,-3141, 19 y from him:
+    // he came at once and killed a priest 1 s in (1115e). From the ring search's spot 57 y out the healers walked 62 y (1115d).
     Staged(Sight({ "naxx_gluth",      "Naxxramas: 40 level 60 raiders to Gluth (Mortal Wound tank swap, Frenzy tranquilized, Zombie Chows)",
-      15932, "Gluth",                  20, 16360 }, 57.f), 3294.0f, -3141.0f, 296.8f),   // Zombie Chow; sees 49 y
+      15932, "Gluth",                  20, 16360 }, 57.f), 3262.0f, -3108.0f, 297.8f),   // Zombie Chow; sees 49 y
     // Thaddius sits immune to players until Stalagg and Feugen are dead (classic_boss_thaddius.cpp): the raid opens on Stalagg, as a raid
     // does (naxx-grep-1114a: the order onto Thaddius was refused at 110 s and the raid stood for 120 s). It comes in at the room's door
     // (Thaddius Door 3421.9,-3017.5,295.6): the ring search landed it on his own walkway, which the slime pit and a 15 y wall cut off from

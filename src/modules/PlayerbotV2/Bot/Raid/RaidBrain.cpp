@@ -4189,7 +4189,13 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
         {
             if (rule.enemy != enemy->GetEntry() || !Matches(rule.who, m, plan.mainTank))
                 continue;
-            if (rule.gateEnemy)
+            if (rule.gateEnemy == rule.enemy)
+            {
+                // Gated on itself: this one enemy's own health (Gluth's Zombie Chows once Decimate has left them at 5%, not a fresh one).
+                if (!InPhase(enemy, rule.hpMax, rule.hpMin))
+                    continue;
+            }
+            else if (rule.gateEnemy)
             {
                 bool gated = false;
                 for (Unit* gate : plan.enemies)

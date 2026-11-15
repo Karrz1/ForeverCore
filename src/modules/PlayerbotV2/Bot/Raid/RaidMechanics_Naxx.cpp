@@ -911,7 +911,127 @@ bool ThaddiusSideMove(Plan const& plan, Member const& self, RaidOrder& out)
     return SetMove(out, spot->x, spot->y, spot->z, "thaddius: own platform");
 }
 
+// ---------------------------------------------------------------------------
+// Gluth
+// ---------------------------------------------------------------------------
+// He eats every Zombie Chow within 15 y for 5% of his health (DoSearchZombieChow, classic_boss_gluth.cpp), and his own body is that wide:
+// he hits from 17.7 y (naxx_gluth 1115e: Mctankwb died at 3319,-3106 with him at 3311,-3122). A tank that leads him into a corner from in
+// front leaves him 17 y short of it, on the raid's side: in 1115e his tank stood on the north-east post and he stood 19 y from the camp,
+// ate the chows that came to the raid and killed it once his tank fell. So his tank drags him to the east wall, then steps back past him to
+// the camp side, inside his reach, where he does not follow: his body ends up 30-40 y from the camp, the tank between. One more tank stands
+// beside the holder for the Mortal Wound swap; the rest take the chows at two posts by the spawns, far from him, inside the healers' 40 y.
+constexpr uint32_t kGluth          = 15932;
+constexpr uint32_t kZombieChow     = 16360;
+constexpr float    kGluthCampX     = 3280.0f, kGluthCampY = -3115.0f;   // RaidEncounterData_NAXX.cpp: the ranged and healer rows
+constexpr float    kGluthDragX     = 3335.0f, kGluthDragY = -3133.0f;   // east wall, 55 y from the camp, 58-81 y from the chow spawns
+constexpr float    kGluthFloorZ    = 297.8f;
+constexpr float    kGluthArrived   = 20.0f;   // he stands this close to the drag spot: the tank steps back past him
+constexpr float    kGluthTankStep  = 10.0f;   // the holder stands this far from his centre toward the camp (his reach is 17.7)
+constexpr float    kGluthSwapSide  = 5.0f;    // the swap tank stands this far beside the holder's spot
+constexpr float    kGluthSpotTol   = 3.0f;
+constexpr float    kGluthChowTol   = 5.0f;
+struct GluthPost { float x, y; };
+constexpr GluthPost kGluthChowPosts[] = {
+    { 3285.0f, -3152.0f },   // south: 24 y from spawn 3267.9,-3172.1, 38 y from 3308.3,-3185.8, 37 y from the camp
+    { 3262.0f, -3140.0f },   // west: 11 y from spawn 3253.2,-3132.3, 31 y from the camp
+};
+
+Unit* FindGluth(Plan const& plan)
+{
+    for (Unit* enemy : plan.enemies)
+        if (enemy->GetEntry() == kGluth && enemy->IsAlive())
+            return enemy;
+    return nullptr;
+}
+
+// The tank holding him (nullptr while he is on nobody or on a non-tank: the pick-up is the tank brain's), the tank kept beside it for the
+// swap, and this tank's chow post (index into kGluthChowPosts, -1 for the holder and the swap tank).
+enum class GluthJob : uint8_t { None, Holder, Swap, Chows };
+GluthJob GluthJobOf(Plan const& plan, Unit* gluth, Player* bot, int& post)
+{
+    post = -1;
+    Unit* held = gluth->GetVictim();
+    Player* holder = held ? held->ToPlayer() : nullptr;
+    bool holderIsTank = false;
+    for (Member const& m : plan.members)
+        if (m.p == holder && m.tank)
+            holderIsTank = true;
+    if (!holderIsTank)
+        return GluthJob::None;
+    if (bot == holder)
+        return GluthJob::Holder;
+    int index = 0;   // plan.members is sorted by guid
+    for (Member const& m : plan.members)
+    {
+        if (!m.tank || m.p == holder || !m.p->IsAlive())
+            continue;
+        if (m.p == bot)
+        {
+            if (index == 0)
+                return GluthJob::Swap;
+            post = (index - 1) % int(std::size(kGluthChowPosts));
+            return GluthJob::Chows;
+        }
+        ++index;
+    }
+    return GluthJob::None;
+}
+
+bool GluthMoveTo(Player* bot, RaidOrder& out, float x, float y, float tol, char const* why)
+{
+    if (bot->GetExactDist2d(x, y) <= tol)
+    {
+        out.at_post = true;
+        return true;
+    }
+    float z = kGluthFloorZ;
+    if (!Usable(bot, x, y, kGluthFloorZ, z))
+        return false;
+    return SetMove(out, x, y, z, why);
+}
+
+bool GluthMove(Plan const& plan, Member const& self, RaidOrder& out)
+{
+    if (!self.bot || !self.tank)
+        return false;
+    Unit* gluth = FindGluth(plan);
+    if (!gluth)
+        return false;
+    int post = -1;
+    GluthJob const job = GluthJobOf(plan, gluth, self.p, post);
+    Player* bot = self.p;
+    float const gx = gluth->GetPositionX(), gy = gluth->GetPositionY();
+    if (job == GluthJob::Holder || job == GluthJob::Swap)
+    {
+        out.post_enemy = gluth->GetGUID();
+        if (job == GluthJob::Holder && Dist2D(gx, gy, kGluthDragX, kGluthDragY) > kGluthArrived)
+            return GluthMoveTo(bot, out, kGluthDragX, kGluthDragY, kGluthSpotTol, "gluth: drag to the east wall");
+        float const cx = kGluthCampX - gx, cy = kGluthCampY - gy;
+        float const len = std::max(0.1f, std::sqrt(cx * cx + cy * cy));
+        float const ux = cx / len, uy = cy / len;
+        float x = gx + ux * kGluthTankStep, y = gy + uy * kGluthTankStep;
+        if (job == GluthJob::Swap)
+        {
+            if (Dist2D(gx, gy, kGluthDragX, kGluthDragY) > kGluthArrived)
+                return false;   // still on the way: it follows and stays in taunt reach on its own
+            x -= uy * kGluthSwapSide;
+            y += ux * kGluthSwapSide;
+        }
+        return GluthMoveTo(bot, out, x, y, kGluthSpotTol, job == GluthJob::Holder ? "gluth: camp side of him" : "gluth: beside his tank");
+    }
+    if (job != GluthJob::Chows)
+        return false;
+    // A chow tank going for a loose chow runs to it (the tank brain's pick-up); one with a chow on it, or with nothing, holds its post.
+    if (Unit* victim = bot->GetVictim())
+        if (victim->GetEntry() == kZombieChow && victim->IsAlive() && victim->GetVictim() != bot)
+            return false;
+    GluthPost const& p = kGluthChowPosts[post];
+    return GluthMoveTo(bot, out, p.x, p.y, kGluthChowTol, "gluth: chow post");
+}
+
 } // namespace
+
+void NaxxGluthTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders);
 
 // After PublishTargets: in Thaddius' phase one a non-tank bot only attacks the add on its own platform (the other is 85 y away and a 194 y
 // walk round). The kill-together rule's spread still holds: an own add it forbids (more than 10% ahead of the other) leaves the bot with
@@ -937,6 +1057,26 @@ void NaxxPostTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders
             std::find(o.forbidden_targets.begin(), o.forbidden_targets.end(), own->GetGUID()) != o.forbidden_targets.end();
         o.fallback_target = ownForbidden ? ObjectGuid::Empty : own->GetGUID();
     }
+    NaxxGluthTargets(plan, orders);
+}
+
+// Gluth's chow tanks never attack him: their post is 35-55 y from him and the attack would walk them over (and bring their chows into his
+// reach).
+void NaxxGluthTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders)
+{
+    Unit* gluth = FindGluth(plan);
+    if (!gluth)
+        return;
+    for (Member const& m : plan.members)
+    {
+        int post = -1;
+        if (!m.bot || !m.tank || GluthJobOf(plan, gluth, m.p, post) != GluthJob::Chows)
+            continue;
+        auto it = orders.find(m.p->GetGUID().GetCounter());
+        if (it == orders.end() || it->second.cast_kind == RaidOrder::CastKind::Taunt)
+            continue;   // a swap taunt elected for this tank still goes
+        it->second.forbidden_targets.push_back(gluth->GetGUID());
+    }
 }
 
 void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump)
@@ -955,7 +1095,8 @@ void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, st
 
 bool NaxxMechanicsMove(Plan const& plan, Member const& self, uint32_t now, RaidOrder& out)
 {
-    return HeiganMove(plan, self, now, out) || SapphironMove(plan, self, now, out) || ThaddiusSideMove(plan, self, out);
+    return HeiganMove(plan, self, now, out) || SapphironMove(plan, self, now, out) || ThaddiusSideMove(plan, self, out) ||
+           GluthMove(plan, self, out);
 }
 
 void NaxxMechanicsElect(Election& e, uint32_t /*now*/)

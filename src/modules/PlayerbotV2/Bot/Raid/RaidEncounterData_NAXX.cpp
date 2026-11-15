@@ -187,20 +187,21 @@ namespace Playerbot::Raid {
         // Zombie Chows (16360) heal him when he eats them; Decimate leaves them at 5% for the AoE.
         r.tankSwap.push_back({ 15932, 25646, 5 });
         // Frenzy 28371: Tranquilizing Shot is the PvE coordinator's (PlanTranq, any aura the shot removes). Frenzy every 10 s: tranquilized (classic_boss_gluth.cpp:221-232)
-        // Zombie Chows heal him 5% each when he eats one within 15 yd (:290-312): they die before they reach him.
-        r.priority.push_back({ 16360, 5 });     // Zombie Chow
-        // Where: away from the chows' three spawns (ClassicGluthZombieSummonLoc, +-7 y: 3268,-3172 / 3253,-3132 / 3308,-3186, all on the room's
-        // west and south side). naxx_gluth 1115a/1115b: held at his spawn 3283,-3157, every chow appeared within his 15 y and he ate it (he went
-        // from 93% back to 99% every few seconds; 1115b ended with him at 100%). naxx-gluth-1115b [scenario_grid]: the room is level floor from
-        // x 3233 to 3338 and y -3107 to -3207 (a hollow a yard lower at 3293-3318,-3117..-3152, all in sight). Whichever tank holds him (the
-        // Mortal Wound swap hands him on) holds him in the north-east at 3318,-3118, 66-77 y from the spawns; the ranged and the healers
-        // stand at 3294,-3141, 33 y from him, so a chow sent at a raider stops well short of his 15 y and is picked up and killed there.
-        // No fixed row for the chow tanks: a fixed tank row gives every tank a slot, and in naxx_gluth 1115c the main tank walked to its
-        // slot by the spawns ("spline to 3264,-3159", moving 74 of 90 s) with him in tow, where he ate the chows again.
+        // Zombie Chows heal him 5% each when he eats one within 15 yd (:290-312). Each has 146,496 health (creaturestats, 1115e-b) against his
+        // 1,998,600: the raid does not burn them. The chow tanks hold them at their posts (RaidMechanics_Naxx.cpp, Gluth) until Decimate leaves
+        // every one at 5% and sends it walking to him; then they die first, before they reach him.
+        r.priority.push_back({ 16360, 5, Who::Anyone, 16360, 10.0f, 0.0f });   // Zombie Chow after Decimate
+        r.priority.push_back({ 16360, -1 });                                     // Zombie Chow: tanked, not killed
+        // Where: away from the chows' three spawns (ClassicGluthZombieSummonLoc, +-7 y: 3268,-3172 / 3253,-3132 / 3308,-3186, the room's west
+        // and south side). naxx-gluth-1115b [scenario_grid]: level floor from x 3233 to 3338 and y -3107 to -3207, the way in at the
+        // north-west (3253-3263,-3100). His body is 15 y wide and he hits from 17.7 y (1115e), so his tank does not lead him to a post:
+        // RaidMechanics_Naxx.cpp (Gluth) drags him to the east wall and puts his tank on the camp side of him, 30-40 y from the camp, and
+        // keeps the chow tanks at two posts by the spawns. naxx_gluth 1115e, with his tank on a north-east post 33 y from the camp: he stood
+        // 17 y short of it and 19 y from the camp, ate the chows the raid drew, and killed the camp once his tank fell (42 deaths, all his).
+        // The camp is on the north wall, 26 y from the way in, within 40 y of his tank and of both chow posts.
         constexpr float kGluthFloorZ = 297.8f;
-        r.stand.push_back({ 15932, Who::Tank, 3318.0f, -3118.0f, kGluthFloorZ, 5.0f, true, 0 });
-        r.stand.push_back({ 15932, Who::Ranged, 3294.0f, -3141.0f, kGluthFloorZ - 1.0f, 6.0f, false, 0 });
-        r.stand.push_back({ 15932, Who::Healer, 3294.0f, -3141.0f, kGluthFloorZ - 1.0f, 6.0f, false, 0 });
+        r.stand.push_back({ 15932, Who::Ranged, 3280.0f, -3115.0f, kGluthFloorZ, 6.0f, false, 0 });
+        r.stand.push_back({ 15932, Who::Healer, 3280.0f, -3115.0f, kGluthFloorZ, 6.0f, false, 0 });
 
         // ---------------------------------------------------------------------------------------------------------------
         // THADDIUS (15928): Polarity Shift gives Positive Charge 28059 / Negative Charge 28084 (naxx/classic_boss_thaddius.cpp).
