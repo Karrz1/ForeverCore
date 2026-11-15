@@ -1242,7 +1242,7 @@ bool InMagmaContact(Map* map, PhaseShift const& ps, float x, float y, float z)
 {
     LiquidData ld;
     ZLiquidStatus const st = map->GetLiquidStatus(ps, x, y, z, map_liquidHeaderTypeFlags::AllLiquids, &ld);
-    return (st & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && BotMovement::LiquidHurts(ld);
+    return (st & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && BotMovement::LiquidHurts(ld, st);
 }
 
 // The ground round a boss, for choosing its staging spot and posts: a grid of 5 y cells within 60 y of his spawn, north row first, one

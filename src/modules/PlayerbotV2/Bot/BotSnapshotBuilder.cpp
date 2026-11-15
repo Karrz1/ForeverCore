@@ -1987,7 +1987,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
                 {}, &ld)
             : ZLiquidStatus(0);
         const bool in_liquid = (liquid & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER)) != 0;
-        const bool hurts = liquid != LIQUID_MAP_NO_WATER && BotMovement::LiquidHurts(ld);
+        const bool hurts = BotMovement::LiquidHurts(ld, liquid);
         // Underwater (drowning) only when the head is submerged in a liquid
         // that does not hurt. A naked bot in lava also has feet wet, but
         // it's burning, not drowning.

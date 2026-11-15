@@ -982,7 +982,7 @@ static bool InMagma(Map* map, PhaseShift const& phase, float x, float y, float z
     ZLiquidStatus const st = map->GetLiquidStatus(phase, x, y, z, {}, &ld);
     if (!(st & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER | LIQUID_MAP_WATER_WALK)))
         return false;
-    return BotMovement::LiquidHurts(ld);
+    return BotMovement::LiquidHurts(ld, st);
 }
 
 // A complete navmesh path from `from` (standing where it is) to (x, y, z). A map without a mesh gives no verdict: reachable.

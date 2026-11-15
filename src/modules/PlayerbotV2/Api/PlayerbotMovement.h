@@ -31,6 +31,7 @@ class Player;
 class Unit;
 class PathGenerator;
 struct LiquidData;   // declared in MapDefines.h (included transitively in the .cpp)
+enum ZLiquidStatus : uint32;   // MapDefines.h
 // WorldLocation is declared in Position.h (included above) as `class WorldLocation : public Position`.
 
 namespace Playerbot::BotMovement {
@@ -189,16 +190,21 @@ enum class LiquidVerdict : uint8
     Dry,       // no liquid at the point — plain walkable ground
     Wadeable,  // liquid present but the bot's head stays above it (wade / water-walk)
     Swim,      // bot would be fully submerged for its collision height (drowns)
-    Hazard,    // a liquid that hurts on contact (LiquidHurts)
+    Hazard,    // a liquid that hurts there (LiquidHurts)
 };
 
-// True when the liquid in `ld` hurts a player in contact with it, the way the core applies liquids: magma burns (the lava damage of
-// Player::HandleDrowning, or the liquid's own spell), any other liquid only through a harmful spell on its LiquidType row
-// (Unit::UpdateLiquidStatusOnPositionChange casts it on contact). Slime has no damage of its own: the core's slime damage is switched
-// off (Player.cpp, UNDERWATER_INSLIME), so a slime without a spell is a floor. naxx_thaddius 1114g: the slime-typed liquid on the floor
-// of Thaddius' room read as lava, 901 moves there were refused as "Magma", the tanks stood still while Stalagg and Feugen killed the
-// casters, and nobody standing in it ever took a point of damage from it.
-bool LiquidHurts(LiquidData const& ld);
+// The liquid in `ld` can hurt a player, the way the core applies liquids: magma burns (the lava damage of Player::HandleDrowning, or the
+// liquid's own spell), any other liquid only through a harmful spell on its LiquidType row (Unit::UpdateLiquidStatusOnPositionChange).
+// Slime has no damage of its own: the core's slime damage is switched off (Player.cpp, UNDERWATER_INSLIME).
+bool LiquidCanHurt(LiquidData const& ld);
+
+// The liquid in `ld` hurts a player whose liquid status is `st` (from the same Map::GetLiquidStatus probe). Magma: whenever it is there
+// at all, as before (the callers that care test contact themselves). A liquid's spell: only once the player is in it, IN_WATER or
+// UNDER_WATER, which is when Unit::UpdateLiquidStatusOnPositionChange casts it (IsInWater); on the surface it does nothing.
+// naxx_thaddius 1114g / 1115a: Thaddius' room has a sheet of Naxxramas - Slime (liquid type 21, spell 28801) lying on its floor at
+// z 292.8, so a bot on the floor stands on its surface (WATER_WALK). 1262 moves to the floor were refused as "Magma", the tanks
+// could not reach Stalagg and Feugen, and in 1500 s nobody standing on that floor took any damage from it.
+bool LiquidHurts(LiquidData const& ld, ZLiquidStatus st);
 
 // Classify the liquid at destination point (x,y,z) for `p`. See LiquidVerdict.
 // Optionally returns the raw LiquidData (level / depth_level / type_flags /

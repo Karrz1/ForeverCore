@@ -495,7 +495,7 @@ bool SafeNearTeleport(Player* p, float x, float y, float z, float o, bool navmes
             map_liquidHeaderTypeFlags::AllLiquids, &ld);
         // The vmap filters on the model's raw liquid type, before the area table's override (the Majordomo dais is lava only after it),
         // so ask for all liquids and test the flags that come back.
-        if (st != LIQUID_MAP_NO_WATER && !LiquidHurts(ld))
+        if (st != LIQUID_MAP_NO_WATER && !LiquidCanHurt(ld))
             return false;
         // A point ON the surface reads WATER_WALK (delta > -0.1) and one just above it ABOVE_WATER, and the bot falls in at
         // once: the Molten Core entrance snap lands exactly on the lava surface (z 168.5, ground 165.2), so only IN / UNDER
@@ -702,7 +702,7 @@ bool SwimLevel(Player* p, float x, float y, float zHint, float& swimZ)
     if (st == LIQUID_MAP_NO_WATER || st == LIQUID_MAP_ABOVE_WATER)
         return false;
     // A liquid that hurts is not swum: the flee and refuse rules deal with it.
-    if (LiquidHurts(ld))
+    if (LiquidCanHurt(ld))
         return false;
     if (!Swim::IsDeep(ld.level, floor_z, p->GetCollisionHeight()) || Swim::AskedFromAbove(zHint, ld.level))
         return false;
@@ -827,15 +827,30 @@ void PostTeleportSnap(Player* p)
 
 // ---- LiquidHurts --------------------------------------------------------------
 
-bool LiquidHurts(LiquidData const& ld)
+namespace
 {
-    if (ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Magma))
-        return true;
+bool LiquidSpellHurts(LiquidData const& ld)
+{
     LiquidTypeEntry const* type = sLiquidTypeStore.LookupEntry(ld.entry);
     if (!type || !type->SpellID)
         return false;
     SpellInfo const* spell = sSpellMgr->GetSpellInfo(type->SpellID, DIFFICULTY_NONE);
     return spell && !spell->IsPositive();
+}
+}
+
+bool LiquidCanHurt(LiquidData const& ld)
+{
+    return ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Magma) || LiquidSpellHurts(ld);
+}
+
+bool LiquidHurts(LiquidData const& ld, ZLiquidStatus st)
+{
+    if (st == LIQUID_MAP_NO_WATER)
+        return false;
+    if (ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Magma))
+        return true;
+    return (st & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER)) != 0 && LiquidSpellHurts(ld);
 }
 
 // ---- ClassifyDestinationLiquid ----------------------------------------------
@@ -870,7 +885,7 @@ LiquidVerdict ClassifyDestinationLiquid(Player* p, float x, float y, float z,
         return LiquidVerdict::Dry;
 
     // A liquid that hurts is refused whatever its depth.
-    if (LiquidHurts(liq))
+    if (LiquidHurts(liq, zs))
         return LiquidVerdict::Hazard;
 
     // Fully submerged for this bot's collision height => must swim: a

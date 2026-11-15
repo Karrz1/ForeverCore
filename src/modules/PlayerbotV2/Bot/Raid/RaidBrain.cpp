@@ -1729,7 +1729,7 @@ bool MagmaAt(Map* map, PhaseShift const& phase, float x, float y, float z, float
     ZLiquidStatus const st = map->GetLiquidStatus(phase, x, y, z, map_liquidHeaderTypeFlags::AllLiquids, &ld);
     if (!(st & MAP_LIQUID_STATUS_IN_CONTACT))
         return false;
-    if (!BotMovement::LiquidHurts(ld))
+    if (!BotMovement::LiquidHurts(ld, st))
         return false;
     surfaceZ = ld.level;
     return true;
