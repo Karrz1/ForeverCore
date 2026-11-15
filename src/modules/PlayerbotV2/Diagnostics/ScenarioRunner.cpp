@@ -139,6 +139,11 @@ constexpr std::uint32_t kPatrolWaitMs = 300u * 1000u;    // the longest it waits
 constexpr float kPatrolOrderYards = 60.f;                // a patrolling boss further than this from the main tank is waited for
 constexpr float kPatrolHomeYards = 8.f;                  // ... and one nearer is still waited for until he is home,
 constexpr float kPatrolNearHomeYards = 20.f;             // ... or this close to it and walking toward it
+// ... or walking toward it and due there no later than kPatrolMeetLeadS after the main tank, on the tank's measured route from where it
+// waits (naxx_patchwerk 1115h: ordered 18 y from home, the tanks 57 y off on the lower floor, he was home and walking away again when the
+// main tank reached him, 90 y west of his post). The tank must still be within kPatrolEtaOrderYards of him for the order to be taken.
+constexpr float kPatrolMeetLeadS = 1.5f;
+constexpr float kPatrolEtaOrderYards = 90.f;
 
 namespace Owned = ::Playerbot::V2::Gear::Owned;
 constexpr std::size_t kStageBatch = 4;                           // squads over five: members set up per step, so the world thread keeps ticking
@@ -216,6 +221,8 @@ struct Run
     float patrol_home_dist = -1.f;        // the patrolling boss's distance from his home (spawn) at the last sample; -1 = not seen yet
     std::uint32_t patrol_home_ms = 0;     // run_ms of that sample (one a second: a tick's step is too small to compare)
     bool patrol_homeward = false;         // the last two samples had him nearer home
+    float patrol_speed = 0.f;             // his measured walking speed toward home (yards a second; 0 = not measured yet)
+    float patrol_tank_route = -1.f;       // the main tank's route length from where it waits to the boss's spawn; -1 = not measured yet
     bool kits_stocked = false;            // the role kits (flask, elixirs, food) went into the bags at 'in place' (StockRaidKits)
     bool trash_cleared = false;
     // The boss pull's statistics ([pull_stats]): started at the boss's first combat, reported 90 s later and when the run ends.
@@ -4165,14 +4172,39 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                     if (run.patrol_home_dist < 0.f || run.run_ms - run.patrol_home_ms >= 1000u)
                     {
                         run.patrol_homeward = run.patrol_home_dist >= 0.f && home_d < run.patrol_home_dist - 0.5f;
+                        if (run.patrol_homeward && run.run_ms > run.patrol_home_ms)
+                            run.patrol_speed = (run.patrol_home_dist - home_d) * 1000.f / float(run.run_ms - run.patrol_home_ms);
                         run.patrol_home_dist = home_d;
                         run.patrol_home_ms = run.run_ms;
+                    }
+                    if (tank && run.patrol_tank_route < 0.f)
+                    {
+                        // The tanks are held where they wait, so the route is measured once; a route the navmesh cannot finish counts
+                        // as 1.5 x the straight line.
+                        PathGenerator pg(tank);
+                        ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(),
+                                                                           run.boss_x, run.boss_y, run.boss_z);
+                        float const straight = std::hypot(run.boss_x - tank->GetPositionX(), run.boss_y - tank->GetPositionY());
+                        run.patrol_tank_route = (pg.GetPathType() & (PATHFIND_NOPATH | PATHFIND_FARFROMPOLY | PATHFIND_INCOMPLETE))
+                            ? straight * 1.5f : std::max(pg.GetPathLength(), straight);
                     }
                     // Near home, not only toward it: naxx_patchwerk 1115f was ordered while he walked home 50 y west of his spawn, the
                     // tanks met him there (3256,-3223), off their posts and out of the healers' reach, and Hateful Strike killed 31.
                     walking_home = home_d <= kPatrolHomeYards || (home_d <= kPatrolNearHomeYards && run.patrol_homeward);
+                    // Due home as the main tank gets there: the order goes out early enough for the tank's run (1115h, above).
+                    float const tank_speed = tank ? tank->GetSpeed(MOVE_RUN) : 0.f;
+                    if (!walking_home && run.patrol_homeward && run.patrol_speed > 0.f && tank_speed > 0.f && run.patrol_tank_route >= 0.f
+                        && tank->GetDistance(boss) <= kPatrolEtaOrderYards
+                        && home_d / run.patrol_speed <= run.patrol_tank_route / tank_speed + kPatrolMeetLeadS)
+                    {
+                        walking_home = true;
+                        TC_LOG_INFO("playerbot.v2", "[scenario] {} {} is due home in {:.1f} s ({:.0f} y at {:.1f} y/s), the main tank in {:.1f} s ({:.0f} y): "
+                                    "ordering now", run.def->name, boss->GetName(), home_d / run.patrol_speed, home_d, run.patrol_speed,
+                                    run.patrol_tank_route / tank_speed, run.patrol_tank_route);
+                    }
                 }
-                if (tank && patrols && (tank->GetDistance(boss) > kPatrolOrderYards || !walking_home))
+                float const order_reach = walking_home && run.patrol_home_dist > kPatrolNearHomeYards ? kPatrolEtaOrderYards : kPatrolOrderYards;
+                if (tank && patrols && (tank->GetDistance(boss) > order_reach || !walking_home))
                 {
                     if (!run.patrol_wait_ms)
                         run.patrol_wait_ms = run.run_ms ? run.run_ms : 1u;
