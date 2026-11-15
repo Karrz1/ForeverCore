@@ -121,6 +121,7 @@ constexpr RaidConsumable kTankKit[] = {
     { 13458, false, 5, false, true },   // Greater Nature Protection Potion: AQ40 Huhuran's Poison Bolt Volley
     { 13456, false, 5, false, true },   // Greater Frost Protection Potion: Naxxramas Sapphiron
     { 19183, false, 5, false, true },   // Hourglass Sand: the cure for Chromaggus' Brood Affliction: Bronze (RaidRules::cureItem)
+    { 13455, false, 5, false, true },   // Greater Stoneshield Potion (+2000 armour, 2 min): the tanks' potion on Patchwerk (RaidRules::resistPotion)
 };
 constexpr RaidConsumable kMeleeKit[] = {
     { 13452, false, 5 }, { 9206, false, 5 }, { 20452, true, 20 },

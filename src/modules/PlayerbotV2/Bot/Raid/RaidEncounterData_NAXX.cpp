@@ -144,6 +144,9 @@ namespace Playerbot::Raid {
         // PATCHWERK (16028): Hateful Strike hits the highest-health player in melee among his top four on threat, never the main
         // tank while others are in melee (naxx/classic_boss_patchwerk.cpp DoHatefulStrike). Three off tanks stay on him in melee.
         r.meleeSoak.push_back({ 16028, Who::OffTank, 3 });
+        // The soakers' armour is what Hateful Strike meets: a Greater Stoneshield Potion (+2000) on every tank when he is engaged, as a vanilla
+        // raid's tanks drank for him. naxx_patchwerk 1115b: T3 warriors at 9621 armour and 10759 health took 9-15k a strike and died to one.
+        r.resistPotion.push_back({ 16028, 13455, Who::Tank });
         // Hateful Strike is 22,100-29,900 before armour (vanilla data) on anybody within his melee reach, and his reach is long: the ranged
         // and the healers keep 18 yards off (naxx_patchwerk 2026-10-20: healers and mages 10-13 y from him took 14-28k each; 29 dead in 47 s).
         r.avoidEnemy.push_back({ 16028, 18.0f, Who::Ranged });
