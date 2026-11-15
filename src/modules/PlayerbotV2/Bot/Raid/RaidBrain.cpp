@@ -3659,6 +3659,23 @@ void ElectBerserkerDance(Election& e)
 
 // Melee soak (Patchwerk's Hateful Strike): the matching bots keep attacking the enemy in melee so they stay among its top
 // threat and soak the strike instead of a DPS. Never the main tank, at most rule.count bots, lowest guid first.
+constexpr float kSoakReach = 20.0f;         // a soaker this close to the enemy is in his melee (Patchwerk's reach is long)
+constexpr float kSoakThreatShare = 0.9f;    // a melee DPS stays under this share of the lowest soaker's threat
+
+// The bots that soak for <rule>: never the main tank, at most rule.count, lowest guid first (plan.members is sorted by guid).
+std::vector<Player*> MeleeSoakers(Plan const& plan, MeleeSoak const& rule)
+{
+    std::vector<Player*> out;
+    for (Member const& m : plan.members)
+    {
+        if (out.size() >= rule.count)
+            break;
+        if (m.bot && m.p != plan.mainTank && m.p->IsAlive() && Matches(rule.who, m, plan.mainTank))
+            out.push_back(m.p);
+    }
+    return out;
+}
+
 void PublishMeleeSoak(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders)
 {
     for (MeleeSoak const& rule : plan.rules->meleeSoak)
@@ -3666,20 +3683,45 @@ void PublishMeleeSoak(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         {
             if (enemy->GetEntry() != rule.enemy)
                 continue;
-            uint32_t taken = 0;
-            for (Member const& m : plan.members)
-            {
-                if (taken >= rule.count)
-                    break;
-                if (!m.bot || m.p == plan.mainTank || !Matches(rule.who, m, plan.mainTank))
-                    continue;
-                auto it = orders.find(m.p->GetGUID().GetCounter());
-                if (it == orders.end())
-                    continue;
-                it->second.attack_target = enemy->GetGUID();
-                ++taken;
-            }
+            for (Player* p : MeleeSoakers(plan, rule))
+                if (auto it = orders.find(p->GetGUID().GetCounter()); it != orders.end())
+                    it->second.attack_target = enemy->GetGUID();
         }
+}
+
+// A melee DPS on a melee-soak enemy stays under the threat of the soakers in his reach, with no timed release: the strike takes the
+// highest-health player in melee among his top four on threat (classic_boss_patchwerk.cpp DoHatefulStrike), and a melee DPS held at the
+// main tank's threat was one of those four. naxx_patchwerk 1115f/1115g: 31 and 36 of the raid died to Hateful Strike, rogues and warriors
+// among the first, at 12-20k a strike. True when this bot is held (out.hold_target set).
+bool HoldUnderSoakers(Plan const& plan, Member const& m, Unit* target, RaidOrder& o)
+{
+    if (!plan.rules || m.ranged || m.healer || m.tank)
+        return false;
+    for (MeleeSoak const& rule : plan.rules->meleeSoak)
+    {
+        if (target->GetEntry() != rule.enemy)
+            continue;
+        std::vector<Player*> const soakers = MeleeSoakers(plan, rule);
+        if (std::find(soakers.begin(), soakers.end(), m.p) != soakers.end())
+            return false;
+        float lowest = -1.0f;
+        for (Player* s : soakers)
+            if (s->IsWithinDistInMap(target, kSoakReach))
+            {
+                float const t = target->GetThreatManager().GetThreat(s);
+                lowest = lowest < 0.0f ? t : std::min(lowest, t);
+            }
+        if (lowest < 0.0f)
+            return false;   // no soaker in his reach: nothing to stay under (the strike goes to whoever is there either way)
+        float myThreat = target->GetThreatManager().GetThreat(m.p);
+        if (Pet* pet = m.p->GetPet())
+            myThreat = std::max(myThreat, target->GetThreatManager().GetThreat(pet));
+        if (myThreat < lowest * kSoakThreatShare)
+            return false;
+        o.hold_target = target->GetGUID();
+        return true;
+    }
+    return false;
 }
 
 bool MechanicsMove(Plan const& plan, Member const& self, uint32_t now, RaidOrder& out)
@@ -4417,6 +4459,8 @@ void PublishThreatHolds(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& ord
                 if (!vm || !vm->tank)
                     continue;   // it is already hitting a non-tank: everybody fights
             }
+        if (HoldUnderSoakers(plan, m, target, o))
+            continue;
         float tankThreat = 0.0f;
         bool tankNear = false;
         for (Member const& t : plan.members)

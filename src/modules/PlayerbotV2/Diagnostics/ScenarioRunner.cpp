@@ -1339,8 +1339,31 @@ bool PickArrival(Run& run, Player* leader)
                 tz = add->GetPositionZ();
             }
             else
-                TC_LOG_INFO("playerbot.v2", "[scenario] {} no living creature {} within 200 y of the boss's spawn: the staging route is checked to the boss",
-                            run.def->name, run.def->start_add);
+            {
+                // Not up yet (a summon the boss's script brings in later) or not found from him: the add's own spawn row nearest his spawn
+                // is where it stands (naxx_thaddius 1115f: no Stalagg found, the route checked to Thaddius again; Stalagg and Feugen have
+                // world DB rows on their platforms, which the instance script despawns as duplicates of its summons).
+                float best = 200.f;
+                bool found = false;
+                for (auto const& kv : sObjectMgr->GetAllCreatureData())
+                {
+                    CreatureData const& cd = kv.second;
+                    if (cd.id != run.def->start_add || cd.mapId != run.def->map)
+                        continue;
+                    float const d = std::hypot(cd.spawnPoint.GetPositionX() - run.boss_x, cd.spawnPoint.GetPositionY() - run.boss_y);
+                    if (d < best)
+                    {
+                        best = d;
+                        tx = cd.spawnPoint.GetPositionX();
+                        ty = cd.spawnPoint.GetPositionY();
+                        tz = cd.spawnPoint.GetPositionZ();
+                        found = true;
+                    }
+                }
+                TC_LOG_INFO("playerbot.v2", "[scenario] {} creature {} not in the world near the boss ({}): the staging route is checked to {}",
+                            run.def->name, run.def->start_add, boss ? "boss found" : "boss not found",
+                            found ? fmt::format("its spawn row at {:.1f},{:.1f},{:.1f}", tx, ty, tz) : std::string("the boss (no spawn row either)"));
+            }
         }
         PathGenerator pg(leader);
         ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, run.stage_x, run.stage_y, run.stage_z, tx, ty, tz);
@@ -4165,7 +4188,8 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                             TC_LOG_INFO("playerbot.v2", "[scenario] {} the attack waits for {}'s patrol: {:.0f} y from the main tank at {:.1f},{:.1f},{:.1f}, "
                                         "{:.0f} y from his home, {}, {} s waited",
                                         run.def->name, boss->GetName(), tank->GetDistance(boss), boss->GetPositionX(), boss->GetPositionY(),
-                                        boss->GetPositionZ(), run.patrol_home_dist, walking_home ? "walking home" : "walking away",
+                                        boss->GetPositionZ(), run.patrol_home_dist,
+                                        run.patrol_home_dist <= kPatrolHomeYards ? "home" : run.patrol_homeward ? "walking home" : "walking away",
                                         (run.run_ms - run.patrol_wait_ms) / 1000u);
                         }
                         attack_due = false;
