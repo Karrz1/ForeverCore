@@ -157,13 +157,18 @@ namespace Playerbot::Raid {
         // out of sight too. naxx_patchwerk 1114f and 1114g fought from that lower floor: 89 heals and shots failed for line of sight, the
         // main tank went up into the hall alone and the healers followed it into his reach. His walk comes back east along y -3230 to his
         // spawn, and he is met close to it (naxx_patchwerk 1115a: engaged at 3296,-3236 and fought at 3290-3311,-3232..-3249). The main
-        // tank holds him by his spawn at 3305,-3232, and the ranged and the healers stand west of him in the hall, 33 y from the tank
-        // (past Hateful Strike's 18 y rows above, inside 40 y of heals), the ranged on the south half, the healers on the north half.
-        // 1115a had them at the hall's east end, 8-12 y from his spawn: the healers walked into his reach and Hateful Strike killed them.
+        // tank holds him by his spawn at 3305,-3232, and the ranged stand west of him in the hall, 33 y from the tank (past Hateful Strike's
+        // 18 y rows above, inside 40 y of heals) on the south half.
+        // The healers stand at the hall's east end in its two corners, 3326,-3223 and 3326,-3241: 20 y from his spawn and 23-26 y from him
+        // where the main tank holds him (west of its post, he comes from the west), and off his walk, so they wait there before the pull
+        // (NaxxPrePullPatchwerk) instead of walking 75 y from the lower floor after it (naxx_patchwerk 1115i: 29 of 61 s walking, no heal
+        // for 18 s, every tank dead). 1115a had them at that end 8-12 y from his spawn: they walked into his reach and Hateful Strike
+        // killed them; the corners keep the 18 y.
         constexpr float kPatchHallZ = 294.1f;
         r.stand.push_back({ 16028, Who::MainTank, 3305.0f, -3232.0f, kPatchHallZ, 5.0f, true, 0 });
         r.stand.push_back({ 16028, Who::Ranged, 3272.0f, -3240.0f, kPatchHallZ, 5.0f, false, 0 });
-        r.stand.push_back({ 16028, Who::Healer, 3272.0f, -3224.0f, kPatchHallZ, 5.0f, false, 0 });
+        r.stand.push_back({ 16028, Who::Healer, 3326.0f, -3223.0f, kPatchHallZ, 4.0f, false, 0, 100.0f, 0.0f, 1 });
+        r.stand.push_back({ 16028, Who::Healer, 3326.0f, -3241.0f, kPatchHallZ, 4.0f, false, 0, 100.0f, 0.0f, 2 });
 
         // ---------------------------------------------------------------------------------------------------------------
         // GROBBULUS (15931): Mutating Injection 28169 explodes into a poison cloud (creature 16363, triggers 28241 every

@@ -38,6 +38,7 @@
 #include <list>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Playerbot::Raid::detail {
 
@@ -1166,8 +1167,66 @@ void NaxxGluthTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
     }
 }
 
+// Patchwerk
+// ----------------------------------------------------------------------------------------------------------------------------------
+// The healers wait at their posts at the east end of his hall before he is pulled (RaidEncounterData_NAXX.cpp: 3326,-3223 and
+// 3326,-3241, 20 y from his spawn, east of it, where his walk never goes). From the room's lower floor where the raid waits they had a
+// 75 y walk after the pull: naxx_patchwerk 1115i fought him at his spawn, each soaker took one Hateful Strike (7k of 10.7k) in the first
+// 3 s, and the healers spent 29 of 61 s walking, cast nothing for 18 s and every tank died before the first heal landed.
+// They go only while he is far down his walk (kPatchFarYards from his spawn: 18 s or more at his pace, their walk takes about 8 s), and
+// once sent they stay sent for the instance, so the post is held as he walks back. In combat the fight's stand rows take over.
+constexpr uint32_t kPatchwerk      = 16028;
+constexpr float    kPatchSpawnX    = 3308.5f, kPatchSpawnY = -3232.1f;
+constexpr float    kPatchFarYards  = 90.0f;
+constexpr float    kPatchNearRaid  = 150.0f;
+constexpr float    kPatchHallZ     = 294.1f;
+struct PatchPost { float x, y; };
+constexpr PatchPost kPatchHealerPosts[] = { { 3326.0f, -3223.0f }, { 3326.0f, -3241.0f } };   // share 1 (even), share 2 (odd)
+std::unordered_set<uint32_t> g_patchPrePull;   // instances whose healers were sent
+
+void NaxxPrePullPatchwerk(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump)
+{
+    Player* first = plan.members.front().p;
+    if (first->GetExactDist2d(kPatchSpawnX, kPatchSpawnY) > kPatchNearRaid)
+        return;
+    Creature* patch = first->FindNearestCreature(kPatchwerk, 300.0f, true);
+    if (!patch || patch->IsInCombat())
+        return;
+    uint32_t const instance = first->GetInstanceId();
+    float const away = patch->GetExactDist2d(kPatchSpawnX, kPatchSpawnY);
+    if (!g_patchPrePull.count(instance))
+    {
+        if (away < kPatchFarYards)
+            return;
+        g_patchPrePull.insert(instance);
+        TC_LOG_INFO("playerbot.v2.raid", "[raid_patchwerk] he is {:.0f} y down his walk (at {:.1f},{:.1f}): the healers go to their posts at the hall's east end",
+                    away, patch->GetPositionX(), patch->GetPositionY());
+    }
+    uint32_t index = 0, sent = 0;
+    for (Member const& m : plan.members)
+    {
+        if (!m.healer)
+            continue;
+        PatchPost const& post = kPatchHealerPosts[index++ & 1u];
+        if (!m.bot)
+            continue;
+        float z = kPatchHallZ;
+        if (!Usable(m.p, post.x, post.y, kPatchHallZ, z))
+            z = kPatchHallZ;
+        RaidOrder& o = orders[m.p->GetGUID().GetCounter()];
+        o.active = true;
+        o.prepull = true;
+        SetMove(o, post.x, post.y, z, "patchwerk: healer post");
+        ++sent;
+    }
+    dump << "  Patchwerk: " << sent << " healers to the east end, he is " << int(away) << " y from his spawn\n";
+}
+
 void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump)
 {
+    NaxxPrePullPatchwerk(plan, orders, dump);
+    if (g_patchPrePull.size() > 64)
+        g_patchPrePull.clear();
     NaxxPrePullGothik(plan, orders, dump);
     NaxxPrePullThaddius(plan, orders, dump);
     if (g_thadSpot.size() > 512)
