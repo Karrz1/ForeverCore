@@ -732,8 +732,8 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
     // which the clearing left; it joined the fight on his patrol and Bile Vomit killed 21 (naxx_patchwerk 1114c). Cleared like trash.
     // His walk runs through his room on the raised floor (z 294.1), and no ring spot both sees him and keeps off it: the raid landed out
     // of his sight twice (1114e, 1114f: 17 spots near the walk, 43 out of sight, 158 without floor) and the healers' heals failed for line
-    // of sight while the tanks died at the edge of the walk. It lands on the room's lower floor south of the walk (z 292.6, where he
-    // walked after the raiders in 1114e), and the tanks hold him there (RaidEncounterData_NAXX.cpp).
+    // of sight while the tanks died at the edge of the walk. It waits on the room's lower floor south of the walk (z 292.6, out of his
+    // sight while he walks), and once he is pulled it goes up into the hall, where he is fought (RaidEncounterData_NAXX.cpp).
     Staged(ClearsFormation({ "naxx_patchwerk",  "Naxxramas: 40 level 60 raiders to Patchwerk (Hateful Strike soaked by three off tanks)",
       16028, "Patchwerk",              15 }, 20.f), 3285.0f, -3297.0f, 292.6f),
     { "naxx_grobbulus",  "Naxxramas: 40 level 60 raiders to Grobbulus (Mutating Injection carrier runs, poison clouds, Slime Spray cone)",

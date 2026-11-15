@@ -148,15 +148,18 @@ namespace Playerbot::Raid {
         // and the healers keep 18 yards off (naxx_patchwerk 2026-10-20: healers and mages 10-13 y from him took 14-28k each; 29 dead in 47 s).
         r.avoidEnemy.push_back({ 16028, 18.0f, Who::Ranged });
         r.avoidEnemy.push_back({ 16028, 18.0f, Who::Healer });
-        // Where he is fought: on his room's lower floor south of his walk (z 292.6), not on the walk's edge. naxx_patchwerk 1114e and 1114f:
-        // the tanks met him at 3288-3310,-3234..-3250 on the raised floor (z 294.1), and from the lower floor 89 heals and shots in 1114f
-        // failed for line of sight while he killed the tanks in 25 s. In 1114e he walked down to 3264-3290,-3262..-3292 after the raiders
-        // and hit them there, so the floor is his to walk. The main tank holds him at 3285,-3275; the ranged and the healers stand 22-24 y
-        // south of it, past Hateful Strike's reach (the 18 y rows above), where the scenario lands the raid (ScenarioDefs.h Staged).
-        constexpr float kPatchFloorZ = 292.6f;
-        r.stand.push_back({ 16028, Who::MainTank, 3285.0f, -3275.0f, kPatchFloorZ, 5.0f, true, 0 });
-        r.stand.push_back({ 16028, Who::Ranged, 3292.0f, -3298.0f, kPatchFloorZ, 5.0f, false, 0 });
-        r.stand.push_back({ 16028, Who::Healer, 3278.0f, -3298.0f, kPatchFloorZ, 5.0f, false, 0 });
+        // Where he is fought: in his hall, the floor he walks (z 294.1, y -3217..-3247 from x 3248 to 3333, his spawn 3308.5,-3232.1),
+        // where everybody sees everybody. naxx-patch-grid (2026-11-15, [scenario_grid] round his spawn): the whole hall is level with him
+        // and in his sight; the floor south of it (y -3257..-3292) lies 2 y lower and out of his sight, and the one north 4 y higher and
+        // out of sight too. naxx_patchwerk 1114f and 1114g fought from that lower floor: 89 heals and shots failed for line of sight, the
+        // main tank went up into the hall alone and the healers followed it into his reach. His walk comes back east along y -3230 to his
+        // spawn: the main tank holds him at 3285,-3232 on it, and the ranged and the healers stand at the hall's east end,
+        // 31 y from the tank (past Hateful Strike's 18 y rows above, inside 40 y of heals), the ranged on the south half, the healers
+        // on the north half.
+        constexpr float kPatchHallZ = 294.1f;
+        r.stand.push_back({ 16028, Who::MainTank, 3285.0f, -3232.0f, kPatchHallZ, 5.0f, true, 0 });
+        r.stand.push_back({ 16028, Who::Ranged, 3315.0f, -3240.0f, kPatchHallZ, 5.0f, false, 0 });
+        r.stand.push_back({ 16028, Who::Healer, 3315.0f, -3224.0f, kPatchHallZ, 5.0f, false, 0 });
 
         // ---------------------------------------------------------------------------------------------------------------
         // GROBBULUS (15931): Mutating Injection 28169 explodes into a poison cloud (creature 16363, triggers 28241 every
