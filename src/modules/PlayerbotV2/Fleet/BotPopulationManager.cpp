@@ -2931,6 +2931,10 @@ void BotPopulationManager::CompanionGroupHygiene(uint32 now_ms)
         Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(id));
         if (!p || !p->IsInWorld() || p->InBattleground() || p->InArena())
             return;
+        // A soak anchor (Playerbot.World.SoakAnchors, overnight perf soaks with nobody on) stands in for a player and stays logged in. Two
+        // anchors that were the owner's companions were let go two minutes into the 11-15 D2 soak ("[world] anchors=2" of 4).
+        if (IsSoakAnchor(p->GetName()))
+            return;
         // A self-bot (`.playerbot self on`) is the owner's own character on the owner's client, bound to its own account: no other
         // character of that account is in the group, so it was taken out of its group and queued for a logout (Discord 2026-10-28).
         if (p->GetSession() && !p->GetSession()->IsBot())
