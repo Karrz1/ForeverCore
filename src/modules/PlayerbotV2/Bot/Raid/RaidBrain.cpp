@@ -4100,11 +4100,12 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
             if (enemy->GetEntry() == rule.enemy && SpareNow(rule, enemy->GetHealthPct(), gateAlive))
                 forbiddenAll.push_back(enemy->GetGUID());
     }
-    // Nobody attacks a creature inside a keep-out circle (RaidRules::keepOut: Kel'Thuzad's alcoves, Onyxia's cave mouths), in the fight or
-    // not: a shot, a DoT or an area spell there wakes the idle pack round it (Kel'Thuzad's alcove adds attack whoever hits them, SpellHit in
-    // classic_kt_p1AddAI). naxx_kelthuzad 1114f: with the raid kept out of the alcoves, a warlock still had both Abominations and four
-    // Soldiers of one alcove on him 6 s in, and from 24 s on 20-30 adds were loose. An add the script sends walks out of the circle to its
-    // raider and is fought there.
+    // Nobody attacks an idle creature inside a keep-out circle (RaidRules::keepOut: Kel'Thuzad's alcoves, Onyxia's cave mouths): a shot, a
+    // DoT or an area spell there wakes the pack round it (Kel'Thuzad's alcove adds attack whoever hits them, SpellHit in classic_kt_p1AddAI).
+    // naxx_kelthuzad 1114f: with the raid kept out of the alcoves, a warlock still had both Abominations and four Soldiers of one alcove on
+    // him 6 s in, and from 24 s on 20-30 adds were loose. An engaged one is fought wherever it is: the adds the script sends at the raid
+    // cross the circles on their way in, and the Soldiers have to die before they arrive. naxx_kelthuzad 1114g, with every creature in the
+    // circles forbidden: the Soldiers walked in at 100%, Dark Blast killed 18 and the raid wiped at 103 s.
     if (!g_keepOut.empty() && !plan.members.empty())
     {
         Player* const scout = plan.mainTank ? plan.mainTank : plan.members.front().p;
@@ -4113,7 +4114,7 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
         alive.IsAlive = FindCreatureAliveState::Alive;
         scout->GetCreatureListWithOptionsInGrid(near, kKeepOutScanYards, alive);
         for (Creature* c : near)
-            if (c->IsHostileTo(scout) && InsideAny(g_keepOut, c->GetPositionX(), c->GetPositionY(), 0.0f))
+            if (c->IsHostileTo(scout) && !c->IsEngaged() && InsideAny(g_keepOut, c->GetPositionX(), c->GetPositionY(), 0.0f))
                 forbiddenAll.push_back(c->GetGUID());
     }
     auto const trailsHolder = [&packHolders](Unit* enemy)
