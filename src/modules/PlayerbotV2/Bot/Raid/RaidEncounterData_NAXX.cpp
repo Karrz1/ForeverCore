@@ -169,6 +169,12 @@ namespace Playerbot::Raid {
         r.stand.push_back({ 16028, Who::Ranged, 3272.0f, -3240.0f, kPatchHallZ, 5.0f, false, 0 });
         r.stand.push_back({ 16028, Who::Healer, 3326.0f, -3223.0f, kPatchHallZ, 4.0f, false, 0, 100.0f, 0.0f, 1 });
         r.stand.push_back({ 16028, Who::Healer, 3326.0f, -3241.0f, kPatchHallZ, 4.0f, false, 0, 100.0f, 0.0f, 2 });
+        // The posts are for a fight in his hall. Pulled anywhere else (chris 11-15 live: met at the hall's west end, 3210,-3190, on his
+        // walk), the healers ran 120 y off to the east corners and the ranged 80 y to theirs, nobody healed the soakers and every tank died
+        // to Hateful Strike in the first 30 s. Past 40 y from a post he is fought where he is, by the plain raid layout.
+        for (Stand& s : r.stand)
+            if (s.enemy == 16028)
+                s.maxFromEnemy = 40.0f;
 
         // ---------------------------------------------------------------------------------------------------------------
         // GROBBULUS (15931): Mutating Injection 28169 explodes into a poison cloud (creature 16363, triggers 28241 every

@@ -109,7 +109,9 @@ struct Spread { uint32_t enemy; float radius; Who who; float hpMax = 100.0f; flo
 // needVictimIsMe: only when the enemy is attacking this bot - the <needOtherEnemy> creature when one is given, else <enemy>.
 struct Stand { uint32_t enemy; Who who; float x, y, z; float tolerance; bool needVictimIsMe; uint32_t needOtherEnemy; float hpMax = 100.0f; float hpMin = 0.0f;
               uint8_t share = 0;      // share 1 / 2: only the even / odd numbered of the members this rule matches (by guid order), so one rule list can split e.g. the off-tanks between two posts
-              uint32_t endEnemy = 0; };   // the post ends once this enemy is in the fight (EnemyInFight): a phase's layout that the next phase must not keep
+              uint32_t endEnemy = 0;   // the post ends once this enemy is in the fight (EnemyInFight): a phase's layout that the next phase must not keep
+              float maxFromEnemy = 0.0f; };   // > 0: the post holds only while the enemy is within this many yards of it (a boss pulled
+                                             // somewhere else is fought where he is, not from posts across the room); 0 = always
 
 // While <enemy> is alive and fighting, a member carrying <aura> stands <distance> yards from the enemy's live position
 // along the fixed world bearing <bearing> (radians) and holds within <tolerance> (Thaddius' Positive / Negative Charge

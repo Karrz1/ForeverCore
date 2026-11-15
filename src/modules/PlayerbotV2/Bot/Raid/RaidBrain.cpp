@@ -3239,6 +3239,8 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
         }
         if (!boss)
             continue;
+        if (rule.maxFromEnemy > 0.0f && Dist2D(boss->GetPositionX(), boss->GetPositionY(), rule.x, rule.y) > rule.maxFromEnemy)
+            continue;
         if (rule.needOtherEnemy ? !other : (rule.needVictimIsMe && boss->GetVictim() != bot))
             continue;
         out.post_enemy = boss->GetGUID();
