@@ -171,6 +171,11 @@ namespace Playerbot::Raid {
         r.avoidCarrier.push_back({ 28169, 10.0f, Who::NonTank });
         r.avoidCreature.push_back({ 16363, 9.0f, Who::Anyone });
         r.avoidFrontal.push_back({ 15931, 20.0f, 50.0f, Who::NonTank });
+        // Every player the spray hits leaves a Fallout Slime where it stands (classic_boss_grobbulus.cpp SpellHitTarget, one each), so
+        // the main tank is the only one in front of him: the off tanks keep the Fallout Slimes from his flank. naxx_grobbulus 1115a: all
+        // four tanks stood on him in front from 69 s, one spray at 160 s put six slimes on them at once, the four tanks died to the slimes
+        // in 11 s and the slimes then killed 30 of the raid.
+        r.avoidFrontal.push_back({ 15931, 20.0f, 50.0f, Who::OffTank });
         r.priority.push_back({ 16290, 3 });     // Fallout Slime
 
         // ---------------------------------------------------------------------------------------------------------------
