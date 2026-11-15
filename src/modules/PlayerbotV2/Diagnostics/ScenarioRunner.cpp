@@ -79,6 +79,7 @@
 #include <memory>
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -169,6 +170,12 @@ struct PullStat
     std::uint32_t seconds = 0, casting = 0, moving = 0, held = 0, dead = 0;
     std::uint32_t rage_sum = 0, rage_max = 0, rage_ge25 = 0;   // a rage user's rage in display units, sampled once a second
     std::map<std::string, std::uint32_t> rules;   // last bot rule fired, one count per second
+    std::uint32_t mana_sum = 0, mana_min = 101, mana_lt20 = 0;   // a mana user's mana percent, sampled once a second
+    // Damage and healing by spell, the breakdown a combat log parse shows (what each raider's damage came from, how much of a heal was
+    // overheal). Added from the map threads, hence the lock. Key: spell id, bit 31 set for the raider's pet; 0 = a melee swing.
+    struct SpellTally { std::uint64_t damage = 0; std::uint32_t hits = 0; std::uint64_t heal_raw = 0, heal_eff = 0; std::uint32_t heals = 0; };
+    std::mutex spells_mtx;
+    std::map<std::uint32_t, SpellTally> spells;
 };
 
 struct Run
@@ -2334,6 +2341,52 @@ char const* RoleName(ScenarioRoleKind r)
     return r == ScenarioRoleKind::Tank ? "tank" : r == ScenarioRoleKind::Healer ? "healer" : "dps";
 }
 
+// One raider's damage and healing by spell, largest first (ten each): the share of its total, the hits, and for a heal its overheal.
+void LogPullSpells(Run const& run, Member const& m, PullStat& st)
+{
+    std::vector<std::pair<std::uint32_t, PullStat::SpellTally>> rows;
+    {
+        std::lock_guard<std::mutex> lk(st.spells_mtx);
+        rows.assign(st.spells.begin(), st.spells.end());
+    }
+    auto const name = [](std::uint32_t key)
+    {
+        std::uint32_t const id = key & 0x7FFFFFFFu;
+        std::string n = id == 0 ? std::string("melee") : fmt::format("{}", id);
+        if (id)
+            if (SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE))
+                n = fmt::format("{} {}", si->SpellName->Str[LOCALE_enUS], id);
+        return (key & 0x80000000u) ? "pet " + n : n;
+    };
+    std::uint64_t dmg = 0, eff = 0;
+    for (auto const& [k, t] : rows)
+    {
+        dmg += t.damage;
+        eff += t.heal_eff;
+    }
+    if (dmg)
+    {
+        std::sort(rows.begin(), rows.end(), [](auto const& a, auto const& b) { return a.second.damage > b.second.damage; });
+        std::string line;
+        for (std::size_t i = 0; i < rows.size() && i < 10 && rows[i].second.damage; ++i)
+            line += fmt::format("{}{} {} ({}%, {} hits)", i ? ", " : "", name(rows[i].first), rows[i].second.damage,
+                                rows[i].second.damage * 100 / dmg, rows[i].second.hits);
+        TC_LOG_INFO("playerbot.v2", "[pull_spells] {} {} {} damage {}: {}", run.def->name, m.def.name, ClassName(m.def.cls), dmg, line);
+    }
+    if (eff)
+    {
+        std::sort(rows.begin(), rows.end(), [](auto const& a, auto const& b) { return a.second.heal_eff > b.second.heal_eff; });
+        std::string line;
+        for (std::size_t i = 0; i < rows.size() && i < 10 && rows[i].second.heals; ++i)
+        {
+            PullStat::SpellTally const& t = rows[i].second;
+            line += fmt::format("{}{} {} ({}%, {} heals, overheal {}%)", i ? ", " : "", name(rows[i].first), t.heal_eff, t.heal_eff * 100 / eff,
+                                t.heals, t.heal_raw ? (t.heal_raw - t.heal_eff) * 100 / t.heal_raw : 0u);
+        }
+        TC_LOG_INFO("playerbot.v2", "[pull_spells] {} {} {} healing {}: {}", run.def->name, m.def.name, ClassName(m.def.cls), eff, line);
+    }
+}
+
 void ReportPull(Run& run, char const* when)
 {
     if (!run.pull_started.load())
@@ -2369,9 +2422,13 @@ void ReportPull(Run& run, char const* when)
             rules += fmt::format(" {}={}", top[i].second, top[i].first);
         if (st.rage_max)
             rules += fmt::format(" | rage avg {} max {} seconds at 25+ {}", st.seconds ? st.rage_sum / st.seconds : 0u, st.rage_max, st.rage_ge25);
+        std::uint32_t const alive = st.seconds - std::min(st.seconds, st.dead);
+        if (st.mana_min <= 100)
+            rules += fmt::format(" | mana avg {}% min {}% seconds under 20% {}", alive ? st.mana_sum / alive : 0u, st.mana_min, st.mana_lt20);
         TC_LOG_INFO("playerbot.v2", "[pull_stats] {} {} {} {} damage={} boss={} hits={} seconds={} casting={} moving={} held={} dead={} rules{}",
                     run.def->name, m.def.name, ClassName(m.def.cls), RoleName(m.def.role), st.damage.load(), st.boss_damage.load(), st.hits.load(),
                     st.seconds, st.casting, st.moving, st.held, st.dead, rules.empty() ? " -" : rules);
+        LogPullSpells(run, m, it->second);
     }
 }
 
@@ -2409,6 +2466,13 @@ void SamplePull(Run& run)
             ++st.casting;
         if (p->isMoving())
             ++st.moving;
+        if (p->GetMaxPower(POWER_MANA) > 0)
+        {
+            std::uint32_t const pct = std::uint32_t(std::uint64_t(p->GetPower(POWER_MANA)) * 100u / std::uint64_t(p->GetMaxPower(POWER_MANA)));
+            st.mana_sum += pct;
+            st.mana_min = std::min(st.mana_min, pct);
+            st.mana_lt20 += pct < 20 ? 1u : 0u;
+        }
         if (p->GetPowerType() == POWER_RAGE)
         {
             std::uint32_t const rage = std::uint32_t(p->GetPower(POWER_RAGE) / 10);
@@ -4199,7 +4263,7 @@ void NoteBotDeath(std::uint64_t guid_low, ScenarioDeath death)
     }
 }
 
-void NoteDamage(Unit* attacker, Unit* victim, std::int32_t amount)
+void NoteDamage(Unit* attacker, Unit* victim, std::int32_t amount, std::uint32_t spell_id)
 {
     if (g_runs.empty() || amount <= 0 || !attacker)
         return;
@@ -4218,6 +4282,36 @@ void NoteDamage(Unit* attacker, Unit* victim, std::int32_t amount)
         it->second.hits.fetch_add(1u, std::memory_order_relaxed);
         if (victim && r->def && victim->GetEntry() == r->def->goal_entry)
             it->second.boss_damage.fetch_add(std::uint64_t(amount), std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(it->second.spells_mtx);
+            PullStat::SpellTally& t = it->second.spells[(spell_id & 0x7FFFFFFFu) | (attacker != owner ? 0x80000000u : 0u)];
+            t.damage += std::uint64_t(amount);
+            ++t.hits;
+        }
+        return;
+    }
+}
+
+void NoteHeal(Unit* healer, std::uint32_t spell_id, std::uint32_t raw, std::uint32_t effective)
+{
+    if (g_runs.empty() || !raw || !healer)
+        return;
+    Unit* const owner = healer->GetCharmerOrOwnerOrSelf();
+    if (!owner || !owner->IsPlayer())
+        return;
+    std::uint64_t const id = owner->GetGUID().GetCounter();
+    for (auto const& r : g_runs)
+    {
+        if (!r->pull_started.load())
+            continue;
+        auto const it = r->pull.find(id);
+        if (it == r->pull.end())
+            continue;
+        std::lock_guard<std::mutex> lk(it->second.spells_mtx);
+        PullStat::SpellTally& t = it->second.spells[(spell_id & 0x7FFFFFFFu) | (healer != owner ? 0x80000000u : 0u)];
+        t.heal_raw += raw;
+        t.heal_eff += effective;
+        ++t.heals;
         return;
     }
 }

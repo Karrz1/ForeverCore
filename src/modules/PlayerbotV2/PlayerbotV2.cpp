@@ -3850,7 +3850,7 @@ void Module::OnDamageTaken(Unit* attacker, Unit* victim, int32 amount, uint32 sp
     if (attacker && attacker->IsPlayer() && victim && amount > 0 && !victim->IsPlayer())
         if (BotAI* ai = Services::Registry().ai(attacker->GetGUID().GetCounter()))
             ai->note_damage_done(GameTime::GetGameTimeMS());
-    Diagnostics::Scenario::NoteDamage(attacker, victim, amount);   // a scenario's boss-pull statistics; one atomic load when none runs
+    Diagnostics::Scenario::NoteDamage(attacker, victim, amount, lethal_spell);   // a scenario's boss-pull statistics; one atomic load when none runs
     // The core hands this hook spell 0; the spell is the one NoteDamageSpell stashed just before (0 = a melee swing). With 0 every spell and
     // DoT tick was tallied as "white swing" and no per-spell row matched its outcome.
     Diagnostics::Parity::NoteDamage(attacker, victim, amount, lethal_spell);   // the damage_parity tally; one atomic load when none runs
@@ -3887,6 +3887,7 @@ void Module::OnHealOutcome(Unit* healer, Unit* target, uint32 spell_id, uint32 r
 {
     if (!initialized_) return;
     Diagnostics::Parity::NoteHeal(healer, target, spell_id, raw, effective);   // one atomic load when no support scorecard runs
+    Diagnostics::Scenario::NoteHeal(healer, spell_id, raw, effective);         // a scenario's boss-pull heal breakdown
 }
 
 void Module::OnHealReceived(Unit* /*healer*/, Unit* /*target*/, int32 /*amount*/, uint32 /*spell_id*/)
