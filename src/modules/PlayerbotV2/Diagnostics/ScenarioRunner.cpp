@@ -1301,9 +1301,21 @@ bool PickArrival(Run& run, Player* leader)
     if (run.has_stage)
     {
         // The listed spot on the route: no search. Path-checked once, and the nearest hostile is logged so a landing in a pack shows.
+        // A fight the raid opens on an add (ScenarioDef::start_add) is checked against that add, the first thing it walks to: Thaddius'
+        // own walkway has no walking route from his door, his adds' platforms have (naxx_thaddius 1115d failed its setup at 0 s on the
+        // route to him).
+        float tx = run.boss_x, ty = run.boss_y, tz = run.boss_z;
+        if (run.def->start_add)
+            if (Creature const* boss = FindBoss(run))
+                if (Creature const* add = boss->FindNearestCreature(run.def->start_add, 200.f, true))
+                {
+                    tx = add->GetPositionX();
+                    ty = add->GetPositionY();
+                    tz = add->GetPositionZ();
+                }
         PathGenerator pg(leader);
-        ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, run.stage_x, run.stage_y, run.stage_z, run.boss_x, run.boss_y, run.boss_z);
-        float const straight = std::hypot(run.boss_x - run.stage_x, run.boss_y - run.stage_y);
+        ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, run.stage_x, run.stage_y, run.stage_z, tx, ty, tz);
+        float const straight = std::hypot(tx - run.stage_x, ty - run.stage_y);
         if ((pg.GetPathType() & (PATHFIND_NOPATH | PATHFIND_FARFROMPOLY | PATHFIND_INCOMPLETE)) || pg.GetPathLength() > straight * kCheckpointPathSlack + 10.f)
         {
             run.arrive_blocker = fmt::format("; the listed staging spot {:.1f},{:.1f},{:.1f} has no walkable route to the creature (path type {:#x}, length {:.0f} y for {:.0f} y straight)",
