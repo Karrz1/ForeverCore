@@ -5733,8 +5733,15 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
           return true; }
         TC_LOG_INFO("playerbot.v2", "[raid_pull] {} pulls {} ({}) {}", bot->GetName(), target->GetName(), target->GetGUID().GetCounter(),
                     by_icon ? "by its icon assignment" : "on the owner's selection");
-        // Raid map: only the main tank pulls (a spare duty tank stands by).
-        if (!RaidPullGateAllows(bot, target))
+        // Raid map: only the main tank pulls (a spare duty tank stands by). A boss whose strike goes to the melee soakers (Patchwerk's
+        // Hateful Strike, RaidRules::meleeSoak) is the exception: the off tanks go in with the main tank, or the main tank is alone in his
+        // reach for the first strike 1.2 s after the pull and dies to it (chris 11-15 live: Don in full T3 died at 1 s, the off tanks 25 y back).
+        bool soaker = false;
+        if (Raid::RaidRules const* rules = Raid::RulesForMap(bot->GetMapId()))
+            for (Raid::MeleeSoak const& soak : rules->meleeSoak)
+                if (soak.enemy == target->GetEntry() && soak.who == Raid::Who::OffTank)
+                    soaker = true;
+        if (!soaker && !RaidPullGateAllows(bot, target))
         { Push(bot, WhisperIntent{sender->GetName(), "Tank: the main tank pulls; standing by."});
           return true; }
         Push(bot, StartAttackIntent{target->GetGUID()});
