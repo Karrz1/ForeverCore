@@ -1252,7 +1252,7 @@ bool RangedMeleedDefense(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView 
 // to go), it stops when the target is at 95%+ or missing less than 30% of
 // the heal's expected amount (ClassicHeal::ExpectedHeal, bonus healing
 // included). Before that window only a target already at full health with
-// nothing hitting it is stopped (another healer landed first: the healer is
+// nothing hitting it, and never a tank, is stopped (another healer landed first: the healer is
 // freed at once). After a cancel the rotation leaves that patient alone for
 // ClassicHeal::kCancelLockoutMs (an emergency excepted) and the tank pre-heal
 // waits as long, so a cancelled cast is not restarted at once; at most one
@@ -1277,8 +1277,11 @@ bool CancelOverheal(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView const
     if (!p.valid || p.max_hp <= 0 || p.hp <= 0) return false;
     const int64 deficit = p.max_hp - p.hp;
     const bool final_window = rem <= kWindowMaxMs;
+    // A tank is never stopped early: it is full for a moment between a boss's hits, and a heal let run lands into the next one
+    // (naxx_patchwerk 1115h: four "already full" cancels on one tank with 0.7-2.1 s left, each followed by a lockout on that tank,
+    // while Hateful Strike and his swings took it from 100% to 79% and lower again within the second).
     const bool cancel = final_window ? (p.actual_pct >= 95 || float(deficit) < amount * 0.30f)
-                                     : (deficit <= 0 && p.incoming <= 0);
+                                     : (!p.tank && deficit <= 0 && p.incoming <= 0);
     if (!cancel) return false;
     const uint32 now = s.published_at_ms();
     if (!RaidLogDue(RaidLogKey(s, RaidLogKind::CancelHeal), now, 1500u)) return false;

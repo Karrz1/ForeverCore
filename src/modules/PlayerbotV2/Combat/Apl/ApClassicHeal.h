@@ -386,6 +386,8 @@ inline float HealTakenFactor(GroupSnapshotView const& g, ObjectGuid guid)
 
 // Other healers' direct heals in flight on `p` (see the block comment); fills
 // p.inflight / p.inflight_land_ms and projects p.hp_pct with them. Raid only.
+constexpr uint32 kSkipHorizonMs = 2500;   // a healer skipping a patient for the heals in flight looks this far ahead (one Greater Heal / Holy Light)
+
 template <typename Claims>
 void ApplyInFlight(BotSnapshotView const& s, GroupSnapshotView const& g, Patient& p, Claims const& claims)
 {
@@ -398,11 +400,14 @@ void ApplyInFlight(BotSnapshotView const& s, GroupSnapshotView const& g, Patient
     uint64 const self = s.guid().GetCounter();
     float amount = 0.0f;
     bool any = false;
+    uint32 last_land = now;
     auto add = [&](float amt, uint32 land)
     {
         amount += amt;
         if (!any || int32(land - p.inflight_land_ms) < 0)
             p.inflight_land_ms = land;
+        if (int32(land - last_land) > 0)
+            last_land = land;
         any = true;
     };
     auto claim_of = [&](uint64 healer) -> HealClaim const*
@@ -440,7 +445,13 @@ void ApplyInFlight(BotSnapshotView const& s, GroupSnapshotView const& g, Patient
         for (GroupMemberSummary const& m : *members)
             if (m.guid == p.guid)
             {
-                p.until_land = DamageUntilLand(m.damage_taken_per_s, int32(p.inflight_land_ms - now));
+                // The damage the heals in flight have to cover is what comes until the last of them has landed, and at least until a heal
+                // this healer starts now would land: the question is whether the patient is still covered when its own heal would
+                // arrive. Up to the first landing only was a second's damage against 2.5-3 s heals (naxx_patchwerk 1115h: six healers
+                // at once left a tank at 79% to 6292 in flight for a deficit of 4286, three of those heals were then cancelled, and the
+                // tank went on dropping).
+                int32 const horizon = std::max<int32>(int32(last_land - now), int32(kSkipHorizonMs));
+                p.until_land = DamageUntilLand(m.damage_taken_per_s, horizon);
                 break;
             }
     // From the raw health each time (as MakePatient), so a patient handed in
