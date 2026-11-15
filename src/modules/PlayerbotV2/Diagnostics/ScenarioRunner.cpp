@@ -2698,6 +2698,34 @@ bool IssueAttack(Run& run)
     }
     TC_LOG_INFO("playerbot.v2", "[scenario] {} ordered {} onto {} ({}) at {} s, {:.0f} y away (start_attack result {})", run.def->name,
                 tank->GetName(), target->GetName(), target->GetEntry(), run.run_ms / 1000u, tank->GetDistance(target), int(res));
+    // A boss whose strike goes to the melee soakers (RaidRules::meleeSoak, Patchwerk's Hateful Strike on three off tanks) is opened by the
+    // soakers with the main tank: alone in his reach the main tank takes every strike. naxx_patchwerk 1115h: the off tanks waited where the
+    // raid stood until he was in combat, 57 y off, and the main tank died at 3 s; the next tank in his reach 3 s later.
+    if (target == boss)
+        if (::Playerbot::Raid::RaidRules const* rules = ::Playerbot::Raid::RulesForMap(tank->GetMapId()))
+            for (::Playerbot::Raid::MeleeSoak const& soak : rules->meleeSoak)
+            {
+                if (soak.enemy != boss->GetEntry() || soak.who != ::Playerbot::Raid::Who::OffTank)
+                    continue;
+                std::uint32_t sent = 0;
+                for (Member const& m : run.members)
+                {
+                    if (sent >= soak.count)
+                        break;
+                    Player* p = m.def.role == ScenarioRoleKind::Tank ? Find(m.id) : nullptr;
+                    if (!p || p == tank || !p->IsAlive())
+                        continue;
+                    ::Playerbot::Result const r = ::Playerbot::API(p).start_attack(boss->GetGUID());
+                    if (BotAI* ai = ::Playerbot::Services::Registry().ai(m.id))
+                    {
+                        ai->enter_manual(BotAI::OwnerCommand::Engage, boss->GetGUID(), GameTime::GetGameTimeMS());
+                        ai->release_owner_lead();
+                    }
+                    ++sent;
+                    TC_LOG_INFO("playerbot.v2", "[scenario] {} ordered soaker {} onto {} with the main tank, {:.0f} y away (start_attack result {})",
+                                run.def->name, p->GetName(), boss->GetName(), p->GetDistance(boss), int(r));
+                }
+            }
     // A target the server refuses (immune to players, not interactible) is a fault in the setup, not a fight that happens to be quiet.
     // Not when the boss is already fighting the raid: a boss script (Bot/Raid/RaidFightScript.h) owns the pull and had the DPS on it before
     // this order, and Attack on a mob the bot already fights is refused as an invalid target.
