@@ -27,6 +27,9 @@
 #include "Position.h"
 #include "PathLiquid.h"
 
+#include <cstddef>
+
+class Map;
 class Player;
 class Unit;
 class PathGenerator;
@@ -105,6 +108,25 @@ bool ProbeGround(Player* p, float x, float y, float zHint, float& out);
 // live navmesh); never call from an bot worker.
 bool NearestNavPoint(Player* p, float tx, float ty, float tz,
                      float hxy, float hz, Position& out);
+
+// Snapshot builds that run beside other builds of the SAME map must not load grids: a grid load adds creatures and navmesh
+// tiles while the other threads are reading them. While a ScopedDeferGridLoads is alive on a thread, EnsureGridForQuery
+// hands a grid that is not loaded yet to the world thread (LoadDeferredGrids, after the build barrier) and returns false, so
+// the caller has no answer for this build and gets the real one on the next build. Without the scope it loads the grid at
+// once and returns true, exactly as before.
+class ScopedDeferGridLoads
+{
+public:
+    ScopedDeferGridLoads();
+    ~ScopedDeferGridLoads();
+    ScopedDeferGridLoads(ScopedDeferGridLoads const&) = delete;
+    ScopedDeferGridLoads& operator=(ScopedDeferGridLoads const&) = delete;
+private:
+    bool previous_;
+};
+bool EnsureGridForQuery(Map* m, float x, float y);
+// World thread only, after the build barrier: loads the grids the builds asked for. Returns how many requests it handled.
+size_t LoadDeferredGrids();
 
 // Strict line-of-sight check used by ballistic moves (jump, charge).
 // Returns true if the straight line from src to dst is clear of static

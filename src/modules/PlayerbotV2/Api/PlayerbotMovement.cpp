@@ -37,6 +37,8 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <mutex>
+#include <vector>
 
 #ifdef _MSC_VER
 #include <windows.h>   // EXCEPTION_EXECUTE_HANDLER for SehSafeCalculatePath
@@ -337,6 +339,55 @@ bool ProbeGround(Player* p, float x, float y, float zHint, float& out)
     return true;
 }
 
+// ---- Grid loads asked for by snapshot builds ---------------------------------
+
+namespace
+{
+thread_local bool t_deferGridLoads = false;
+std::mutex g_deferredGridsMtx;
+struct DeferredGrid { Map* map; float x; float y; };
+std::vector<DeferredGrid> g_deferredGrids;
+}
+
+ScopedDeferGridLoads::ScopedDeferGridLoads() : previous_(t_deferGridLoads)
+{
+    t_deferGridLoads = true;
+}
+
+ScopedDeferGridLoads::~ScopedDeferGridLoads()
+{
+    t_deferGridLoads = previous_;
+}
+
+bool EnsureGridForQuery(Map* m, float x, float y)
+{
+    if (!m)
+        return false;
+    if (!t_deferGridLoads)
+    {
+        m->LoadGrid(x, y);   // no-op when the grid is already loaded
+        return true;
+    }
+    if (m->IsGridLoaded(x, y))
+        return true;
+    std::lock_guard<std::mutex> lk(g_deferredGridsMtx);
+    g_deferredGrids.push_back({ m, x, y });
+    return false;
+}
+
+size_t LoadDeferredGrids()
+{
+    std::vector<DeferredGrid> grids;
+    {
+        std::lock_guard<std::mutex> lk(g_deferredGridsMtx);
+        grids.swap(g_deferredGrids);
+    }
+    // The maps are the ones the bots stood on during this same bot-module update; no map is created or deleted in between.
+    for (DeferredGrid const& g : grids)
+        g.map->LoadGrid(g.x, g.y);   // a grid asked for twice is a no-op the second time
+    return grids.size();
+}
+
 // ---- NearestNavPoint --------------------------------------------------------
 
 bool NearestNavPoint(Player* p, float tx, float ty, float tz,
@@ -349,9 +400,12 @@ bool NearestNavPoint(Player* p, float tx, float ty, float tz,
         return false;
 
     // The tile under the target may not be resident (a tall lift shaft can
-    // span into a grid the bot hasn't streamed). LoadGrid is a no-op when the
+    // span into a grid the bot hasn't streamed). Loading is a no-op when the
     // grid is already loaded; it keeps the navmesh tile alive for the query.
-    m->LoadGrid(tx, ty);
+    // Inside a same-map parallel build the load waits for the world thread
+    // and this build has no answer (see ScopedDeferGridLoads).
+    if (!EnsureGridForQuery(m, tx, ty))
+        return false;
 
     // Resolve the query the same way PathGenerator does: the *terrain* map id
     // (phased maps share a parent terrain) drives the navmesh selection, while

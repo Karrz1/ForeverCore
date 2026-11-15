@@ -40,6 +40,11 @@ public:
     // [1,24]); the world thread also participates so effective parallelism is
     // this+1. (PlayerbotV2.SnapshotBuildThreads)
     uint32 snapshot_build_threads()  const { return snapshot_build_threads_; }
+    // Also split the bots of ONE open-world map over the build pool (by group, so
+    // a group always builds on one thread). Off = one thread per map as before.
+    // Dungeons, raids, battlegrounds and arenas are never split. Read every tick.
+    // (PlayerbotV2.SnapshotBuildSplitMap)
+    bool   snapshot_build_split_map() const { return snapshot_build_split_map_; }
 
     // Population
     uint32 population_total_target() const { return pop_target_; }
@@ -601,6 +606,7 @@ private:
     uint32 tick_budget_ms_ = 10;
     bool   parallel_snapshot_build_ = true;
     uint32 snapshot_build_threads_  = 0;
+    bool   snapshot_build_split_map_ = false;
 
     uint32 pop_target_   = 0;      // Classic default: no ambient world bots
     uint8  pop_horde_pct_ = 50;

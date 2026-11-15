@@ -128,6 +128,15 @@ PlayerbotV2.ParallelSnapshotBuild = 1
 # the world thread also participates, so effective parallelism is this + 1.
 # Pool is sized once at first use (not hot-reloadable). HR-no.
 PlayerbotV2.SnapshotBuildThreads = 0
+# Also split the bots of ONE open-world map (Eastern Kingdoms, Kalimdor, ...)
+# over the build pool, so a busy continent uses all cores instead of one.
+# A group's bots always build on the same thread; dungeons, raids,
+# battlegrounds and arenas are never split. While split, each thread paths
+# with its own navmesh query and a build never loads a grid itself (the world
+# thread loads it right after the build). Needs ParallelSnapshotBuild = 1.
+# Read every tick (live-flippable via config reload). HR-yes.
+# DEFAULT 0 (one thread per map, as before) until it is measured on dev.
+PlayerbotV2.SnapshotBuildSplitMap = 0
 
 #-----------------------------------------------------------------------------
 # Population (defaults; override per realm)

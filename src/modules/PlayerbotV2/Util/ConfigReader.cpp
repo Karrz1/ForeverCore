@@ -61,6 +61,7 @@ void ConfigReader::apply_from_loaded_config()
     // pre-resolving the BotAI* on the world thread. Kill-switch: set =0 to serial.
     parallel_snapshot_build_ = c.GetBoolDefault("PlayerbotV2.ParallelSnapshotBuild", true, true);
     snapshot_build_threads_  = c.GetIntDefault ("PlayerbotV2.SnapshotBuildThreads", 0, true);
+    snapshot_build_split_map_ = c.GetBoolDefault("PlayerbotV2.SnapshotBuildSplitMap", false, true);
 
     // Classic 1.60 (Forever) default: 0 = no ambient world bots, owner bots only.
     pop_target_     = c.GetIntDefault ("Playerbot.Population.TotalTarget", 0, true);
