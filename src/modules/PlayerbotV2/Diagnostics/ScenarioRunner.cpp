@@ -7,6 +7,7 @@
 #include "../Bot/BotRegistry.h"
 #include "../Bot/Raid/RaidEncounters.h"
 #include "../Bot/Raid/RaidFightScript.h"
+#include "../Bot/Raid/RaidBrain.h"   // pre-pull orders the Attack waits for
 #include "../Bot/ClassicUpkeep.h"
 #include "../Bot/BotSnapshotView.h"
 #include "../Bot/Gear/OwnedGearPolicy.h"
@@ -130,6 +131,8 @@ constexpr std::uint32_t kArriveTimeoutMs = 45u * 1000u;
 constexpr int kPullManaPct = 95;                           // every healer at or above this before the ordered Attack
 constexpr std::uint32_t kManaWaitMs = 120u * 1000u;      // the longest the Attack waits for it
 constexpr std::uint32_t kPrepWaitMs = 90u * 1000u;       // the longest it waits for the raid's buffs and consumables (PrepOwed)
+constexpr std::uint32_t kPrePullWaitMs = 60u * 1000u;    // ... and, after that, for the raid brain's pre-pull spots
+constexpr float kPrePullArrivedYards = 4.0f;             // a raider this close to its pre-pull spot is there
 constexpr std::uint32_t kPatrolWaitMs = 180u * 1000u;    // the longest it waits for a patrolling boss to walk back toward the raid
 constexpr float kPatrolOrderYards = 60.f;                // a patrolling boss further than this from the main tank is waited for
 
@@ -196,6 +199,7 @@ struct Run
     std::uint32_t landing_rounds = 0;     // rounds logged (capped)
     std::uint32_t mana_wait_log_ms = 0;   // run_ms of the last 'waiting for the healers' mana' line
     std::uint32_t prep_wait_log_ms = 0;   // run_ms of the last 'waiting for the raid's buffs' line
+    std::uint32_t prepull_wait_log_ms = 0;   // run_ms of the last 'waits for the pre-pull spots' line
     bool patrol_centre_tried = false;     // PickArrival searched round the low end of the boss's patrol (his spawn is on a raised walk)
     std::uint32_t patrol_wait_ms = 0;     // run_ms the Attack began waiting for the boss's patrol to come back (0 = not waiting)
     std::uint32_t patrol_wait_log_ms = 0; // run_ms of the last 'waiting for the patrol' line
@@ -3783,6 +3787,40 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                                     dry.empty() ? "-" : dry);
                     }
                     attack_due = false;
+                }
+            }
+            // The Attack waits for the raid brain's pre-pull spots (Thaddius' platforms, Gothik's sides): the opening order on one add
+            // pulls both, and a side still on its way meets its add with no tank in reach (naxx_thaddius 1115c). Bounded; the Hold stays up.
+            if (attack_due && !run.checkpoint && run.run_ms < run.def->order_delay_ms + kPrepWaitMs + kPrePullWaitMs)
+            {
+                std::uint32_t walking = 0;
+                std::string who;
+                bool in_combat = false;
+                for (Member const& m : run.members)
+                {
+                    Player* p = Find(m.id);
+                    if (!p || !p->IsAlive())
+                        continue;
+                    in_combat = in_combat || p->IsInCombat();
+                    ::Playerbot::RaidOrder const* o = ::Playerbot::Raid::GetBrain().OrderFor(m.id);
+                    if (!o || !o->active || !o->prepull || !o->move || p->GetExactDist2d(o->move_x, o->move_y) <= kPrePullArrivedYards)
+                        continue;
+                    if (walking++ < 4)
+                        who += fmt::format("{}{} {:.0f} y", who.empty() ? "" : ", ", p->GetName(), p->GetExactDist2d(o->move_x, o->move_y));
+                }
+                if (walking && !in_combat)
+                {
+                    attack_due = false;
+                    for (Member const& m : run.members)
+                        if (BotAI* ai = ::Playerbot::Services::Registry().ai(m.id))
+                            ai->enter_manual(BotAI::OwnerCommand::Hold, ObjectGuid::Empty, GameTime::GetGameTimeMS(), 30000u);
+                    run.monitor->NoteDeliberateWait(run.run_ms);
+                    if (!run.prepull_wait_log_ms || run.run_ms - run.prepull_wait_log_ms >= 5000u)
+                    {
+                        run.prepull_wait_log_ms = run.run_ms ? run.run_ms : 1u;
+                        TC_LOG_INFO("playerbot.v2", "[scenario] {} the attack waits for the pre-pull spots: {} raiders still walking ({})", run.def->name,
+                                    walking, who);
+                    }
                 }
             }
             // A boss the raid fights after others (ScenarioDef::start_instance_data with no start_npc: Hakkar after the five High Priests): the

@@ -35,6 +35,8 @@
 #include <algorithm>
 #include <cmath>
 #include <list>
+#include <span>
+#include <unordered_map>
 
 namespace Playerbot::Raid::detail {
 
@@ -707,11 +709,244 @@ void ElectGothikSides(Election& e)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Thaddius: Stalagg and Feugen on their platforms
+// ---------------------------------------------------------------------------
+// The two adds stand on platforms at z 312 (classic_boss_thaddius.cpp ClassicThadAddPositions); Thaddius' own walkway (z 303) lies between
+// them, cut off by the slime pit and a 15 y wall up to each platform (terrainprofile 2026-11-15). The platforms are reached from the room's
+// door (Thaddius Door, 3421.9,-3017.5,295.6: complete paths of 103 y), and from one platform to the other is a 194 y walk round. Each
+// add must stay within 60 y of its Tesla Coil or the coil shocks the raid, and Magnetic Pull swaps the two tanks every 20.5 s. So the raid
+// splits as a Classic raid does: tanks, healers, ranged and melee alternate between the two platforms before the pull, and in phase one each
+// non-tank fights on its own platform only. naxx_thaddius 1115c, staged on his walkway: the tanks had no path up (Incomplete, 0.5 y of
+// progress), Stalagg and Feugen killed the casters who got up, and the raid wiped at 0/5.
+constexpr uint32_t kStalagg  = 15929;
+constexpr uint32_t kFeugen   = 15930;
+constexpr float    kThadRoom = 150.0f;      // a member this close to Stalagg is in the room
+constexpr float    kThadOtherAddMin = 45.0f;   // a side spot keeps at least this far from the other add (the platforms are about 85 y apart)
+constexpr float    kThadSpotTol = 5.0f;     // a ranged or healer within this of its spot holds there
+constexpr float    kThadMeleeOffSide = 45.0f;   // a melee further than this from its own add is on the wrong platform
+
+enum : uint8_t { kThadSideStalagg = 1, kThadSideFeugen = 2 };
+
+struct ThadSpot { uint32_t instance = 0; uint8_t side = 0; float x = 0, y = 0, z = 0; };
+std::unordered_map<uint64_t, ThadSpot> g_thadSpot;                     // bot -> its side and spot
+std::unordered_map<uint64_t, std::pair<bool, Position>> g_thadAnchor;  // (instance << 2 | side) -> anchor found?
+
+uint32_t ThadAddEntry(uint8_t side) { return side == kThadSideStalagg ? kStalagg : kFeugen; }
+
+// The side's anchor: a floor point on the add's platform at the side's distance from it, in its sight, far from the other add and reachable
+// on foot from where `bot` stands. Stalagg's side stands 24 y off (outside his reach before the pull, inside every spell's after it);
+// Feugen's 33 y, outside his Static Field (28135, 30 y: the mana of everyone nearer burns).
+bool ThadAnchor(Player* bot, Creature* add, Creature* other, uint8_t side, Position& out)
+{
+    uint64_t const key = (uint64_t(bot->GetInstanceId()) << 2) | side;
+    auto it = g_thadAnchor.find(key);
+    if (it != g_thadAnchor.end())
+    {
+        out = it->second.second;
+        return it->second.first;
+    }
+    static constexpr float kStalaggRadii[] = { 24.0f, 21.0f, 27.0f, 18.0f };
+    static constexpr float kFeugenRadii[]  = { 33.0f, 35.0f, 31.0f };
+    std::span<float const> const radii = side == kThadSideStalagg ? std::span<float const>(kStalaggRadii) : std::span<float const>(kFeugenRadii);
+    // From the back of the platform (the bearing away from the other add) round to the front.
+    float const back = other->GetAbsoluteAngle(add);
+    for (float radius : radii)
+        for (int step = 0; step <= 12; ++step)
+            for (int sign : { 1, -1 })
+            {
+                if (step == 0 && sign < 0)
+                    continue;
+                float const a = back + float(sign * step) * float(M_PI) / 12.0f;
+                float const x = add->GetPositionX() + radius * std::cos(a);
+                float const y = add->GetPositionY() + radius * std::sin(a);
+                float const z = bot->GetMap()->GetHeight(bot->GetPhaseShift(), x, y, add->GetPositionZ() + 3.0f, true, 8.0f);
+                if (z <= INVALID_HEIGHT + 1.0f || std::fabs(z - add->GetPositionZ()) > 2.5f)
+                    continue;   // off the platform
+                if (other->GetExactDist2d(x, y) < kThadOtherAddMin || !add->IsWithinLOS(x, y, z + 2.0f))
+                    continue;
+                PathGenerator path(bot);
+                if (!path.CalculatePath(x, y, z, false) || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+                    continue;
+                G3D::Vector3 const end = path.GetActualEndPosition();
+                if ((end.x - x) * (end.x - x) + (end.y - y) * (end.y - y) > 3.0f * 3.0f || std::fabs(end.z - z) > 3.0f)
+                    continue;
+                out.Relocate(x, y, z);
+                g_thadAnchor[key] = { true, out };
+                TC_LOG_INFO("playerbot.v2.raid", "[raid] Thaddius: {} side spot ({:.1f},{:.1f},{:.1f}), {:.0f} y from the add, path {:.0f} y from {}",
+                            side == kThadSideStalagg ? "Stalagg's" : "Feugen's", x, y, z, radius, path.GetPathLength(), bot->GetName());
+                return true;
+            }
+    g_thadAnchor[key] = { false, Position() };
+    TC_LOG_WARN("playerbot.v2.raid", "[raid] Thaddius: no reachable spot on {} platform from {} at ({:.1f},{:.1f},{:.1f})",
+                side == kThadSideStalagg ? "Stalagg's" : "Feugen's", bot->GetName(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    return false;
+}
+
+// 0 tank, 1 healer, 2 ranged, 3 melee: each kind is split evenly between the platforms.
+uint8_t ThadKind(Member const& m) { return m.tank ? 0 : m.healer ? 1 : m.ranged ? 2 : 3; }
+
+void NaxxPrePullThaddius(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump)
+{
+    Player* first = plan.members.front().p;
+    Creature* stalagg = first->FindNearestCreature(kStalagg, 250.0f, true);
+    Creature* feugen = first->FindNearestCreature(kFeugen, 250.0f, true);
+    if (!stalagg || !feugen || stalagg->IsInCombat() || feugen->IsInCombat())
+        return;
+    bool inRoom = false;
+    for (Member const& m : plan.members)
+        if (m.p->GetExactDist2d(stalagg) < kThadRoom)
+            inRoom = true;
+    if (!inRoom)
+        return;
+    uint32_t const instance = first->GetInstanceId();
+    // Count what each side already has (bots given a side before, humans by the add they stand nearer), then give the rest, kind by kind,
+    // to the side with fewer of their kind. The main tank goes to Stalagg's: the raid opens on him (ScenarioDefs naxx_thaddius OpensOn).
+    uint32_t count[4][3] = {};
+    auto const sideOf = [&](Member const& m) -> uint8_t
+    {
+        if (!m.bot)
+            return m.p->GetExactDist2d(stalagg) <= m.p->GetExactDist2d(feugen) ? kThadSideStalagg : kThadSideFeugen;
+        auto it = g_thadSpot.find(m.p->GetGUID().GetCounter());
+        return it != g_thadSpot.end() && it->second.instance == instance ? it->second.side : 0;
+    };
+    for (Member const& m : plan.members)
+        if (uint8_t const side = sideOf(m))
+            ++count[ThadKind(m)][side];
+    uint32_t index = 0;
+    for (Member const& m : plan.members)
+    {
+        if (!m.bot)
+            continue;
+        ++index;
+        uint64_t const low = m.p->GetGUID().GetCounter();
+        ThadSpot& spot = g_thadSpot[low];
+        if (spot.instance != instance || !spot.side)
+        {
+            uint8_t const kind = ThadKind(m);
+            uint8_t side;
+            if (m.p == plan.mainTank)
+                side = kThadSideStalagg;
+            else
+                side = count[kind][kThadSideFeugen] < count[kind][kThadSideStalagg] ? kThadSideFeugen : kThadSideStalagg;
+            Creature* add = side == kThadSideStalagg ? stalagg : feugen;
+            Creature* other = side == kThadSideStalagg ? feugen : stalagg;
+            Position anchor;
+            if (!ThadAnchor(m.p, add, other, side, anchor))
+            {
+                g_thadSpot.erase(low);
+                continue;
+            }
+            ++count[kind][side];
+            // A small ring around the anchor, a different place per bot, on the platform's floor.
+            float const angle = float(index) * 2.4f;
+            float const radius = 2.0f + float(index % 4) * 1.5f;
+            float x = anchor.GetPositionX() + radius * std::cos(angle);
+            float y = anchor.GetPositionY() + radius * std::sin(angle);
+            float z = m.p->GetMap()->GetHeight(m.p->GetPhaseShift(), x, y, anchor.GetPositionZ() + 2.0f, true, 6.0f);
+            if (z <= INVALID_HEIGHT + 1.0f || std::fabs(z - anchor.GetPositionZ()) > 2.0f || !add->IsWithinLOS(x, y, z + 2.0f))
+            {
+                x = anchor.GetPositionX();
+                y = anchor.GetPositionY();
+                z = anchor.GetPositionZ();
+            }
+            spot = { instance, side, x, y, z };
+        }
+        RaidOrder& o = orders[low];
+        o.active = true;
+        o.prepull = true;
+        SetMove(o, spot.x, spot.y, spot.z, spot.side == kThadSideStalagg ? "thaddius: Stalagg's platform" : "thaddius: Feugen's platform");
+    }
+    dump << "  Thaddius split: Stalagg tanks " << count[0][kThadSideStalagg] << " healers " << count[1][kThadSideStalagg] << " ranged "
+         << count[2][kThadSideStalagg] << " melee " << count[3][kThadSideStalagg] << " | Feugen tanks " << count[0][kThadSideFeugen] << " healers "
+         << count[1][kThadSideFeugen] << " ranged " << count[2][kThadSideFeugen] << " melee " << count[3][kThadSideFeugen] << "\n";
+}
+
+// This bot's side in phase one (Stalagg or Feugen up and fighting), with its own add (nullptr when that one is down for good) and the other.
+// False outside phase one and for a bot the split never gave a side.
+bool ThadPhaseOneSide(Plan const& plan, Player* bot, ThadSpot const*& spot, Unit*& own, Unit*& other)
+{
+    own = other = nullptr;
+    bool any = false;
+    auto it = g_thadSpot.find(bot->GetGUID().GetCounter());
+    if (it == g_thadSpot.end() || it->second.instance != bot->GetInstanceId() || !it->second.side)
+        return false;
+    spot = &it->second;
+    for (Unit* enemy : plan.enemies)
+    {
+        if (enemy->GetEntry() != kStalagg && enemy->GetEntry() != kFeugen)
+            continue;
+        any = true;
+        (enemy->GetEntry() == ThadAddEntry(spot->side) ? own : other) = enemy;
+    }
+    return any;
+}
+
+// Phase one: a ranged or healer bot holds its spot on its own platform; a melee on the wrong platform walks back; tanks go where Magnetic
+// Pull throws them and are left alone.
+bool ThaddiusSideMove(Plan const& plan, Member const& self, RaidOrder& out)
+{
+    if (!self.bot || self.tank)
+        return false;
+    ThadSpot const* spot = nullptr;
+    Unit* own = nullptr;
+    Unit* other = nullptr;
+    if (!ThadPhaseOneSide(plan, self.p, spot, own, other))
+        return false;
+    Player* bot = self.p;
+    if (!self.ranged && !self.healer)
+    {
+        float const ownX = own ? own->GetPositionX() : spot->x, ownY = own ? own->GetPositionY() : spot->y;
+        if (bot->GetExactDist2d(ownX, ownY) <= kThadMeleeOffSide)
+            return false;
+        return SetMove(out, spot->x, spot->y, spot->z, "thaddius: back to own platform");
+    }
+    if (own)
+        out.post_enemy = own->GetGUID();
+    if (bot->GetExactDist2d(spot->x, spot->y) <= kThadSpotTol && std::fabs(bot->GetPositionZ() - spot->z) < 3.0f)
+    {
+        out.at_post = true;
+        return true;
+    }
+    return SetMove(out, spot->x, spot->y, spot->z, "thaddius: own platform");
+}
+
 } // namespace
+
+// After PublishTargets: in Thaddius' phase one a non-tank bot only attacks the add on its own platform (the other is 85 y away and a 194 y
+// walk round). The kill-together rule's spread still holds: an own add it forbids (more than 10% ahead of the other) leaves the bot with
+// nothing to hit until the other side catches up.
+void NaxxPostTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders)
+{
+    for (Member const& m : plan.members)
+    {
+        if (!m.bot || m.tank)
+            continue;
+        ThadSpot const* spot = nullptr;
+        Unit* own = nullptr;
+        Unit* other = nullptr;
+        if (!ThadPhaseOneSide(plan, m.p, spot, own, other))
+            continue;
+        auto it = orders.find(m.p->GetGUID().GetCounter());
+        if (it == orders.end())
+            continue;
+        RaidOrder& o = it->second;
+        if (other)
+            o.forbidden_targets.push_back(other->GetGUID());
+        bool const ownForbidden = !own ||
+            std::find(o.forbidden_targets.begin(), o.forbidden_targets.end(), own->GetGUID()) != o.forbidden_targets.end();
+        o.fallback_target = ownForbidden ? ObjectGuid::Empty : own->GetGUID();
+    }
+}
 
 void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump)
 {
     NaxxPrePullGothik(plan, orders, dump);
+    NaxxPrePullThaddius(plan, orders, dump);
+    if (g_thadSpot.size() > 512)
+        g_thadSpot.clear();
+    if (g_thadAnchor.size() > 64)
+        g_thadAnchor.clear();
     if (g_gothSpot.size() > 512)
         g_gothSpot.clear();
     if (g_gothAnchor.size() > 64)
@@ -720,7 +955,7 @@ void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, st
 
 bool NaxxMechanicsMove(Plan const& plan, Member const& self, uint32_t now, RaidOrder& out)
 {
-    return HeiganMove(plan, self, now, out) || SapphironMove(plan, self, now, out);
+    return HeiganMove(plan, self, now, out) || SapphironMove(plan, self, now, out) || ThaddiusSideMove(plan, self, out);
 }
 
 void NaxxMechanicsElect(Election& e, uint32_t /*now*/)

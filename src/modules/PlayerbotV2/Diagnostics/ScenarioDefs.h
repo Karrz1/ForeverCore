@@ -741,9 +741,12 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
     Sight({ "naxx_gluth",      "Naxxramas: 40 level 60 raiders to Gluth (Mortal Wound tank swap, Frenzy tranquilized, Zombie Chows)",
       15932, "Gluth",                  20, 16360 }, 57.f),   // Zombie Chow; sees 49 y
     // Thaddius sits immune to players until Stalagg and Feugen are dead (classic_boss_thaddius.cpp): the raid opens on Stalagg, as a raid
-    // does (naxx-grep-1114a: the order onto Thaddius was refused at 110 s and the raid stood for 120 s).
-    OpensOn(Keeps({ "naxx_thaddius", "Naxxramas: 40 level 60 raiders to Thaddius (Stalagg and Feugen first, Static Field, Polarity Shift sides)",
-      15928, "Thaddius", 25, 15929 }, 15930), 15929),   // Stalagg, Feugen
+    // does (naxx-grep-1114a: the order onto Thaddius was refused at 110 s and the raid stood for 120 s). It comes in at the room's door
+    // (Thaddius Door 3421.9,-3017.5,295.6): the ring search landed it on his own walkway, which the slime pit and a 15 y wall cut off from
+    // both add platforms (1115c: no path up, 0/5 killed). From the door both platforms are a walk (103 y to Stalagg's), and the raid brain
+    // splits the raid onto them before the pull (RaidMechanics_Naxx.cpp, Thaddius).
+    Staged(OpensOn(Keeps({ "naxx_thaddius", "Naxxramas: 40 level 60 raiders to Thaddius (Stalagg and Feugen first, Static Field, Polarity Shift sides)",
+      15928, "Thaddius", 25, 15929 }, 15930), 15929), 3421.9f, -3017.5f, 295.6f),   // Stalagg, Feugen
 };
 
 // ---- Naxxramas, Kel'Thuzad: the whole fight from the start of phase 1, 40 level 60 raiders ----

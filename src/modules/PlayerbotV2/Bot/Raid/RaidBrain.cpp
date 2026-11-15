@@ -6163,6 +6163,8 @@ void Brain::Update(uint32_t now_ms)
         ElectPurges(e, CoordinatorFocus(plan.groupLow, plan.mapId));
         ElectCrowdControl(e, tankTargets, CoordinatorFocus(plan.groupLow, plan.mapId));
         PublishTargets(plan, next, CoordinatorFocus(plan.groupLow, plan.mapId));
+        if (plan.mapId == 533)
+            NaxxPostTargets(plan, next);
         if (std::vector<EnemySchools> hints = SchoolHints(plan, dump); !hints.empty())
             nextSchools[FocusKey(plan.groupLow, plan.mapId)] = std::move(hints);
         if (!plan.ruleFocus.IsEmpty())

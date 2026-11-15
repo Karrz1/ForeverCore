@@ -113,6 +113,8 @@ void MechanicsPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
 void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump);
 
 bool NaxxMechanicsMove(Plan const& plan, Member const& self, uint32_t now, RaidOrder& out);
+// After PublishTargets on map 533: per-bot target limits a scripted mechanic sets (Thaddius' platform split).
+void NaxxPostTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders);
 void NaxxMechanicsElect(Election& e, uint32_t now);
 void BwlMechanicsElect(Election& e, uint32_t now);
 void BwlPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, std::ostringstream& dump, uint32_t now);
