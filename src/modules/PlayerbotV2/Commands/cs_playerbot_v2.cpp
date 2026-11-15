@@ -1395,7 +1395,7 @@ public:
         if (!Playerbot::V2::Gear::Owned::ParseGearMode(ToLowerAscii(*mode_arg), mode))
         { handler->SendSysMessage("Modes: match, best, bis, t1, t2, t3."); return false; }
         std::string reply;
-        bool const ok = Playerbot::Services::Population().SetOwnerGearMode(account, uint8(mode), reply);
+        bool const ok = Playerbot::Services::Population().SetOwnerGearMode(account, uint8(mode), reply, sess->GetPlayer());
         handler->SendSysMessage(reply.c_str());
         return ok;
     }

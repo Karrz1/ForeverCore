@@ -3054,7 +3054,7 @@ static bool OrderGearMode(Player* sender, Player* bot, std::string const& n)
     if (account == 0)
         return false;
     std::string reply;
-    bool const ok = Services::Population().SetOwnerGearMode(account, uint8(mode), reply);
+    bool const ok = Services::Population().SetOwnerGearMode(account, uint8(mode), reply, sender);
     // One answer for the whole group: the lowest id among the owner's bots in the sender's group.
     BotId lowest = id;
     if (Group const* g = sender->GetGroup())
