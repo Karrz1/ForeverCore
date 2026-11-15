@@ -189,12 +189,13 @@ namespace Playerbot::Raid {
         // Where: away from the chows' three spawns (ClassicGluthZombieSummonLoc, +-7 y: 3268,-3172 / 3253,-3132 / 3308,-3186, all on the room's
         // west and south side). naxx_gluth 1115a/1115b: held at his spawn 3283,-3157, every chow appeared within his 15 y and he ate it (he went
         // from 93% back to 99% every few seconds; 1115b ended with him at 100%). naxx-gluth-1115b [scenario_grid]: the room is level floor from
-        // x 3233 to 3338 and y -3107 to -3207 (a hollow a yard lower at 3293-3318,-3117..-3152, all in sight). His main tank holds him in the
-        // north-east at 3318,-3118 (66-77 y from the spawns); the chow tanks hold the chows in a row at 3270,-3165 by the spawns, 67 y from
-        // him; the ranged and the healers stand between at 3294,-3141, 33-34 y from both, so a chow sent at a raider stops 33 y short of him.
+        // x 3233 to 3338 and y -3107 to -3207 (a hollow a yard lower at 3293-3318,-3117..-3152, all in sight). Whichever tank holds him (the
+        // Mortal Wound swap hands him on) holds him in the north-east at 3318,-3118, 66-77 y from the spawns; the ranged and the healers
+        // stand at 3294,-3141, 33 y from him, so a chow sent at a raider stops well short of his 15 y and is picked up and killed there.
+        // No fixed row for the chow tanks: a fixed tank row gives every tank a slot, and in naxx_gluth 1115c the main tank walked to its
+        // slot by the spawns ("spline to 3264,-3159", moving 74 of 90 s) with him in tow, where he ate the chows again.
         constexpr float kGluthFloorZ = 297.8f;
-        r.stand.push_back({ 15932, Who::MainTank, 3318.0f, -3118.0f, kGluthFloorZ, 5.0f, true, 0 });
-        r.tankSpot.push_back({ 15932, 16360, 0.0f, 8.0f, true, 3270.0f, -3165.0f, 135.0f });
+        r.stand.push_back({ 15932, Who::Tank, 3318.0f, -3118.0f, kGluthFloorZ, 5.0f, true, 0 });
         r.stand.push_back({ 15932, Who::Ranged, 3294.0f, -3141.0f, kGluthFloorZ - 1.0f, 6.0f, false, 0 });
         r.stand.push_back({ 15932, Who::Healer, 3294.0f, -3141.0f, kGluthFloorZ - 1.0f, 6.0f, false, 0 });
 
