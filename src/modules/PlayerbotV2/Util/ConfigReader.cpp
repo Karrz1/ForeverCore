@@ -1,7 +1,9 @@
 #include "ConfigReader.h"
 #include "../Bot/ThreatLimits.h"
 #include "Config.h"
+#include "ConfigBaseFile.h"
 #include "Log.h"
+#include "StringFormat.h"
 #include "StringConvert.h"
 #include "Util.h"
 #include <algorithm>
@@ -16,12 +18,21 @@ bool ConfigReader::load(std::string const& file_path)
     std::string err;
 
     // TrinityCore's sConfigMgr is a singleton; we layer our keys onto its state.
-    // If the file doesn't exist, fall through to defaults silently.
-    if (!file_path_.empty() && !sConfigMgr->LoadAdditionalFile(file_path_, true, err))
+    // playerbot.conf goes in as a BASE file: its keys beat worldserver.conf, and
+    // every worldserver.conf.d file beats it, at startup and after every reload
+    // (it used to be added after conf.d, so a playerbot.conf key silently beat
+    // a conf.d override). If the file doesn't exist, fall through to defaults.
+    if (!file_path_.empty() && !Trinity::Config::LoadBaseFile(file_path_, err))
     {
         TC_LOG_WARN("playerbot.v2", "[PlayerbotV2] playerbot.conf missing or unreadable ({}): {}", file_path_, err);
         // Defaults are acceptable; not a hard failure.
     }
+    refresh();
+    return true;
+}
+
+void ConfigReader::refresh()
+{
     apply_from_loaded_config();
 
     // B-1 observability: playerbot.conf is layered with override=true, so
@@ -31,16 +42,35 @@ bool ConfigReader::load(std::string const& file_path)
     // the precedence once per load/reload so the log answers it.
     TC_LOG_INFO("playerbot.v2",
         "[Config] effective population: TotalTarget={} "
-        "HordePct={} Shape={} MaxHeavyFactor={:.2f} (Playerbot.* keys in '{}' override worldserver.conf)",
+        "HordePct={} Shape={} MaxHeavyFactor={:.2f} (keys in '{}' override worldserver.conf; worldserver.conf.d overrides both)",
         pop_target_,
         pop_horde_pct_, pop_shape_, pop_max_heavy_factor_,
         file_path_.empty() ? "<none>" : file_path_);
-    return true;
+    TC_LOG_INFO("playerbot.v2", "[Config] {}", effective_summary());
+}
+
+std::string ConfigReader::effective_summary() const
+{
+    // The keys a test run flips most, read back from the merged config so a
+    // reload shows at once whether a conf.d change arrived.
+    return Trinity::StringFormat("effective: ParallelSnapshotBuild={} SnapshotBuildSplitMap={} World.Enable={} World.SoakAnchors=\"{}\"",
+        parallel_snapshot_build_ ? 1 : 0, snapshot_build_split_map_ ? 1 : 0,
+        sConfigMgr->GetBoolDefault("Playerbot.World.Enable", false, true) ? 1 : 0,
+        sConfigMgr->GetStringDefault("Playerbot.World.SoakAnchors", "", true));
 }
 
 bool ConfigReader::reload()
 {
-    return load(file_path_);
+    // Read every config file again in its normal order (worldserver.conf,
+    // playerbot.conf, worldserver.conf.d, environment), then take the values.
+    // Re-adding playerbot.conf on top, as this did before, made its keys beat
+    // the conf.d overrides until the next restart.
+    std::vector<std::string> errors;
+    bool const ok = sConfigMgr->Reload(errors);
+    for (std::string const& e : errors)
+        TC_LOG_ERROR("playerbot.v2", "[Config] reload: {}", e);
+    refresh();
+    return ok;
 }
 
 void ConfigReader::apply_from_loaded_config()

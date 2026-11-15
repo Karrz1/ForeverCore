@@ -3005,13 +3005,15 @@ public:
             handler->SendSysMessage("PlayerbotV2 not initialized.");
             return false;
         }
-        // ConfigReader::reload re-reads playerbot.conf via sConfigMgr. HR-yes
+        // ConfigReader::reload re-reads every config file via sConfigMgr
+        // (worldserver.conf, playerbot.conf, worldserver.conf.d). HR-yes
         // keys take effect immediately on next read; HR-no keys are cached
         // by the subsystems that consumed them at init and won't update
         // until a worldserver restart. See playerbot.conf.dist for the per-
         // key HR tag.
         const bool ok = Playerbot::Services::Config().reload();
         handler->PSendSysMessage("playerbot.conf reload: %s", ok ? "ok" : "failed (see server log)");
+        handler->PSendSysMessage("%s", Playerbot::Services::Config().effective_summary().c_str());
         return true;
     }
 

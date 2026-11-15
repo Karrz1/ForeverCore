@@ -20,7 +20,12 @@ class ConfigReader
 public:
     // Returns true if config loaded (or default values acceptable for missing keys).
     bool load(std::string const& file_path);
+    // .playerbot reload: reads all config files again (sConfigMgr->Reload), then refresh().
     bool reload();
+    // Takes the values from the config as it is loaded now (after `.reload config`, OnConfigLoad).
+    void refresh();
+    // One line with the effective values of the keys test runs flip (log + .playerbot reload reply).
+    std::string effective_summary() const;
 
     // ----- Accessors (HR-yes unless noted) ----
     // Threading
