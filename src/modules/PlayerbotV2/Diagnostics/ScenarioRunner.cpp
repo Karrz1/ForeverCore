@@ -133,8 +133,10 @@ constexpr std::uint32_t kManaWaitMs = 120u * 1000u;      // the longest the Atta
 constexpr std::uint32_t kPrepWaitMs = 90u * 1000u;       // the longest it waits for the raid's buffs and consumables (PrepOwed)
 constexpr std::uint32_t kPrePullWaitMs = 60u * 1000u;    // ... and, after that, for the raid brain's pre-pull spots
 constexpr float kPrePullArrivedYards = 4.0f;             // a raider this close to its pre-pull spot is there
-constexpr std::uint32_t kPatrolWaitMs = 180u * 1000u;    // the longest it waits for a patrolling boss to walk back toward the raid
+constexpr std::uint32_t kPatrolWaitMs = 300u * 1000u;    // the longest it waits for a patrolling boss to walk back toward the raid (Patchwerk's
+                                                         // loop: about 440 y at walking pace and a 60 s stop, near 4 minutes)
 constexpr float kPatrolOrderYards = 60.f;                // a patrolling boss further than this from the main tank is waited for
+constexpr float kPatrolHomeYards = 8.f;                  // ... and one nearer is still waited for until he walks home, or is home
 
 namespace Owned = ::Playerbot::V2::Gear::Owned;
 constexpr std::size_t kStageBatch = 4;                           // squads over five: members set up per step, so the world thread keeps ticking
@@ -203,6 +205,9 @@ struct Run
     bool patrol_centre_tried = false;     // PickArrival searched round the low end of the boss's patrol (his spawn is on a raised walk)
     std::uint32_t patrol_wait_ms = 0;     // run_ms the Attack began waiting for the boss's patrol to come back (0 = not waiting)
     std::uint32_t patrol_wait_log_ms = 0; // run_ms of the last 'waiting for the patrol' line
+    float patrol_home_dist = -1.f;        // the patrolling boss's distance from his home (spawn) at the last sample; -1 = not seen yet
+    std::uint32_t patrol_home_ms = 0;     // run_ms of that sample (one a second: a tick's step is too small to compare)
+    bool patrol_homeward = false;         // the last two samples had him nearer home
     bool kits_stocked = false;            // the role kits (flask, elixirs, food) went into the bags at 'in place' (StockRaidKits)
     bool trash_cleared = false;
     // The boss pull's statistics ([pull_stats]): started at the boss's first combat, reported 90 s later and when the run ends.
@@ -4026,7 +4031,23 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                 Player* tank = MainTank(run);
                 Creature* boss = FindBoss(run);
                 bool const patrols = boss && !boss->IsInCombat() && boss->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE;
-                if (tank && patrols && tank->GetDistance(boss) > kPatrolOrderYards)
+                // In reach is not enough: the order goes out while he walks home (toward his spawn, where the raid's rules fight him) or stands
+                // there, never while he walks away. naxx_patchwerk 1115e: ordered 60 y off while he walked west out of his hall, the main tank
+                // chased him to the west end, he turned into the healer camp there, picked up a mage and Hateful Strike killed the main tank at
+                // 1 s; the fight never came back to his post (his spawn, 3308,-3232).
+                bool walking_home = false;
+                if (patrols)
+                {
+                    float const home_d = boss->GetHomePosition().GetExactDist2d(boss->GetPositionX(), boss->GetPositionY());
+                    if (run.patrol_home_dist < 0.f || run.run_ms - run.patrol_home_ms >= 1000u)
+                    {
+                        run.patrol_homeward = run.patrol_home_dist >= 0.f && home_d < run.patrol_home_dist - 0.5f;
+                        run.patrol_home_dist = home_d;
+                        run.patrol_home_ms = run.run_ms;
+                    }
+                    walking_home = home_d <= kPatrolHomeYards || run.patrol_homeward;
+                }
+                if (tank && patrols && (tank->GetDistance(boss) > kPatrolOrderYards || !walking_home))
                 {
                     if (!run.patrol_wait_ms)
                         run.patrol_wait_ms = run.run_ms ? run.run_ms : 1u;
@@ -4039,9 +4060,11 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                         if (!run.patrol_wait_log_ms || run.run_ms - run.patrol_wait_log_ms >= 10000u)
                         {
                             run.patrol_wait_log_ms = run.run_ms ? run.run_ms : 1u;
-                            TC_LOG_INFO("playerbot.v2", "[scenario] {} the attack waits for {}'s patrol: {:.0f} y from the main tank at {:.1f},{:.1f},{:.1f}, {} s waited",
+                            TC_LOG_INFO("playerbot.v2", "[scenario] {} the attack waits for {}'s patrol: {:.0f} y from the main tank at {:.1f},{:.1f},{:.1f}, "
+                                        "{:.0f} y from his home, {}, {} s waited",
                                         run.def->name, boss->GetName(), tank->GetDistance(boss), boss->GetPositionX(), boss->GetPositionY(),
-                                        boss->GetPositionZ(), (run.run_ms - run.patrol_wait_ms) / 1000u);
+                                        boss->GetPositionZ(), run.patrol_home_dist, walking_home ? "walking home" : "walking away",
+                                        (run.run_ms - run.patrol_wait_ms) / 1000u);
                         }
                         attack_due = false;
                     }
