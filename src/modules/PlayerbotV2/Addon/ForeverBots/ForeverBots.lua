@@ -3523,6 +3523,7 @@ do
             (#callers > 0 and table.concat(callers, " < ") or "?")
     end
 
+    local otherBlocked = {}
     local guard = CreateFrame("Frame")
     guard:RegisterEvent("ADDON_ACTION_FORBIDDEN")
     pcall(guard.RegisterEvent, guard, "ADDON_ACTION_BLOCKED")
@@ -3531,8 +3532,13 @@ do
         func = (type(func) == "string" and not IsSecret(func)) and func:gsub("%(%)$", "") or "?"
         -- "Interface action failed because of an AddOn" in the chat frame right after login: say which add-on and which call, for
         -- ours and for any other add-on, so the line can be read instead of guessed at (the pop-up names them only for a moment).
+        -- Another add-on is named once per session: ExtraProfessionTabs moving the action bars in a fight got one line per
+        -- refused call, a chat full of them on every fight (Discord, arrathem, 2026-11-15), which read as our add-on breaking.
         if addon ~= ADDON then
-            if type(addon) == "string" and not IsSecret(addon) then Print("the client blocked " .. func .. "() for the add-on " .. addon .. " (" .. (event == "ADDON_ACTION_BLOCKED" and "blocked" or "forbidden") .. ")") end
+            if type(addon) == "string" and not IsSecret(addon) and not otherBlocked[addon] then
+                otherBlocked[addon] = true
+                Print("the client blocked " .. func .. "() for the add-on " .. addon .. " (" .. (event == "ADDON_ACTION_BLOCKED" and "blocked" or "forbidden") .. "). Further blocked calls of " .. addon .. " are not shown; that add-on causes them, not ForeverBots.")
+            end
             return
         end
         if event == "ADDON_ACTION_BLOCKED" then
