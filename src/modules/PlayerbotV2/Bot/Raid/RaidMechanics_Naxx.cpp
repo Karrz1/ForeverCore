@@ -22,6 +22,7 @@
 
 #include "Creature.h"
 #include "GameObject.h"
+#include "GameTime.h"
 #include "Log.h"
 #include "Map.h"
 #include "PathGenerator.h"
@@ -935,12 +936,13 @@ constexpr float    kGluthSwapSide  = 5.0f;    // the swap tank stands this far b
 constexpr float    kGluthSpotTol   = 3.0f;
 constexpr float    kGluthChowTol   = 5.0f;
 constexpr uint32_t kGluthStaleMs   = 10000;   // an anchor not looked at for this long belongs to an earlier pull
+constexpr uint32_t kGluthDragHoldMs = 15000;  // the longest the DPS wait for the drag (the holder runs 50-70 y with him at its back)
 struct GluthPost { float x, y; };
 constexpr GluthPost kGluthChowPosts[] = {
     { 3288.0f, -3148.0f },   // south: 30 y from spawn 3267.9,-3172.1, 41 y from 3308.3,-3185.8, 38 y from the camp
     { 3265.0f, -3136.0f },   // west: 13 y from spawn 3253.2,-3132.3, 36 y from the camp
 };
-struct GluthAnchor { uint32_t seen = 0; bool settled = false; float x = 0.f, y = 0.f; };
+struct GluthAnchor { uint32_t seen = 0; bool settled = false; float x = 0.f, y = 0.f; uint32_t drag_since = 0; bool drag_timed_out = false; };
 std::unordered_map<uint64_t, GluthAnchor> g_gluthAnchor;   // Gluth's guid -> where he stopped by the east wall
 
 Unit* FindGluth(Plan const& plan)
@@ -1113,11 +1115,45 @@ void NaxxPostTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders
 
 // Gluth's chow tanks never attack him: their post is 35-55 y from him and the attack would walk them over (and bring their chows into his
 // reach).
+// While his tank drags him to the east wall the DPS do not hit him: a tank on the run builds no threat, and the timed threat releases let
+// the raid's damage take him off it (naxx_gluth 1115g: on the main tank at 3 s, on a fury warrior at 6 s with the drag half done, then on
+// one DPS after another; 3 tanks and 10 raiders dead by 36 s). Once he stands at his spot the normal threat holds take over. Ordered casts
+// (Tranquilizing Shot) still go; the wait is bounded by kGluthDragHoldMs from the start of the drag.
 void NaxxGluthTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders)
 {
     Unit* gluth = FindGluth(plan);
     if (!gluth)
         return;
+    uint32_t const now = GameTime::GetGameTimeMS();
+    GluthAnchor& spot = GluthSpot(gluth, now);
+    int unused = -1;
+    bool dragging = false;
+    for (Member const& m : plan.members)
+        if (m.tank && GluthJobOf(plan, gluth, m.p, unused) == GluthJob::Holder)
+            dragging = !spot.settled;
+    if (!dragging)
+        spot.drag_since = 0;
+    else if (!spot.drag_since)
+        spot.drag_since = now ? now : 1u;
+    if (dragging && now - spot.drag_since >= kGluthDragHoldMs)
+    {
+        if (!spot.drag_timed_out)
+            TC_LOG_INFO("playerbot.v2.raid", "[raid_gluth] the drag has not brought him within {:.0f} y of {:.0f},{:.0f} in {} s (he is at {:.1f},{:.1f}): "
+                        "the DPS open where he is", kGluthArrived, kGluthDragX, kGluthDragY, kGluthDragHoldMs / 1000u,
+                        gluth->GetPositionX(), gluth->GetPositionY());
+        spot.drag_timed_out = true;
+        dragging = false;
+    }
+    else if (!dragging)
+        spot.drag_timed_out = false;
+    for (Member const& m : plan.members)
+    {
+        if (!dragging || !m.bot || m.tank || m.healer)
+            continue;
+        auto it = orders.find(m.p->GetGUID().GetCounter());
+        if (it != orders.end())
+            it->second.hold_target = gluth->GetGUID();
+    }
     for (Member const& m : plan.members)
     {
         int post = -1;
