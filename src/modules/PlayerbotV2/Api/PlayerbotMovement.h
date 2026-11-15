@@ -124,6 +124,20 @@ public:
 private:
     bool previous_;
 };
+// Bot logic threads (the rule worker pool, AiWorkerPool) run their rules while the map threads update. For the life of a
+// ScopedBotLogicThread, EnsureGridForQuery never touches the map: it hands the grid to the world thread and returns true, so
+// the search runs on the tiles that are loaded now. The worker pool sets it once per thread, next to a
+// MMAP::ScopedThreadNavMeshQuery (own navmesh queries, searches under the navmesh read lock).
+class ScopedBotLogicThread
+{
+public:
+    ScopedBotLogicThread();
+    ~ScopedBotLogicThread();
+    ScopedBotLogicThread(ScopedBotLogicThread const&) = delete;
+    ScopedBotLogicThread& operator=(ScopedBotLogicThread const&) = delete;
+private:
+    bool previous_;
+};
 bool EnsureGridForQuery(Map* m, float x, float y);
 // World thread only, after the build barrier: loads the grids the builds asked for. Returns how many requests it handled.
 size_t LoadDeferredGrids();

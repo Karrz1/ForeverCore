@@ -175,6 +175,8 @@ struct SameMapSplitStats
     uint64 deferred_grids = 0;   // grid loads the split builds handed to the world thread
 };
 static SameMapSplitStats g_split_stats;
+// Grid loads the bot logic threads handed to the world thread, for the TickPerf window (world thread only).
+static uint64 g_bot_logic_grid_loads = 0;
 
 namespace {
 
@@ -2280,6 +2282,11 @@ void Module::OnWorldUpdate(std::chrono::milliseconds diff)
         std::shared_ptr<BotSnapshot const>   snap;               // null = Build returned {}
         uint32                               build_us = 0;       // this bot's Build wall time (TickPerf slowest-build)
     };
+    // Grids the rules' nav-point probes asked for on the bot logic threads
+    // (BotMovement::ScopedBotLogicThread). The maps are still here, so this is
+    // where they load; the builds below already see them.
+    g_bot_logic_grid_loads += ::Playerbot::BotMovement::LoadDeferredGrids();
+
     // Partition: Map* -> the slots whose bots live on that map. A vector of
     // (Map*, slots) preserves a stable iteration; build_order records the
     // global registry order for the post-barrier serial pass.
@@ -3053,6 +3060,10 @@ void Module::OnWorldUpdate(std::chrono::milliseconds diff)
                     g_split_stats.parts > 0 ? double(g_split_stats.bots) / double(g_split_stats.parts) : 0.0,
                     g_split_stats.deferred_grids);
             g_split_stats = {};
+            if (g_bot_logic_grid_loads > 0)
+                TC_LOG_INFO("playerbot.v2", "[PlayerbotV2] TickPerf bot_logic_grid_loads={} (asked by rule probes, loaded on the world thread)",
+                    g_bot_logic_grid_loads);
+            g_bot_logic_grid_loads = 0;
 
             // Spike attribution. The averages above hide a once-per-period
             // spike, so name it: the phase breakdown of the single worst tick,

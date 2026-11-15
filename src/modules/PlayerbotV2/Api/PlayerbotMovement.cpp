@@ -38,6 +38,7 @@
 #include <cmath>
 #include <exception>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #ifdef _MSC_VER
@@ -64,8 +65,11 @@ constexpr float kGroundLiftY = 2.0f;
 
 // ---- SehSafeCalculatePath ---------------------------------------------------
 
+// The guarded bodies. An SEH frame cannot hold objects with destructors, so the
+// navmesh read lock is taken by the public wrappers further down.
+namespace {
 #ifdef _MSC_VER
-bool SehSafeCalculatePath(PathGenerator& path, float x, float y, float z) noexcept
+bool CalculatePathGuarded(PathGenerator& path, float x, float y, float z) noexcept
 {
     __try
     {
@@ -81,7 +85,7 @@ bool SehSafeCalculatePath(PathGenerator& path, float x, float y, float z) noexce
     }
 }
 
-bool SehSafeCalculatePathFrom(PathGenerator& path, float sx, float sy, float sz, float x, float y, float z) noexcept
+bool CalculatePathFromGuarded(PathGenerator& path, float sx, float sy, float sz, float x, float y, float z) noexcept
 {
     __try
     {
@@ -94,7 +98,7 @@ bool SehSafeCalculatePathFrom(PathGenerator& path, float sx, float sy, float sz,
     }
 }
 
-int SehSafeNearestPolyProbe(void const* query, float const* detourPt,
+int NearestPolyProbeGuarded(void const* query, float const* detourPt,
                             float const* extents, void const* filter,
                             float* nearestOut) noexcept
 {
@@ -113,19 +117,19 @@ int SehSafeNearestPolyProbe(void const* query, float const* detourPt,
     }
 }
 #else
-bool SehSafeCalculatePath(PathGenerator& path, float x, float y, float z) noexcept
+bool CalculatePathGuarded(PathGenerator& path, float x, float y, float z) noexcept
 {
     return path.CalculatePath(x, y, z, /*forceDest=*/false);
 }
 
-bool SehSafeCalculatePathFrom(PathGenerator& path, float sx, float sy, float sz, float x, float y, float z) noexcept
+bool CalculatePathFromGuarded(PathGenerator& path, float sx, float sy, float sz, float x, float y, float z) noexcept
 {
     return path.CalculatePath(sx, sy, sz, x, y, z, /*forceDest=*/false);
 }
 
 // Non-MSVC platforms have no SEH; run the probe directly. Mirrors the
 // _MSC_VER branch above minus the __try/__except guard.
-int SehSafeNearestPolyProbe(void const* query, float const* detourPt,
+int NearestPolyProbeGuarded(void const* query, float const* detourPt,
                             float const* extents, void const* filter,
                             float* nearestOut) noexcept
 {
@@ -136,6 +140,41 @@ int SehSafeNearestPolyProbe(void const* query, float const* detourPt,
     return ref ? 1 : 0;
 }
 #endif
+
+// A thread with its own navmesh queries (a bot logic thread, or a same-map
+// split snapshot build) holds the navmesh read lock for the whole search, so
+// a map thread cannot add or remove a tile under it (MMAP::NavMeshReadLock).
+// Map and world thread searches take no lock, as before.
+struct ReadLockIfOwnQueries
+{
+    std::optional<MMAP::NavMeshReadLock> lock;
+    ReadLockIfOwnQueries()
+    {
+        if (MMAP::ScopedThreadNavMeshQuery::Active())
+            lock.emplace();
+    }
+};
+} // namespace
+
+bool SehSafeCalculatePath(PathGenerator& path, float x, float y, float z) noexcept
+{
+    ReadLockIfOwnQueries const lock;
+    return CalculatePathGuarded(path, x, y, z);
+}
+
+bool SehSafeCalculatePathFrom(PathGenerator& path, float sx, float sy, float sz, float x, float y, float z) noexcept
+{
+    ReadLockIfOwnQueries const lock;
+    return CalculatePathFromGuarded(path, sx, sy, sz, x, y, z);
+}
+
+int SehSafeNearestPolyProbe(void const* query, float const* detourPt,
+                            float const* extents, void const* filter,
+                            float* nearestOut) noexcept
+{
+    ReadLockIfOwnQueries const lock;
+    return NearestPolyProbeGuarded(query, detourPt, extents, filter, nearestOut);
+}
 
 // ---- SnapToGround -----------------------------------------------------------
 
@@ -344,9 +383,17 @@ bool ProbeGround(Player* p, float x, float y, float zHint, float& out)
 namespace
 {
 thread_local bool t_deferGridLoads = false;
+thread_local bool t_botLogicThread = false;
 std::mutex g_deferredGridsMtx;
-struct DeferredGrid { Map* map; float x; float y; };
+// By map id + instance id, not Map*: a bot logic thread's request can outlive its map (an instance reset before the drain).
+struct DeferredGrid { uint32 map_id; uint32 instance_id; float x; float y; };
 std::vector<DeferredGrid> g_deferredGrids;
+
+void QueueGridLoad(Map const* m, float x, float y)
+{
+    std::lock_guard<std::mutex> lk(g_deferredGridsMtx);
+    g_deferredGrids.push_back({ m->GetId(), m->GetInstanceId(), x, y });
+}
 }
 
 ScopedDeferGridLoads::ScopedDeferGridLoads() : previous_(t_deferGridLoads)
@@ -359,20 +406,37 @@ ScopedDeferGridLoads::~ScopedDeferGridLoads()
     t_deferGridLoads = previous_;
 }
 
+ScopedBotLogicThread::ScopedBotLogicThread() : previous_(t_botLogicThread)
+{
+    t_botLogicThread = true;
+}
+
+ScopedBotLogicThread::~ScopedBotLogicThread()
+{
+    t_botLogicThread = previous_;
+}
+
 bool EnsureGridForQuery(Map* m, float x, float y)
 {
     if (!m)
         return false;
-    if (!t_deferGridLoads)
+    if (t_deferGridLoads)
     {
-        m->LoadGrid(x, y);   // no-op when the grid is already loaded
+        // same-map split build: the maps are still, so the grid state can be read
+        if (m->IsGridLoaded(x, y))
+            return true;
+        QueueGridLoad(m, x, y);
+        return false;
+    }
+    if (t_botLogicThread)
+    {
+        // a map thread may be loading or unloading grids right now, so not even the grid state is read here. The search
+        // goes ahead; on a grid that is not loaded it finds no navmesh, the same as any search over an unloaded tile.
+        QueueGridLoad(m, x, y);
         return true;
     }
-    if (m->IsGridLoaded(x, y))
-        return true;
-    std::lock_guard<std::mutex> lk(g_deferredGridsMtx);
-    g_deferredGrids.push_back({ m, x, y });
-    return false;
+    m->LoadGrid(x, y);   // no-op when the grid is already loaded
+    return true;
 }
 
 size_t LoadDeferredGrids()
@@ -382,9 +446,9 @@ size_t LoadDeferredGrids()
         std::lock_guard<std::mutex> lk(g_deferredGridsMtx);
         grids.swap(g_deferredGrids);
     }
-    // The maps are the ones the bots stood on during this same bot-module update; no map is created or deleted in between.
     for (DeferredGrid const& g : grids)
-        g.map->LoadGrid(g.x, g.y);   // a grid asked for twice is a no-op the second time
+        if (Map* m = sMapMgr->FindMap(g.map_id, g.instance_id))
+            m->LoadGrid(g.x, g.y);   // a grid asked for twice is a no-op the second time
     return grids.size();
 }
 
@@ -403,7 +467,9 @@ bool NearestNavPoint(Player* p, float tx, float ty, float tz,
     // span into a grid the bot hasn't streamed). Loading is a no-op when the
     // grid is already loaded; it keeps the navmesh tile alive for the query.
     // Inside a same-map parallel build the load waits for the world thread
-    // and this build has no answer (see ScopedDeferGridLoads).
+    // and this build has no answer (see ScopedDeferGridLoads); on a bot logic
+    // thread the load also waits for the world thread, and the search runs
+    // on what is loaded now (see ScopedBotLogicThread).
     if (!EnsureGridForQuery(m, tx, ty))
         return false;
 
