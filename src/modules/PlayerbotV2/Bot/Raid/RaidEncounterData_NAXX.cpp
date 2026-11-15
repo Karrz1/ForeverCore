@@ -198,10 +198,11 @@ namespace Playerbot::Raid {
         // RaidMechanics_Naxx.cpp (Gluth) drags him to the east wall and puts his tank on the camp side of him, 30-40 y from the camp, and
         // keeps the chow tanks at two posts by the spawns. naxx_gluth 1115e, with his tank on a north-east post 33 y from the camp: he stood
         // 17 y short of it and 19 y from the camp, ate the chows the raid drew, and killed the camp once his tank fell (42 deaths, all his).
-        // The camp is on the north wall, 26 y from the way in, within 40 y of his tank and of both chow posts.
+        // The camp is on the north wall, 28 y from where the raid lands, within 43 y of the drag spot and 40 y of both chow posts (1115f's
+        // camp 3280,-3115 was 57 y from the drag spot, out of heal reach while his tank dragged him).
         constexpr float kGluthFloorZ = 297.8f;
-        r.stand.push_back({ 15932, Who::Ranged, 3280.0f, -3115.0f, kGluthFloorZ, 6.0f, false, 0 });
-        r.stand.push_back({ 15932, Who::Healer, 3280.0f, -3115.0f, kGluthFloorZ, 6.0f, false, 0 });
+        r.stand.push_back({ 15932, Who::Ranged, 3290.0f, -3110.0f, kGluthFloorZ, 6.0f, false, 0 });
+        r.stand.push_back({ 15932, Who::Healer, 3290.0f, -3110.0f, kGluthFloorZ, 6.0f, false, 0 });
 
         // ---------------------------------------------------------------------------------------------------------------
         // THADDIUS (15928): Polarity Shift gives Positive Charge 28059 / Negative Charge 28084 (naxx/classic_boss_thaddius.cpp).

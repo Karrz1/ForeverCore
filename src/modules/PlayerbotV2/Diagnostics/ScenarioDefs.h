@@ -739,8 +739,8 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
     { "naxx_grobbulus",  "Naxxramas: 40 level 60 raiders to Grobbulus (Mutating Injection carrier runs, poison clouds, Slime Spray cone)",
       15931, "Grobbulus",              20 },
     // Gluth sees 49 y (MoveInLineOfSight, classic_boss_gluth.cpp) from his spawn 3283.1,-3157.0 in the middle of his room. The raid lands
-    // just outside that, on the north wall by the way in (3262,-3108: 53 y from him), 19 y from its camp (RaidEncounterData_NAXX.cpp,
-    // 3280,-3115), so the main tank opens and the healers have a short walk. 0080 landed it on the old camp 3294,-3141, 19 y from him:
+    // just outside that, on the north wall by the way in (3262,-3108: 53 y from him), 28 y from its camp (RaidEncounterData_NAXX.cpp,
+    // 3290,-3110), so the main tank opens and the healers have a short walk. 0080 landed it on the old camp 3294,-3141, 19 y from him:
     // he came at once and killed a priest 1 s in (1115e). From the ring search's spot 57 y out the healers walked 62 y (1115d).
     Staged(Sight({ "naxx_gluth",      "Naxxramas: 40 level 60 raiders to Gluth (Mortal Wound tank swap, Frenzy tranquilized, Zombie Chows)",
       15932, "Gluth",                  20, 16360 }, 57.f), 3262.0f, -3108.0f, 297.8f),   // Zombie Chow; sees 49 y
