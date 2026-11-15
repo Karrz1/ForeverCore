@@ -3845,6 +3845,7 @@ void Module::OnDamageTaken(Unit* attacker, Unit* victim, int32 amount, uint32 sp
     tl_damage_spell = 0;
     if (!initialized_) return;
     PveGroupCoordinator::NoteDamageDone(attacker, victim, amount);   // the [raid_dps] per-bot tally
+    GroupSnapshotBuilder::NoteDamageTaken(victim, amount);            // a grouped player's damage taken per second, for the raid healers
     // The bot's own hit (not its pet's) for the idle watchdog: "did anything land in the last 4 s".
     if (attacker && attacker->IsPlayer() && victim && amount > 0 && !victim->IsPlayer())
         if (BotAI* ai = Services::Registry().ai(attacker->GetGUID().GetCounter()))
