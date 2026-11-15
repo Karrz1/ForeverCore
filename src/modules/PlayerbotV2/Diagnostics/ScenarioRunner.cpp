@@ -136,7 +136,8 @@ constexpr float kPrePullArrivedYards = 4.0f;             // a raider this close 
 constexpr std::uint32_t kPatrolWaitMs = 300u * 1000u;    // the longest it waits for a patrolling boss to walk back toward the raid (Patchwerk's
                                                          // loop: about 440 y at walking pace and a 60 s stop, near 4 minutes)
 constexpr float kPatrolOrderYards = 60.f;                // a patrolling boss further than this from the main tank is waited for
-constexpr float kPatrolHomeYards = 8.f;                  // ... and one nearer is still waited for until he walks home, or is home
+constexpr float kPatrolHomeYards = 8.f;                  // ... and one nearer is still waited for until he is home,
+constexpr float kPatrolNearHomeYards = 20.f;             // ... or this close to it and walking toward it
 
 namespace Owned = ::Playerbot::V2::Gear::Owned;
 constexpr std::size_t kStageBatch = 4;                           // squads over five: members set up per step, so the world thread keeps ticking
@@ -1303,16 +1304,37 @@ bool PickArrival(Run& run, Player* leader)
         // The listed spot on the route: no search. Path-checked once, and the nearest hostile is logged so a landing in a pack shows.
         // A fight the raid opens on an add (ScenarioDef::start_add) is checked against that add, the first thing it walks to: Thaddius'
         // own walkway has no walking route from his door, his adds' platforms have (naxx_thaddius 1115d failed its setup at 0 s on the
-        // route to him).
+        // route to him). The add is searched for from the boss's own spawn (the map's spawn store), not from a squad member: the squad still
+        // stands at the instance's entrance, hundreds of yards off, and FindBoss from there found nobody (naxx_thaddius 1115e checked the
+        // route to Thaddius again, 129 y straight, and failed the same way). Stalagg and Feugen are his summons, so not in the spawn store.
         float tx = run.boss_x, ty = run.boss_y, tz = run.boss_z;
         if (run.def->start_add)
-            if (Creature const* boss = FindBoss(run))
-                if (Creature const* add = boss->FindNearestCreature(run.def->start_add, 200.f, true))
+        {
+            Creature* boss = nullptr;
+            float bossDist = 50.f;
+            for (auto const& kv : map->GetCreatureBySpawnIdStore())
+            {
+                Creature* c = kv.second;
+                if (!c || c->GetEntry() != run.def->goal_entry || !c->IsAlive())
+                    continue;
+                float const d = std::hypot(c->GetPositionX() - run.boss_x, c->GetPositionY() - run.boss_y);
+                if (d < bossDist)
                 {
-                    tx = add->GetPositionX();
-                    ty = add->GetPositionY();
-                    tz = add->GetPositionZ();
+                    boss = c;
+                    bossDist = d;
                 }
+            }
+            Creature const* add = boss ? boss->FindNearestCreature(run.def->start_add, 200.f, true) : nullptr;
+            if (add)
+            {
+                tx = add->GetPositionX();
+                ty = add->GetPositionY();
+                tz = add->GetPositionZ();
+            }
+            else
+                TC_LOG_INFO("playerbot.v2", "[scenario] {} no living creature {} within 200 y of the boss's spawn: the staging route is checked to the boss",
+                            run.def->name, run.def->start_add);
+        }
         PathGenerator pg(leader);
         ::Playerbot::BotMovement::SehSafeCalculatePathFrom(pg, run.stage_x, run.stage_y, run.stage_z, tx, ty, tz);
         float const straight = std::hypot(tx - run.stage_x, ty - run.stage_y);
@@ -4050,14 +4072,18 @@ static void TickRun(Run& run, std::uint32_t diff_ms)
                 bool walking_home = false;
                 if (patrols)
                 {
-                    float const home_d = boss->GetHomePosition().GetExactDist2d(boss->GetPositionX(), boss->GetPositionY());
+                    // From his spawn point, not GetHomePosition: waypoint movement moves the home along with him (every wait line in
+                    // naxx_patchwerk 1115f said "0 y from his home", so every one counted as walking home).
+                    float const home_d = std::hypot(boss->GetPositionX() - run.boss_x, boss->GetPositionY() - run.boss_y);
                     if (run.patrol_home_dist < 0.f || run.run_ms - run.patrol_home_ms >= 1000u)
                     {
                         run.patrol_homeward = run.patrol_home_dist >= 0.f && home_d < run.patrol_home_dist - 0.5f;
                         run.patrol_home_dist = home_d;
                         run.patrol_home_ms = run.run_ms;
                     }
-                    walking_home = home_d <= kPatrolHomeYards || run.patrol_homeward;
+                    // Near home, not only toward it: naxx_patchwerk 1115f was ordered while he walked home 50 y west of his spawn, the
+                    // tanks met him there (3256,-3223), off their posts and out of the healers' reach, and Hateful Strike killed 31.
+                    walking_home = home_d <= kPatrolHomeYards || (home_d <= kPatrolNearHomeYards && run.patrol_homeward);
                 }
                 if (tank && patrols && (tank->GetDistance(boss) > kPatrolOrderYards || !walking_home))
                 {
