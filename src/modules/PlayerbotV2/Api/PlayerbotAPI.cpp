@@ -3077,8 +3077,9 @@ Result API::move_to(float x, float y, float z, bool run, bool direct, bool drop,
     {
         if (refuse_exit_portal())
             return Result::Locked;
+        LiquidData lvData{};
         BotMovement::LiquidVerdict const lv =
-            BotMovement::ClassifyDestinationLiquid(p_, x, y, z);
+            BotMovement::ClassifyDestinationLiquid(p_, x, y, z, &lvData);
 
         // Hazard (magma / slime) is always refused Ã¢Â€Â” the bot burns to death
         // on contact regardless of distance or breath.
@@ -3091,6 +3092,15 @@ Result API::move_to(float x, float y, float z, bool run, bool direct, bool drop,
             // plenty for wander to rotate through.
             Playerbot::V2::Module::instance().OnPathOutcome(3 /*FarFromPolyEnd*/);
             log_path_fail("Magma");
+            // Which liquid it was, once per map and liquid type: the type, its flags and its spell are what LiquidHurts judged.
+            static std::set<std::pair<uint32, uint32>> s_hazardLiquidLogged;
+            if (s_hazardLiquidLogged.size() < 256 && s_hazardLiquidLogged.emplace(p_->GetMapId(), lvData.entry).second)
+            {
+                LiquidTypeEntry const* lt = sLiquidTypeStore.LookupEntry(lvData.entry);
+                TC_LOG_INFO("playerbot.v2", "[liquid_hazard] map={} liquid type {} ({}) flags 0x{:X} spell {} surface {:.1f} at ({:.1f},{:.1f},{:.1f})",
+                    p_->GetMapId(), lvData.entry, lt ? lt->Name : "?", uint32(lvData.type_flags.AsUnderlyingType()), lt ? lt->SpellID : 0u,
+                    lvData.level, x, y, z);
+            }
             NotePathFail(p_, PathDestKey(p_->GetMapId(), x, y, z_ask),
                          GameTime::GetGameTimeMS());
             return Result::Locked;

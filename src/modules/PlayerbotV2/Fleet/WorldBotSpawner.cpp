@@ -974,14 +974,15 @@ std::unordered_map<uint32, uint32> WorldBotSpawner::AwakeByZone(Anchor const& a)
     return out;
 }
 
-// Lava or slime under (x, y, z): ground a resident must never stand on, whatever the navmesh says about the surface below it.
+// A liquid that hurts under (x, y, z) (BotMovement::LiquidHurts): ground a resident must never stand on, whatever the navmesh says
+// about the surface below it.
 static bool InMagma(Map* map, PhaseShift const& phase, float x, float y, float z)
 {
     LiquidData ld;
     ZLiquidStatus const st = map->GetLiquidStatus(phase, x, y, z, {}, &ld);
     if (!(st & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER | LIQUID_MAP_WATER_WALK)))
         return false;
-    return ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Magma) || ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Slime);
+    return BotMovement::LiquidHurts(ld);
 }
 
 // A complete navmesh path from `from` (standing where it is) to (x, y, z). A map without a mesh gives no verdict: reachable.

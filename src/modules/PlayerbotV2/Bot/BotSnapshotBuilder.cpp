@@ -1987,15 +1987,13 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
                 {}, &ld)
             : ZLiquidStatus(0);
         const bool in_liquid = (liquid & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER)) != 0;
-        const bool is_magma = (ld.type_flags & map_liquidHeaderTypeFlags::Magma) != map_liquidHeaderTypeFlags::NoWater;
-        const bool is_slime = (ld.type_flags & map_liquidHeaderTypeFlags::Slime) != map_liquidHeaderTypeFlags::NoWater;
-        // Underwater (water-specific) only when the head is submerged AND
-        // the liquid is real water — not magma. A naked bot in lava also
-        // has feet wet, but it's burning, not drowning.
-        snap->environment.is_underwater = (liquid & LIQUID_MAP_UNDER_WATER) != 0
-                            && !is_magma && !is_slime;
+        const bool hurts = liquid != LIQUID_MAP_NO_WATER && BotMovement::LiquidHurts(ld);
+        // Underwater (drowning) only when the head is submerged in a liquid
+        // that does not hurt. A naked bot in lava also has feet wet, but
+        // it's burning, not drowning.
+        snap->environment.is_underwater = (liquid & LIQUID_MAP_UNDER_WATER) != 0 && !hurts;
         // The core burns on any contact, floor within a tenth of the surface included (WATER_WALK): the Majordomo dais.
-        snap->environment.is_in_damaging_liquid = (liquid & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && (is_magma || is_slime);
+        snap->environment.is_in_damaging_liquid = (liquid & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && hurts;
         if (snap->environment.is_underwater && lqmap)
             snap->environment.water_surface_z = lqmap->GetWaterLevel(
                 p->GetPhaseShift(), p->GetPositionX(), p->GetPositionY());
@@ -2003,7 +2001,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             snap->environment.water_surface_z = 0.0f;
 
         // Open-world water-escape FOCUS target (FIX #12). When the bot is in real
-        // swim-water (not magma/slime), resolve the nearest DRY navmesh footing
+        // swim-water (a liquid that does not hurt), resolve the nearest DRY navmesh footing
         // so idle:water_escape can drive straight to it and PREEMPT all other
         // movement until the bot is on land — breaking the Stormwind-harbor
         // oscillation where the water-exit recovery pulls the bot to shore while
@@ -2011,7 +2009,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
         // water/magma (dry footing only) and is SEH-guarded for the world thread;
         // gated on in-water so only swimming bots pay the navmesh query.
         snap->environment.water_escape_valid = false;
-        if (in_liquid && !is_magma && !is_slime)
+        if (in_liquid && !hurts)
         {
             Position exit{};
             if (Playerbot::BotMovement::NearestNavPoint(

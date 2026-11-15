@@ -189,8 +189,16 @@ enum class LiquidVerdict : uint8
     Dry,       // no liquid at the point — plain walkable ground
     Wadeable,  // liquid present but the bot's head stays above it (wade / water-walk)
     Swim,      // bot would be fully submerged for its collision height (drowns)
-    Hazard,    // magma or slime — lethal on contact
+    Hazard,    // a liquid that hurts on contact (LiquidHurts)
 };
+
+// True when the liquid in `ld` hurts a player in contact with it, the way the core applies liquids: magma burns (the lava damage of
+// Player::HandleDrowning, or the liquid's own spell), any other liquid only through a harmful spell on its LiquidType row
+// (Unit::UpdateLiquidStatusOnPositionChange casts it on contact). Slime has no damage of its own: the core's slime damage is switched
+// off (Player.cpp, UNDERWATER_INSLIME), so a slime without a spell is a floor. naxx_thaddius 1114g: the slime-typed liquid on the floor
+// of Thaddius' room read as lava, 901 moves there were refused as "Magma", the tanks stood still while Stalagg and Feugen killed the
+// casters, and nobody standing in it ever took a point of damage from it.
+bool LiquidHurts(LiquidData const& ld);
 
 // Classify the liquid at destination point (x,y,z) for `p`. See LiquidVerdict.
 // Optionally returns the raw LiquidData (level / depth_level / type_flags /

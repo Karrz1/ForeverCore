@@ -1236,13 +1236,13 @@ void LogEngagements(Run& run, Player* viewer)
 
 // A spot 32-56 y from the boss's spawn, on the floor of the same room, in sight of him and kArriveClearance from every hostile creature,
 // preferring the way he faces (the way in).
-// Lava or slime in contact with a body at (x, y, z): the core's own test (in, under, or within a tenth of a yard of the surface).
+// A liquid that hurts (BotMovement::LiquidHurts) in contact with a body at (x, y, z): the core's own contact test (in, under, or within a
+// tenth of a yard of the surface).
 bool InMagmaContact(Map* map, PhaseShift const& ps, float x, float y, float z)
 {
     LiquidData ld;
     ZLiquidStatus const st = map->GetLiquidStatus(ps, x, y, z, map_liquidHeaderTypeFlags::AllLiquids, &ld);
-    return (st & MAP_LIQUID_STATUS_IN_CONTACT) != 0 &&
-        (ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Magma) || ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Slime));
+    return (st & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && BotMovement::LiquidHurts(ld);
 }
 
 // The ground round a staged boss, for choosing its staging spot and posts: a grid of 5 y cells within 60 y of his spawn, north row first, one
