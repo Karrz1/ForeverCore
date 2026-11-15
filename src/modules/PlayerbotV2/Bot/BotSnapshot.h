@@ -1735,6 +1735,7 @@ struct StablePet
     uint8  level = 0;
     uint8  slot_kind = 0;            // 0=active, 1=stabled, 2=unslotted
     uint8  slot_index = 0;
+    bool   dead = false;             // saved with 0 health: died, and its body is gone (only Revive Pet brings it back)
 };
 struct PetState
 {

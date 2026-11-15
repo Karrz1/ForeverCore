@@ -10817,6 +10817,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             sp.level       = info.Level;
             sp.slot_kind   = 0;  // active
             sp.slot_index  = i;
+            sp.dead        = info.Health == 0;
             snap->pet.stable_pets.push_back(std::move(sp));
         }
         for (uint8 i = 0; i < stable->StabledPets.size(); ++i)
