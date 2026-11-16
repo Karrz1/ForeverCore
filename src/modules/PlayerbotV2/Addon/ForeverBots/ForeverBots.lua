@@ -2114,19 +2114,25 @@ function UI.StopDrag(self)
 end
 
 -- Opens or closes the window, or says it will once combat ends. The window is built out of combat only: it creates the secure
--- order buttons and sets their macros.
+-- order buttons and sets their macros. The wait is said once per fight and wish (hf-01372: a key pressed again and again in a fight
+-- printed "opens when combat ends" eight times); UI.windowWaitSaid is cleared when combat ends.
+local function SayWindowWait(show)
+    if UI.windowWaitSaid == show then return end
+    UI.windowWaitSaid = show
+    Print(show and L["the bot window opens when combat ends."] or L["the bot window closes when combat ends."])
+end
 function UI.SetWindowShown(show)
     if not frame then
         if not show then UI.buildAfterCombat = nil; return end
         if InCombatLockdown and InCombatLockdown() then
             UI.buildAfterCombat = true
-            Print(L["the bot window opens when combat ends."])
+            SayWindowWait(true)
             return
         end
         BuildFrame()
     end
     if not UI.SetShown(frame, show) and UI.afterCombat[frame] ~= nil then
-        Print(show and L["the bot window opens when combat ends."] or L["the bot window closes when combat ends."])
+        SayWindowWait(show)
     end
 end
 
@@ -2166,6 +2172,7 @@ combatFrame:SetScript("OnEvent", function(_, event)
     end
     if UI.pendingTab then ShowTab(UI.pendingTab) end
     tabWaitSaid = nil
+    UI.windowWaitSaid = nil
     for f, show in pairs(UI.afterCombat) do
         UI.afterCombat[f] = nil
         if show then f:Show() else f:Hide() end
