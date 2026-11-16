@@ -4915,6 +4915,12 @@ void DispatchInCombat(BotAI& ai,
     // force it for pre-L10. At L10 specs unlock their full talent rows;
     // we flip back to the spec rotation cleanly on ding.
     uint32 rotation_spec = snapshot.level() < 10 ? 0u : snapshot.spec();
+    // A Classic healer is the exception: every Classic healing class has its heal from level 1 (Lesser Heal, Healing Touch, Healing
+    // Wave, Holy Light) and the Classic healer rotations ask for each spell before they cast it, while spec 0 is the damage rotation
+    // of the druid, shaman and paladin. A healer companion under 10 of those classes never healed its owner in a fight, only after
+    // it (idle:ooc_heal goes by role), and the owner died beside it (Discord, vempire_ghost, 0.1.36).
+    if (IsVanillaRealm() && snapshot.level() < 10 && ai.effective_role(snapshot) == Role::Healer)
+        rotation_spec = IsHealerSpec(snapshot.cls(), uint16(snapshot.spec())) ? snapshot.spec() : HealerSpecForClass(snapshot.cls());
     // A tank-spec bot the raid's tank roster does not need plays its class's
     // melee DPS rotation (same gear, no tank threat): Arms, Retribution, cat.
     if (snapshot.raw().pve_order.active && snapshot.raw().pve_order.raid_dps_tank &&
