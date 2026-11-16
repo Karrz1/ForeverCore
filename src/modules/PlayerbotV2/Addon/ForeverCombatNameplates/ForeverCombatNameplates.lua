@@ -2,6 +2,20 @@ local _, build = GetBuildInfo()
 if (tonumber(build) or 0) < 70532 then return end
 
 local prefix = "FCN_PLATES1"
+local text = {
+    noSwitch = "Forever Combat Nameplates: the client could not switch enemy nameplates.",
+    off = "Forever Combat Nameplates: off. Turn Enemy Unit Nameplates on and Always Show Nameplates off (Esc > Options > Nameplates).",
+    on = "Forever Combat Nameplates: on, the realm shows bars only for mobs fighting you or your pet.",
+    waiting = "Forever Combat Nameplates: no answer from the realm yet, asking again. Bars show in combat until it answers.",
+}
+if GetLocale() == "ruRU" then
+    text = {
+        noSwitch = "Forever Combat Nameplates: клиент не смог переключить индикаторы противников.",
+        off = "Forever Combat Nameplates: выключено. Включите индикаторы противников и выключите «Всегда показывать индикаторы» (Esc > Настройки > Индикаторы).",
+        on = "Forever Combat Nameplates: включено, полоски здоровья только у противников, которые сражаются с вами или вашим питомцем.",
+        waiting = "Forever Combat Nameplates: сервер ещё не ответил, запрос повторяется. До ответа полоски показываются в бою.",
+    }
+end
 local enemies, always = "nameplateShowEnemies", "nameplateShowAll"
 local events = CreateFrame("Frame")
 local panel, desired, confirmed
@@ -65,7 +79,7 @@ local function suppressEnemies(suppress)
     end
     if not ok and not warned then
         warned = true
-        print("Forever Combat Nameplates: Der Client konnte die Gegnerplaketten nicht umschalten.")
+        print(text.noSwitch)
     end
 end
 
@@ -150,11 +164,11 @@ end)
 SLASH_FOREVERCOMBATNAMEPLATES1 = "/fcn"
 SlashCmdList.FOREVERCOMBATNAMEPLATES = function()
     if not desired then
-        print("Forever Combat Nameplates: Kampfmodus aus. Prüfe die Optionen für Gegnerplaketten.")
+        print(text.off)
     elseif confirmed then
-        print("Forever Combat Nameplates: Der Realm filtert deine Kampfgegner.")
+        print(text.on)
     else
-        print("Forever Combat Nameplates: Noch keine Bestätigung vom Realm. Anfrage wird wiederholt.")
+        print(text.waiting)
         requestMode(true)
     end
 end
