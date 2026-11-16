@@ -338,14 +338,6 @@ ForeverBotsLocale = {
     [" (type /w %s <message>)"] = " (введите /w %s <сообщение>)",
     ["whisper to %s failed: %s"] = "шепот игроку %s не удался: %s",
     ["bot confirmations in chat: %s"] = "подтверждения ботов в чате: %s",
-    ["enemy nameplates only in combat: %s"] = "индикаторы здоровья врагов только в бою: %s",
-    ["off: the client's own nameplate settings apply."] = "выкл.: действуют настройки индикаторов здоровья самого клиента.",
-    ["on, but it needs Enemy Unit Nameplates on and Always Show Nameplates off (Esc > Options > Nameplates)."] =
-        "вкл., но нужно включить индикаторы здоровья противников и выключить «Всегда показывать индикаторы здоровья» (Esc > Настройки > Индикаторы здоровья).", -- check
-    ["on: a health bar only over mobs that fight you, your pet or your group; the others keep their name."] =
-        "вкл.: полоска здоровья только над мобами, которые сражаются с вами, вашим питомцем или вашей группой; у остальных только имя.",
-    ["on, waiting for the server to confirm (an older server does not have it)."] =
-        "вкл., ждем подтверждения сервера (на старом сервере этого нет).",
     ["shown"] = "включено",
     ["hidden (shown in the Bots panel status line)"] = "скрыто (отображается в строке состояния панели ботов)",
     ["minimap button: %s"] = "кнопка у миникарты: %s",

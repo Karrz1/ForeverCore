@@ -1150,24 +1150,6 @@ void HandleAltsReq(uint32 client_seq, WorldSession* sess)
 }
 
 // ----------------------------------------------------------------------------
-// PLATES — combat-only enemy nameplates for the sender's own client (Player::SetCombatPlateFilter): NPCs outside his, his pet's or
-// his group's fight show their plain name, the ones fighting get their health bar. Any player may ask (no bot needed).
-//
-// Wire:  PLATES|1     PLATES|0
-// Reply: PLATES_RESP|<1|0>   (what will be in force from the player's next update)
-// ----------------------------------------------------------------------------
-void HandlePlatesReq(uint32 client_seq, WorldSession* sess, std::vector<std::string> const& fields)
-{
-    Player* me = sess ? sess->GetPlayer() : nullptr;
-    if (!me)
-        return;
-    bool const on = !fields.empty() && fields[0] == "1";
-    me->SetCombatPlateFilter(on);
-    TC_LOG_DEBUG("playerbot.v2", "[combat_plates] {} turns combat-only nameplates {}", me->GetName(), on ? "on" : "off");
-    SendFields(sess, client_seq, "PLATES_RESP", { on ? "1" : "0" });
-}
-
-// ----------------------------------------------------------------------------
 // SELF — addon counterpart to `.playerbot self on|off|status`. Attaches
 // or detaches the V2 bot logic to the issuing player's OWN character. Mirrors
 // HandleSelf in cs_playerbot_v2.cpp 1:1; keep these two paths in lock-step
@@ -1677,10 +1659,6 @@ void DispatchAssembled(WorldSession* sess, uint32 seq,
     {
         HandleAltsReq(seq, sess);
     }
-    else if (mtype == "PLATES")
-    {
-        HandlePlatesReq(seq, sess, fields);
-    }
     else if (mtype == "SUMMON")
     {
         HandleSummon(seq, sess, fields);
@@ -1848,7 +1826,6 @@ bool OnAddonWhisper(Player* sender, Player* /*receiver*/,
             && mtype != "LOGOUT_REQ"
             && mtype != "SELF"
             && mtype != "PING"
-            && mtype != "PLATES"
             && mtype != "LFG_REQ"
             && mtype != "POP_REQ"
             && mtype != "ASSIGN_REQ")
