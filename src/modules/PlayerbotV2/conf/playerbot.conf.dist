@@ -1004,6 +1004,8 @@ Playerbot.Behavior.PoliteWorldBots = 1
 Playerbot.Behavior.InvitePassingPlayers = 0
 #   InvitePassingBots 1 (default) = a world bot (as above) may invite another world bot near it to a pickup group. 0 = it
 #                     does not. With both InvitePassing keys at 0 no world bot sends an invite nobody asked for.
+#                     Such a pickup group counts toward MaxBots and breaks up again after 10 to 20 minutes, or sooner once
+#                     none of its bots is within DespawnRadius of a player (the spawner then logs them out as usual).
 Playerbot.Behavior.InvitePassingBots = 1
 #   QuestAccept       a companion (a bot grouped with its owner) quests with him like a party member: it accepts a quest
 #                     its group shares with it, and when its owner takes a quest from an NPC beside it, it walks up to the

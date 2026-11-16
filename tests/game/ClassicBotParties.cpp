@@ -17,6 +17,7 @@
 #include "tc_catch2.h"
 
 #include "../../src/modules/PlayerbotV2/Fleet/BotParties.h"
+#include "../../src/modules/PlayerbotV2/Fleet/PickupGroups.h"
 
 using namespace Playerbot::V2::Parties;
 
@@ -124,4 +125,30 @@ TEST_CASE("A mate's fight is in the link", "[ClassicBotParties]")
     auto links = f.Step(bots, All(), 2000);
     REQUIRE(links[2].mates[0].in_combat);
     REQUIRE(links[2].mates[0].target == 4242);
+}
+
+// Pickup groups (GitHub #345): two world bots' own game group breaks up again.
+TEST_CASE("A bot pickup group lasts 10 to 20 minutes and breaks up only when nobody of it is near a player or busy", "[ClassicBotParties]")
+{
+    namespace PG = Playerbot::V2::PickupGroups;
+    for (std::uint64_t id : { 1ull, 2ull, 77ull, 123456ull, 0xFFFFFFFFull })
+    {
+        std::uint32_t const life = PG::LifeFor(id);
+        CHECK(life >= PG::kLifeMinMs);
+        CHECK(life < PG::kLifeMinMs + PG::kLifeSpreadMs);
+    }
+    CHECK(PG::LifeFor(1) != PG::LifeFor(2));   // the pairs do not all break up at once
+
+    PG::Entry const e{ 0xFFFFF000u, PG::kLifeMinMs };   // formed just before the 32-bit clock wraps
+    CHECK_FALSE(PG::Expired(e, 0xFFFFF000u + 1000u));
+    CHECK(PG::Expired(e, 0xFFFFF000u + PG::kLifeMinMs));
+
+    CHECK(PG::BreakUpForDistance(PG::Seen{ false, false }));
+    CHECK_FALSE(PG::BreakUpForDistance(PG::Seen{ true, false }));    // a member is near a player
+    CHECK_FALSE(PG::BreakUpForDistance(PG::Seen{ false, true }));    // a member fights or is in an instance
+
+    PG::Note(42, 1000);
+    CHECK(PG::Has(42));
+    PG::Forget(42);
+    CHECK_FALSE(PG::Has(42));
 }

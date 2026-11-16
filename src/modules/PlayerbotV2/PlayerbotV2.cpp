@@ -33,6 +33,7 @@
 #include "Fleet/CraftOrderBoard.h"
 #include "Fleet/PlayerCraftOrders.h"
 #include "Fleet/BotQueueFiller.h"
+#include "Fleet/PickupGroups.h"     // the bots' own pickup groups break up at the end of their life
 #include "Fleet/JunkQuestResolver.h"
 #include "Bot/ClassTables.h"   // MaxPlayerLevel()
 #include "Bot/Battleground/BgTeamCoordinator.h"
@@ -1057,7 +1058,8 @@ namespace
     //                        survive a crash). Human groups are left intact.
     // purge_pure_bot=false → runtime pass: leave pure-bot groups (legit dungeon
     //                        / BG / quest groups) and only disband human groups
-    //                        whose human member(s) have ALL been offline ≥30min.
+    //                        whose human member(s) have ALL been offline ≥30min,
+    //                        and the bots' own pickup groups whose life is over.
     //
     // only_these (boot purge): the group ids that existed when the module's first tick ran. The purge runs when the boot gate opens,
     // which with no human logged in is 60 s later, and a group formed in that minute is live, not persisted. 2026-10-09: the
@@ -1092,6 +1094,27 @@ namespace
             if (!has_bot)
                 continue;
 
+            // Two world bots' own pickup group (Fleet/PickupGroups.h): once a player is in it, it is his group; otherwise it breaks up at
+            // the end of its life, when no member is fighting, being teleported or in an instance (the spawner breaks it up sooner when
+            // no player is near).
+            if (PickupGroups::Has(gid))
+            {
+                if (has_human)
+                    PickupGroups::Forget(gid);
+                else if (!purge_pure_bot && PickupGroups::Expired(PickupGroups::Table().at(gid), now_ms))
+                {
+                    bool busy = false;
+                    for (auto const& slot : group->GetMemberSlots())
+                        if (Player* m = ObjectAccessor::FindConnectedPlayer(slot.guid))
+                            if (m->IsInCombat() || m->IsBeingTeleported() || (m->GetMap() && m->GetMap()->Instanceable()))
+                            { busy = true; break; }
+                    if (!busy)
+                    {
+                        to_disband.emplace_back(group, "pickup-life-over");
+                        continue;
+                    }
+                }
+            }
             if (!has_human)
             {
                 g_group_humans_offline_since.erase(gid);
@@ -1135,9 +1158,13 @@ namespace
                 to_disband.emplace_back(group, "human-afk-30min");
         }
         // Disband AFTER iterating — Group::Disband() mutates the GroupStore.
+        // A pickup group that is gone (it broke up, or its last member left it) is forgotten.
+        std::erase_if(PickupGroups::Table(),
+            [](auto const& kv) { return !sGroupMgr->GetGroupByGUID(ObjectGuid::Create<HighGuid::Party>(kv.first)); });
         for (auto const& [g, reason] : to_disband)
         {
             g_group_humans_offline_since.erase(g->GetGUID().GetCounter());
+            PickupGroups::Forget(g->GetGUID().GetCounter());
             TC_LOG_INFO("playerbot.v2",
                 "[group_hygiene] disbanding bot group {} reason={}",
                 g->GetGUID().GetCounter(), reason);

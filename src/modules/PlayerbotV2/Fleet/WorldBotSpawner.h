@@ -341,6 +341,7 @@ private:
     uint64 n_arrived_walking_ = 0;
     uint64 n_left_walking_ = 0;
     uint64 n_idle_swaps_ = 0;
+    uint64 n_pickup_broken_ = 0;    // bots' own pickup groups broken up with no player near (Fleet/PickupGroups.h)
     uint32 last_swap_pass_ms_ = 0;
     std::unordered_map<uint64, uint32> swap_ms_;   // per bot: when it was last swapped
     uint32 swap_burst_until_ms_ = 0;   // module ms until which a jump (teleport / hearth) swaps the bubble at a higher rate

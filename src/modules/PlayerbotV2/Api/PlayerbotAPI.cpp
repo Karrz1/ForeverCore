@@ -64,6 +64,8 @@
 #include "FollowDrop.h"          // follow_drop: ledge plan toward an owner who dropped or jumped down
 #include "Fleet/CityLayer.h"      // same-level moves across a drop, NoPath storm
 #include "Fleet/BotPool.h"        // Pool::IsScenarioBot: a test character trades with nobody
+#include "Fleet/BotIdentityRegistry.h"   // Lifecycle().is_bot: a bot's own invite made the group
+#include "Fleet/PickupGroups.h"   // a bot-made pickup group is noted so it breaks up again
 #include "Bot/World/ZonePicker.h" // IsVanillaCapitalZone
 #include "Fleet/InstanceEntry.h"  // PrepareInstanceEntry: a stale raid lock must not keep a companion out of its owner's instance
 #include "PartialRouteStall.h"
@@ -5490,6 +5492,7 @@ Result API::accept_group_invite()
     if (g->GetLeaderGUID() == p_->GetGUID()) return Result::Other;
     if (g->IsFull()) return Result::ServerRefused;
 
+    bool formed_by_bot = false;
     if (!g->IsCreated())
     {
         Player* leader = ObjectAccessor::FindPlayer(g->GetLeaderGUID());
@@ -5497,9 +5500,13 @@ Result API::accept_group_invite()
         g->RemoveInvite(leader);
         g->Create(leader);
         sGroupMgr->AddGroup(g);
+        // A world bot's own invite made this group (idle:invite_nearby_player): a pickup group, which breaks up again (Fleet/PickupGroups.h).
+        formed_by_bot = Services::Lifecycle().is_bot(leader->GetGUID().GetCounter());
     }
     g->RemoveInvite(p_);
     if (!g->AddMember(p_)) return Result::ServerRefused;
+    if (formed_by_bot)
+        ::Playerbot::V2::PickupGroups::Note(g->GetGUID().GetCounter(), GameTime::GetGameTimeMS());
     g->BroadcastGroupUpdate();
     return Result::Ok;
 }
