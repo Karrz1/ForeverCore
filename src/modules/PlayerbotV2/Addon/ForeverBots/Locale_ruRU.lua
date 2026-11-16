@@ -585,7 +585,6 @@ ForeverBotsLocale = {
     ["Set with the mouse"] = "Поставить мышью",
     ["short:G%d"] = "Г%d",
     ["Tick every bot in this raid group. Click again when they are all ticked to untick them."] = "Отметить всех ботов этой группы рейда. Нажмите еще раз, когда отмечены все, чтобы снять отметку.",
-    ["The bot changed its offer: look at it again, then click Trade."] = "Бот изменил свое предложение: посмотрите еще раз и нажмите «Обмен».", -- check
     -- Tank leads (Orders tab)
     ["short:Ignore"] = "Не трогать", -- check
     ["short:Tank leads"] = "Танк ведет", -- check
