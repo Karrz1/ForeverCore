@@ -2241,7 +2241,7 @@ local function ToggleMinimapMenu()
     if not mmMenu then
         local m = CreateFrame("Frame", "ForeverBotsMinimapMenu", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
         mmMenu = m
-        m:SetSize(150, 4 * 28 + 12)
+        m:SetSize(170, 5 * 28 + 12)   -- five items below
         m:SetFrameStrata("DIALOG")
         m:EnableMouse(true)
         if m.SetBackdrop then
@@ -2255,6 +2255,7 @@ local function ToggleMinimapMenu()
             { L["Raid ready"], RaidReady },
             { L["Call saved bots"], function() ServerCommand(".bot summon saved") end },
             { L["Dismiss all bots"], function() ServerCommand(".bot dismiss all") end },
+            { CombatPlates.Label(), CombatPlates.Toggle, "plates" },
             { L["Hide this button"], function()
                 ForeverBotsDB.minimap.hidden = true
                 mmButton:Hide()
