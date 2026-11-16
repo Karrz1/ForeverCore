@@ -114,8 +114,10 @@ local function ownReply(channel, sender)
     local me = UnitName("player")
     if isSecret(me) or not me then return false end
     if sender == me then return true end
-    local realm = GetNormalizedRealmName and GetNormalizedRealmName()
-    return realm and sender == me .. "-" .. realm
+    -- The realm part comes in different shapes ("Name-Realm", "Name-RealmNoSpaces", or "Name Realm" on some clients);
+    -- character names never hold a space or a hyphen, so the part before the first one is the name.
+    local name = sender:match("^([^%s%-]+)")
+    return name == me
 end
 
 events:RegisterEvent("ADDON_LOADED")
