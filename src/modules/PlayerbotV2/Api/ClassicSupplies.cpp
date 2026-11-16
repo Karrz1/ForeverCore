@@ -147,6 +147,8 @@ constexpr RaidConsumable kCasterKit[] = {
 };
 constexpr RaidConsumable kHealerKit[] = {
     { 13511, false, 5, true }, { 20007, false, 5 }, { 13931, true, 20 },
+    // Stocked, never drunk by the pre-pull picker: Brilliant Mana Oil goes on the main hand by idle:classic_weapon (PickPoison).
+    { 20748, false, 5, false, true },   // Brilliant Mana Oil: +12 mana every 5 s, +25 healing on the weapon
     { 13457, false, 5, false, true },   // Greater Fire Protection Potion: drunk in the fight where the boss data orders it (Ragnaros, Geddon, Onyxia, Firemaw, Vaelastrasz)
     { 13459, false, 5, false, true },   // Greater Shadow Protection Potion: BWL Shadow Flame (Ebonroc, Flamegor, Nefarian)
     { 13458, false, 5, false, true },   // Greater Nature Protection Potion: AQ40 Huhuran's Poison Bolt Volley
