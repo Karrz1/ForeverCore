@@ -1,5 +1,5 @@
 local _, build = GetBuildInfo()
-if tonumber(build) ~= 70532 then return end
+if (tonumber(build) or 0) < 70532 then return end
 
 local prefix = "FCN_PLATES1"
 local enemies, always = "nameplateShowEnemies", "nameplateShowAll"
