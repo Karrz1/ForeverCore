@@ -1784,6 +1784,8 @@ bool OnAddonWhisper(Player* sender, Player* /*receiver*/,
             && mtype != "PING"
             && mtype != "LFG_REQ"
             && mtype != "POP_REQ"
+            && mtype != "BOT_TRADE_VIEW"
+            && mtype != "BOT_TRADE_ACCEPT"
             && mtype != "ASSIGN_REQ")
             return false;
     }
