@@ -84,7 +84,7 @@ struct Line
     bool later = false;          // gear the bot may wear but only a few levels from now: a gift from the owner or a group mate, kept until then
                                  // (Gremloc 11-08: a group mate's piece above the bot's level was bought at the vendor price)
     bool supply = false;         // a potion, elixir, flask, food or drink, weapon oil or stone, or bandage the bot can use itself: a gift
-                                 // from the owner or a group mate (chris 11-16: five Brilliant Mana Oil handed to his healer were met
+                                 // from the owner or a group mate (Karrz 11-16: five Brilliant Mana Oil handed to his healer were met
                                  // with "i'll give you 10s for that")
 };
 

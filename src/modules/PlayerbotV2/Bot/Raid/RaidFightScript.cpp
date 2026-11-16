@@ -31,7 +31,7 @@ std::unordered_map<uint64_t, uint64_t> g_ownPick;     // bot -> its last pick wh
 
 constexpr uint32_t kFightGapMs = 8000;   // no engaged enemy for this long: the next pull starts a new fight
 constexpr float kCampSpellReach = 30.0f;  // Fight::campReach: an enemy farther than this is not one a bot at the camp casts at
-// Fight::campReach: the raid's focus stays "at the camp" out to campReach + this. nef-chris-1114c (chris's 12:43 pull): the tanks held their
+// Fight::campReach: the raid's focus stays "at the camp" out to campReach + this. nef-karrz-1114c (Karrz's 12:43 pull): the tanks held their
 // drakonids 21-32 y from the camp centre, right across the 28 y edge, and a held drakonid stepping out by a yard dropped it from every bot's
 // list while another stood inside. The focus changed 30 times in 100 s, often back and forth before a kill (660 -> 661 -> 660), the damage
 // was split over two or three drakonids, 3,000 raid damage a second against the waves, and the adds went from 5 to 20.
@@ -49,7 +49,7 @@ std::unordered_map<uint64_t, uint32_t> g_bossOffTank;
 
 // A boss that joins a fight already under way (Nefarian landing in Victor's fight): enemy -> when it was first seen engaged, and since when a
 // tank of the raid has held it (0 = not now). The DPS keep off it until a tank has held it for kLateBossTankMs, at least kLateBossMinMs after
-// it came and at most kLateBossMaxMs (no tank ever taking it must not freeze the raid). chris, 2026-11-14 15:20, after the 15:10 wipe: when
+// it came and at most kLateBossMaxMs (no tank ever taking it must not freeze the raid). Karrz, 2026-11-14 15:20, after the 15:10 wipe: when
 // Nefarian lands everyone but the tanks should stand back, the tank picks him up and turns him, then the raid goes in. In that pull the raid
 // stood round him as he landed and 6 died to his swings before a tank had him, and 5 more to the first Shadow Flame.
 struct LateBoss { uint32_t seen = 0; uint32_t onTank = 0; uint32_t last = 0; bool released = false; };
@@ -166,7 +166,7 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         if (!c || enemy->GetEntry() == fight->boss || !IsBoss(c, plan.rules))
             continue;
         LateBoss& lb = g_lateBoss[enemy->GetGUID().GetCounter()];
-        // Its clock starts where it can be fought: not while it flies in, untouchable. chris's pull 2026-11-14 15:40: Nefarian was engaged
+        // Its clock starts where it can be fought: not while it flies in, untouchable. Karrz's pull 2026-11-14 15:40: Nefarian was engaged
         // (victim Roland) from his take-off at 15:40:23, the hold "released after 6405 ms (a tank holds it)" at 15:40:29, and he landed
         // only at 15:40:35: the raid walked in under him as he came down, and his first swings and Shadow Flame took three of it.
         bool const fightable = !enemy->IsFlying() && !enemy->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) && !enemy->IsUninteractible() &&

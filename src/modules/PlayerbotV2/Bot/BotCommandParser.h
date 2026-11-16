@@ -57,7 +57,7 @@ public:
     static bool ApplyLeadOrder(Player* sender, std::string const& line, char const* via);
     // True when `line` is "go" alone (or the Russian "вперед" / "го"), the word that picks up a paused lead.
     static bool IsLeadGoWord(std::string const& line);
-    // An owner's Stay / Hold / Follow / Come (`line`, a bare order or a squad line) while his tank leads: the lead pauses (chris,
+    // An owner's Stay / Hold / Follow / Come (`line`, a bare order or a squad line) while his tank leads: the lead pauses (Karrz,
     // 2026-11-13) and he is told "go" goes on; the order itself is not consumed. Does nothing for any other line. World thread.
     static void PauseLeadForOwnerOrder(Player* sender, std::string const& line, char const* via);
 

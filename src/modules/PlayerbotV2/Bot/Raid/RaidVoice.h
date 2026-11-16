@@ -1,7 +1,7 @@
 // RaidVoice - a 40-man raid that talks like a crowd of players: not 39 bots at once, and not a silent room.
 //
 // Up to 0.1.36 a group over 15 was silent for all of the bots' own chatter (the quiet-raid rule: forty bots talking at once is
-// spam), so in Blackwing Lair only the callouts and the leader's word on a mistake were ever said (chris, 2026-11-13: "a wee bit
+// spam), so in Blackwing Lair only the callouts and the leader's word on a mistake were ever said (Karrz, 2026-11-13: "a wee bit
 // more chatty"). This is the raid's shared voice instead:
 //  * the bots' own chatter (loot, a death, a ready check, a new zone) is back, with one line for the whole raid per gap;
 //  * after a kill a few bots say gg / grats, after a wipe a few talk on the run back and the leader calls the rebuff;

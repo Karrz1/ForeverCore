@@ -863,7 +863,7 @@ public:
     // healer's and the casters' mana (PullManaGate), for the dead, and for the player when he is dead, outside or over
     // kTankLeadPlayerHoldYd away. Paused: the lead stays with the tank, which starts no new pull and walks no further until "lead on".
     // In a raid group on a raid map the main tank leads the trash the same way, but stops before each boss: it stands where it would
-    // pull from and waits until the player pulls himself or says "go" (tank_lead_boss_wait / tank_lead_boss_go; chris 2026-11-14).
+    // pull from and waits until the player pulls himself or says "go" (tank_lead_boss_wait / tank_lead_boss_go; Karrz 2026-11-14).
     // Ends on its own when the bot leaves the dungeon (update_dungeon_autopilot_hold). Every bot of the group holds it: the tank
     // leads, the rest stay on the tank and fight its pulls. Written by the chat handler (world thread), read by the bot worker.
     enum class TankLead : uint8 { Off = 0, On = 1, Paused = 2 };

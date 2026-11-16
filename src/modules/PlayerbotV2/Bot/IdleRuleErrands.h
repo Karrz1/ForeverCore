@@ -15,7 +15,7 @@ inline bool IsWorldErrand(std::string_view name)
     if (name == "idle:quest_start_item")
         return false;
     // Accepting a guild invite goes nowhere either, and it is the player's own invite: "idle:guild_" below caught it, so a
-    // companion following its player never answered a /ginvite (chris 2026-11-16: Kathleen, then Chaelanna, never joined).
+    // companion following its player never answered a /ginvite (Karrz 2026-11-16: Kathleen, then Chaelanna, never joined).
     if (name == "idle:guild_invite_accept")
         return false;
     static constexpr std::string_view kPrefixes[] = {

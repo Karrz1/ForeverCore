@@ -664,7 +664,7 @@ bool FightCloakGate(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
         ai.set_fight_cloak(true);
     // The raid is still in there: a bot that died, released and came back alive at the graveyard outside (or is a ghost on its way back)
     // keeps the copy on. It runs back into a fight in progress, where nobody can change armour, so the swap back would never happen.
-    // chris's Nefarian kill 2026-11-14 15:10-15:20: 11 bots put their own cloak back at 15:16:22-15:17:45 after the phase 3 death wave, ran
+    // Karrz's Nefarian kill 2026-11-14 15:10-15:20: 11 bots put their own cloak back at 15:16:22-15:17:45 after the phase 3 death wave, ran
     // back in and died 13 times to the Shadow Flame burn 22682; every one of them wore the copy again only after the kill (15:20:46).
     if (!want && worn && ai.fight_cloak() && s.in_group() && s.is_in_raid())
         if (auto const* members = g.members())

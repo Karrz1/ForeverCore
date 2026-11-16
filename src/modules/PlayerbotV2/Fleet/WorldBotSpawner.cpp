@@ -1288,7 +1288,7 @@ bool WorldBotSpawner::PlaceNear(Player* bot, Player* anchor)
                 }
             Spot const& h = *pick;
             // A capital's meeting places are few (a bank's or an auction house's worth of NPCs: the Trade District has two) and every
-            // spot took bots up to the area cap, so the whole city crowd stood in one heap by the auction house (chris, test realm
+            // spot took bots up to the area cap, so the whole city crowd stood in one heap by the auction house (Karrz, test realm
             // 0.1.36, Stormwind and Ironforge). Town.HubCap bots at most around one; past it this try takes a spot on the ring instead,
             // and the town errands spread the residents over the city from there.
             if (in_town && cfg_.town_hub_cap && crowd_at(h) >= cfg_.town_hub_cap)

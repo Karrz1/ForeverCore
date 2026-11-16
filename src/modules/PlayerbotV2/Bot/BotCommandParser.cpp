@@ -2352,7 +2352,7 @@ bool BotCommandParser::ApplyPlaceOrder(Player* sender, std::string const& line, 
         who.push_back(word);
     }
     // One order, one answer: the same place order from the same player again within kSameOrderMs is the same click reaching more than one
-    // bot (a whisper to each, the add-on's route), not a new order. chris, 2026-11-14 15:24: "39 bot(s) in a line (tight gap) in front of
+    // bot (a whisper to each, the add-on's route), not a new order. Karrz, 2026-11-14 15:24: "39 bot(s) in a line (tight gap) in front of
     // you. ..." seven times and more in his chat for one click.
     constexpr uint32 kSameOrderMs = 3000;
     static std::unordered_map<uint64, std::pair<std::string, uint32>> s_lastPlace;
@@ -2449,7 +2449,7 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
     in >> verb;
     if (!sender || !sender->GetSession())
         return false;
-    // "go" alone picks a paused lead back up (chris, 2026-11-13: Stay and Follow pause the lead, "go" goes on). It is the lead's word
+    // "go" alone picks a paused lead back up (Karrz, 2026-11-13: Stay and Follow pause the lead, "go" goes on). It is the lead's word
     // only while the tank leads or is paused; otherwise it stays the chat cue it was (BotChatReactor).
     bool const go_word = IsLeadGoWord(line);
     if (verb != "lead" && !go_word)
@@ -2481,7 +2481,7 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
         answer.PSendSysMessage("%s", "You have no group yet: add a bot first.");
         return true;
     }
-    // A raid group is led too (chris, 2026-11-14): its main tank leads the trash and stops before each boss for the player. A party that
+    // A raid group is led too (Karrz, 2026-11-14): its main tank leads the trash and stops before each boss for the player. A party that
     // is not a raid group on a raid map follows its owner (raid_map_party_hold), so the lead waits for the raid group there.
     bool const raid = grp->isRaidGroup();
     Map const* here = sender->GetMap();
@@ -3272,7 +3272,7 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
     if (normalized == "equip" || normalized.rfind("equip ", 0) == 0 || normalized == "use your best gear" ||
         normalized == "wear your best gear")
         return OrderEquip(sender, bot, normalized == "equip" || normalized.rfind("equip ", 0) == 0 ? normalized : std::string("equip best"));
-    // "use <item link>" of a piece to wear is an equip order: in Blackwing Lair chris told his raid "use [Onyxia Scale Cloak]" in party chat
+    // "use <item link>" of a piece to wear is an equip order: in Blackwing Lair Karrz told his raid "use [Onyxia Scale Cloak]" in party chat
     // and nothing happened, because "use" only knew game objects (dev realm 2026-11-13). Any other link goes on to the "use" verb as before.
     if (normalized.rfind("use ", 0) == 0)
         if (size_t const p = normalized.find("item:"); p != std::string::npos)
@@ -5735,7 +5735,7 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
                     by_icon ? "by its icon assignment" : "on the owner's selection");
         // Raid map: only the main tank pulls (a spare duty tank stands by). A boss whose strike goes to the melee soakers (Patchwerk's
         // Hateful Strike, RaidRules::meleeSoak) is the exception: the off tanks go in with the main tank, or the main tank is alone in his
-        // reach for the first strike 1.2 s after the pull and dies to it (chris 11-15 live: Don in full T3 died at 1 s, the off tanks 25 y back).
+        // reach for the first strike 1.2 s after the pull and dies to it (Karrz 11-15 live: Don in full T3 died at 1 s, the off tanks 25 y back).
         bool soaker = false;
         if (Raid::RaidRules const* rules = Raid::RulesForMap(bot->GetMapId()))
             for (Raid::MeleeSoak const& soak : rules->meleeSoak)

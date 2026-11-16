@@ -543,7 +543,7 @@ float RaidItemSpellScore(ItemTemplate const* tpl, RaidWeights const& w, RaidRole
             continue;
         // A proc counts for its uptime: at about one proc a minute, the share of the fight its aura is up (capped at the old flat 0.17).
         // Felstriker's 3 s of +100% hit and crit scored as 17 % of a permanent +100 %, above any tank weapon's whole budget, and put the
-        // rogue dagger in every protection warrior's main hand (chris 11-15, Naxx: "I don't know why the tanks have that dagger").
+        // rogue dagger in every protection warrior's main hand (Karrz 11-15, Naxx: "I don't know why the tanks have that dagger").
         bool const proc = e->TriggerType == ITEM_SPELLTRIGGER_ON_PROC;
         if (proc)
             if (int32 const dur = si->GetDuration(); dur > 0)

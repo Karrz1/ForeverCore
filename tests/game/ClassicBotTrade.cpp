@@ -319,7 +319,7 @@ TEST_CASE("BotTrade: supplies the bot uses itself, from its owner, are a gift, n
 {
     View v;
     v.gift_partner = true;
-    Line oil = L(20748, 5, 1000);                      // Brilliant Mana Oil handed to a healer (chris 11-16: "i'll give you 10s for that")
+    Line oil = L(20748, 5, 1000);                      // Brilliant Mana Oil handed to a healer (Karrz 11-16: "i'll give you 10s for that")
     oil.supply = true;
     v.his = { oil };
     v.bot_gold = 100000;

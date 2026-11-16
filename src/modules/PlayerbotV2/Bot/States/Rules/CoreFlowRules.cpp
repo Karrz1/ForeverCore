@@ -1234,7 +1234,7 @@ void RegisterCoreFlowRules(IdleRuleRegistry& r)
         rule.name     = "idle:guild_invite_accept";
         // 997 (was 853): above the owner orders (960-994). A bot following its player on an owner Follow order fires
         // idle:owner_following (990) every tick, which consumed the tick, so a /ginvite from that player was never answered
-        // (chris 2026-11-16: party bot Kathleen never joined). Accepting moves nothing, so it may run before them; it
+        // (Karrz 2026-11-16: party bot Kathleen never joined). Accepting moves nothing, so it may run before them; it
         // only fires while an invite is open, once per invite.
         rule.priority = 997;
         rule.gate     = &GuildInviteAcceptGate;

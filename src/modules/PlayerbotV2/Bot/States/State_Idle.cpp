@@ -138,7 +138,7 @@ static bool PullManaGate(BotSnapshotView const& s, BotAI const& ai, GroupSnapsho
     return true;
 }
 
-// "Tank leads" in a raid (chris, 2026-11-14: "Can it be done for RAIDs as well?"): the main tank leads the trash pack by pack, but a
+// "Tank leads" in a raid (Karrz, 2026-11-14: "Can it be done for RAIDs as well?"): the main tank leads the trash pack by pack, but a
 // boss is the player's to pull. Called by every out-of-combat boss pull of the autopilot right before it would start the fight: while
 // the lead is on in a raid and the player has not said "go" for this boss, the tank stays where it would have pulled from, says once
 // that the boss is next, and pulls nothing. The player pulls himself (the raid joins the fight as any boss fight), or says "go"

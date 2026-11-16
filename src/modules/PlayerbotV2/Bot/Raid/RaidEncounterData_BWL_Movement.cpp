@@ -52,7 +52,7 @@ namespace Playerbot::Raid {
         r.avoidFrontal.push_back({ 11583, 46.0f, 55.0f, Who::NonTank });
         // Tail Lash 23364 reaches 30 yards behind him (client data: radius 30 on all three effects, printed on every death to it), not the
         // 20 the rear arc had: of the 100 bots it killed in the Nefarian sweeps and the dev realm raids up to 2026-11-13, 37 stood 20-35 y
-        // from him (dist on the bot_death line, centre to centre), and chris's raid lost half its casters to it. 34 = the 30, his size and a
+        // from him (dist on the bot_death line, centre to centre), and Karrz's raid lost half its casters to it. 34 = the 30, his size and a
         // step. The arc is Onyxia's Tail Sweep 15847 (-120 in its client data, 60 each side of straight behind), the same breath-and-tail
         // dragon: there is no SpellTargetRestrictions copy here to read Tail Lash's own cone from, so the next run's deaths check it.
         r.avoidFrontal.push_back({ 11583, 34.0f, kOnyTailHalfDeg, Who::NonTank, 180.0f, 100.0f, 0.0f, true, kOnyConeMarginDeg });
@@ -63,7 +63,7 @@ namespace Playerbot::Raid {
         // Everybody but his tank stands on his flank, in the wedge between the Shadow Flame cone (55 degrees each side, plus a 12 degree margin
         // for his turn) and the Tail Lash arc (kOnyTailHalfDeg + kOnyConeMarginDeg), the Onyxia layout (StandFlank, RaidBrain 3d). Without it
         // nothing placed the raid after the landing (the phase 1 posts end there) and the bots stood wherever they were, round his tank: in
-        // chris's dev raid 2026-11-14 15:10 the raid centre stood 6 y from him ("[raid_face] axis ... raid centre 6 yd out, 27 raiders"),
+        // Karrz's dev raid 2026-11-14 15:10 the raid centre stood 6 y from him ("[raid_face] axis ... raid centre 6 yd out, 27 raiders"),
         // Shadow Flame killed 5 and his swings and Cleave 10 more within 5-10 y of him, and his tank found no spot to turn him ("no spot on
         // the axis behind Nefarian", 8 times). Melee 3-10 y, healers 21-25 y, ranged 23-29 y (inside their 30 y spells).
         {

@@ -3124,7 +3124,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
             }
             // A bot already in the wedge stays where it is. Its slot index counts the members on its side, which changes every time one
             // of them steps out of a cone or crosses over, and without this check the slot moved and the bot walked again every 4 s:
-            // chris's dev raid 2026-11-14 15:40-15:42, the mage Gorham took 20 "flank boss" steps in 80 s, every one cut his Frostbolt
+            // Karrz's dev raid 2026-11-14 15:40-15:42, the mage Gorham took 20 "flank boss" steps in 80 s, every one cut his Frostbolt
             // short, and he did nothing for two minutes at full mana.
             {
                 float const dBot = Dist2D(ex, ey, bot->GetPositionX(), bot->GetPositionY());
@@ -4073,7 +4073,7 @@ uint8_t MemberDamageSchools(Member const& m, Player* mainTank)
 }
 
 // The school(s) of a caster's main nuke, by its spec. MemberDamageSchools counts every school the class has, so a frost mage still
-// "can hurt" a Blue Drakonid (400 frost) with fire and arcane, but its rotation is Frostbolt and its talents back frost: chris noticed in
+// "can hurt" a Blue Drakonid (400 frost) with fire and arcane, but its rotation is Frostbolt and its talents back frost: Karrz noticed in
 // his 11-14 pulls that one drakonid colour took far less from him than the other. Phase 1 resistances (creature_template_resistance,
 // VMaNGOS): Blue 14261 frost 400 (arcane 100), Green 14262 nature 400, Bronze 14263 arcane 400, Red 14264 fire 400, Black 14265 fire and
 // shadow 400, Chromatic 14302 250 in every magic school.

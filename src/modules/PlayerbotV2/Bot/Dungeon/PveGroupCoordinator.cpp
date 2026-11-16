@@ -2898,7 +2898,7 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
             if (e.src->max_mana > 0) { dps_mana_sum += Pct(e.src->mana, e.src->max_mana); ++dps_mana_n; }
         }
         // The most DPS bots on one enemy. A raid fight script (RaidFightScript.cpp) names its own focus, which last_raid_focus_ never holds:
-        // nef-chris-1114c read "on the focus 0" for the whole pull. This count shows how many share one target either way.
+        // nef-karrz-1114c read "on the focus 0" for the whole pull. This count shows how many share one target either way.
         uint32 dps_top = 0;
         {
             std::unordered_map<uint64, uint32> on;

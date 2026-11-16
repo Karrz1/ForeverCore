@@ -831,7 +831,7 @@ namespace TE = ::Playerbot::V2::TownErrand;
 // Quest work in reach keeps a bot from the town's errands and shows, so the quest rules can do it. A bot in its town time (profession
 // mode: every bot the spawner places in a capital, Playerbot.World.TownPct) has those rules switched off (quest accept, hub walk, goal
 // pursuit, far travel), so for it the quest work never comes and nothing else may run either: it stood where it was placed, by the
-// bank or the auction house, until the idle watch walked it to the next bank or auction house (chris, test realm 0.1.36: a heap of
+// bank or the auction house, until the idle watch walked it to the next bank or auction house (Karrz, test realm 0.1.36: a heap of
 // idle bots and their pets in the Stormwind Trade District and in Ironforge). Nearly every world bot in a city has quest work by this
 // test (a quest giver in scan range, or the leveling zone it is to travel to). A turn-in still comes first for it: idle:quest_turnin
 // runs far above the town rules and is not held by profession mode.

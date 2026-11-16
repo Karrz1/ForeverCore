@@ -1494,7 +1494,7 @@ function UI.LeadClick(button)
     UI.leadState = state
     UI.RefreshLead()
 end
--- Follow, Stay and Come pause a running lead on the server (chris, 2026-11-13); "go" or a right-click goes on.
+-- Follow, Stay and Come pause a running lead on the server (Karrz, 2026-11-13); "go" or a right-click goes on.
 function UI.LeadPausedByOrder()
     if UI.leadState == "on" then
         UI.leadState = "paused"
