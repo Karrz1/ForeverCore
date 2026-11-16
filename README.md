@@ -97,6 +97,13 @@ Turn them on in `playerbot.conf` (`Playerbot.Enable`, `Playerbot.World.Enable`).
 program are off by default. Database setup for the bots: [src/modules/PlayerbotV2/INSTALL.md](src/modules/PlayerbotV2/INSTALL.md).
 Other modules go in `src/modules/` too, see [src/modules/README.md](src/modules/README.md).
 
+New in 0.1.37:
+
+- `.bot lead on` / `.bot lead off`: your bot tank leads the dungeon (also the Tank leads button in the bot panel).
+- `/fb plates`: enemy nameplates only in combat (add-on option).
+- Open a trade window with one of your bots to give it items or take items from it.
+- `Playerbot.Raid.Talk` (default 1): raid chat from bots in a raid of more than 15 with a player, 0 off, 1 normal, 2 chatty.
+
 ## Thanks
 
 - [TrinityCore](https://github.com/TrinityCore/TrinityCore) and everyone in [AUTHORS](AUTHORS).
