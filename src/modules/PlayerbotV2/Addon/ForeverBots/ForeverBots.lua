@@ -2199,6 +2199,39 @@ local function MinimapDrag()
     MinimapPlace()
 end
 
+-- SIN's Forever Combat Nameplates (/fcn): enemy bars only on mobs fighting you or your pet. His add-on is on while Enemy Unit
+-- Nameplates are on and Always Show Nameplates is off, and follows those two settings itself; /fcn only reports. The menu entry
+-- switches Always Show: off gives every enemy a bar again, as without the add-on. The client does not change nameplate settings
+-- in combat.
+-- One table, not six main-chunk locals: this chunk is near Lua's 200-local limit.
+local CombatPlates = { enemies = "nameplateShowEnemies", always = "nameplateShowAll" }
+function CombatPlates.Loaded()
+    local loaded = (C_AddOns and C_AddOns.IsAddOnLoaded) or IsAddOnLoaded
+    return loaded ~= nil and loaded("ForeverCombatNameplates") and C_CVar ~= nil
+end
+function CombatPlates.On()
+    return C_CVar.GetCVarBool(CombatPlates.enemies) and not C_CVar.GetCVarBool(CombatPlates.always)
+end
+function CombatPlates.Label()
+    if not CombatPlates.Loaded() then return L["Combat nameplates (add-on off)"] end
+    return CombatPlates.On() and L["Combat nameplates: on"] or L["Combat nameplates: off"]
+end
+function CombatPlates.Toggle()
+    if not CombatPlates.Loaded() then return end
+    if InCombatLockdown and InCombatLockdown() then
+        Print(L["combat nameplates can't be switched in combat."])
+        return
+    end
+    if CombatPlates.On() then
+        C_CVar.SetCVar(CombatPlates.always, "1")
+        Print(L["combat nameplates off: every enemy gets a bar."])
+    else
+        C_CVar.SetCVar(CombatPlates.always, "0")
+        if not C_CVar.GetCVarBool(CombatPlates.enemies) then C_CVar.SetCVar(CombatPlates.enemies, "1") end
+        Print(L["combat nameplates on: bars only on mobs fighting you or your pet."])
+    end
+end
+
 local function ToggleMinimapMenu()
     if not mmMenu then
         local m = CreateFrame("Frame", "ForeverBotsMinimapMenu", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -2224,9 +2257,10 @@ local function ToggleMinimapMenu()
             end },
         }
         for i, it in ipairs(items) do
-            local b = MakeSkinButton(m, it[1], 138, 24, { size = 12 })
+            local b = MakeSkinButton(m, it[1], 158, 24, { size = 12 })
             b:SetPoint("TOPLEFT", 6, -6 - (i - 1) * 28)
             b:SetScript("OnClick", function() m:Hide(); it[2]() end)
+            if it[3] == "plates" then m.plates = b end
         end
         m:SetScript("OnUpdate", function(self, elapsed)
             -- (the global MouseIsOver no longer exists on this client: "attempt to call a nil value" every frame)
@@ -2243,6 +2277,8 @@ local function ToggleMinimapMenu()
     else
         mmMenu:SetPoint("TOPLEFT", mmButton, "BOTTOMLEFT", 0, -2)
     end
+    mmMenu.plates:SetText(CombatPlates.Label())
+    mmMenu.plates:SetEnabled(CombatPlates.Loaded())
     mmMenu.away = 0
     mmMenu:Show()
 end
