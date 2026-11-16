@@ -621,7 +621,7 @@ std::vector<Catalog::Entry> const& RussianEntries()
         { "i can't afford that, my purse is too light", "не могу себе это позволить, кошелек слишком легкий" },
         { "sorry, i've no use for that", "извините, мне это не нужно" },
         { "sorry, my bags are full", "извините, сумки полны" },
-        { "one thing at a time please: gear i need is a gift, everything else i buy", "по одному, пожалуйста: нужное мне снаряжение — в подарок, остальное покупаю" },
+        { "one thing at a time please: gear and supplies i need are a gift, everything else i buy", "по одному, пожалуйста: нужное мне снаряжение и припасы — в подарок, остальное покупаю" },
         { "sorry, i no longer have that one", "извините, этого у меня уже нет" },
         { "thanks, i'll put {} on at level {#}", "спасибо, надену {} на {} уровне" },
         { "i only take orders from my group, invite me first", "я слушаюсь только свою группу, сначала пригласи меня" },
