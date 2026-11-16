@@ -5865,9 +5865,9 @@ public:
                 handler->PSendSysMessage("collisionprobe: %u display %u: no display or model data", entry, model.CreatureDisplayID);
                 continue;
             }
-            handler->PSendSysMessage("collisionprobe: %u display %u model %u: raw CollisionHeight %.2f, used %.2f, bounds top %.2f, unit height %.2f",
-                entry, model.CreatureDisplayID, display->ModelID, modelData->CollisionHeight, modelData->GetCollisionHeight(), modelData->GeoBox[5],
-                modelData->GetCollisionHeight() * modelData->ModelScale * display->CreatureModelScale);
+            handler->PSendSysMessage("collisionprobe: %u display %u model %u: raw CollisionHeight %.2f, bounds top %.2f, model height %.2f",
+                entry, model.CreatureDisplayID, display->ModelID, modelData->CollisionHeight, modelData->GeoBox[5],
+                modelData->CollisionHeight * modelData->ModelScale * display->CreatureModelScale);
         }
 
         if (!name)
