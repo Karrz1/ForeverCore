@@ -61,7 +61,9 @@ std::optional<std::string> ClassifyGroupOrder(std::string_view msg, bool owner_w
         // The panel's Ignore target button and key: the owner's own list, answered once (BotCommandParser::ApplyIgnoreOrder).
         order == "ignore target" || order == "ignore clear" ||
         // The Positions tab's words: "place <shape> [gap] [here|target] [who...]", answered once (BotCommandParser::ApplyPlaceOrder).
-        order.rfind("place ", 0) == 0;
+        order.rfind("place ", 0) == 0 ||
+        // The panel's Raid reset button (BotCommandParser::ApplyRaidResetOrder), answered once.
+        order == "raid reset" || order == "reset raid";
     // Everyday words for the two commonest orders, exact lines only ("follow me please" stays chatter). Karrz typed "wait here" in
     // party chat (2026-11-08): a bot answered "wait, got it" (BotChatReactor's acknowledgement) and nobody waited; "follow me"
     // likewise only got a reply. The Russian lines are the ones the Russian testers use.

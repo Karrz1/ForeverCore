@@ -15,3 +15,4 @@ ForeverBots_Quests.lua
 ForeverBots_Spec.lua
 ForeverBots_Finder.lua
 ForeverBots_Place.lua
+ForeverBots_Trade.lua

@@ -1176,13 +1176,6 @@ bool BotPopulationManager::SetOwnerGearMode(uint32 account_id, uint8 requested_m
         RequestGearRefresh(bot);
     reply = std::string("gear mode ") + Gear::Owned::ModeName(mode) +
             (Gear::Owned::IsCapMode(mode) ? " (this applies at level " + std::to_string(MaxPlayerLevel()) + "; below that: match)" : "");
-    // With hired bots on (Playerbot.Hire.Mode) a player who must hire gets each bot's grade gear, whatever mode is chosen
-    // (HireMgr::GearModeOverride): the choice is kept for when the rule is off, but say so instead of a plain "set" (Karrz 11-15,
-    // Naxx: T3 chosen and Regear pressed, the bots stayed in match gear and nothing said why).
-    bool const must_hire = requester ? HireMgr::Instance().MustHire(requester) : HireMgr::Instance().MustHireAccount(account_id);
-    if (must_hire && mode != GearMode::Match)
-        reply += ". Hired bots are on, so your bots wear the gear of their grade: Sellsword and your own bots match, Veteran best,"
-                 " Legend bis. For this mode set Playerbot.Hire.Mode = 0, or Playerbot.Hire.GmBypass = 1 for a GM, in zz-9-local.conf";
     return true;
 }
 
