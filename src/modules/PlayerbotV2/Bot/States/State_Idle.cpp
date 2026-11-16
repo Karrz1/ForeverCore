@@ -359,9 +359,11 @@ bool MaintainPet(BotSnapshotView const& s, BotAI& ai, BotIntentEmitter& emit,
         constexpr uint32 CALL_PET_4   = 83244;
         constexpr uint32 CALL_PET_5   = 83245;
         constexpr uint32 REVIVE_PET   = 982;
-        // Pet entry exists but is dead → revive
-        if (!s.pet_guid().IsEmpty() && s.knows_spell(REVIVE_PET) && s.is_ready(REVIVE_PET))
+        // Revive also works after the corpse has despawned.
+        if (!s.pet_guid().IsEmpty() || s.raw().pet.has_dead_active_pet)
         {
+            if (!s.knows_spell(REVIVE_PET) || !s.is_ready(REVIVE_PET))
+                return false;
             emit.cast(REVIVE_PET);
             ai.note_pet_summon_attempt(pet_now_ms);
             return true;
