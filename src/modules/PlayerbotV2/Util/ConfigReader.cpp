@@ -100,7 +100,9 @@ void ConfigReader::apply_from_loaded_config()
     pop_max_heavy_factor_ = float(c.GetFloatDefault("Playerbot.Population.MaxHeavyFactor", 0.40f, true));
     pop_spawn_cap_factor_ = std::max(1.0f, float(c.GetFloatDefault("Playerbot.Population.SpawnCapFactor", 1.10f, true)));
 
-    accept_invites_       = c.GetStringDefault("Playerbot.Interact.AutoAcceptInvites", "friends_or_higher", true);
+    // The old Playerbot.Interact.AutoAcceptInvites (friends_or_higher in every installed playerbot.conf) was never read; a new key, so
+    // those files do not start refusing invites when it begins to work.
+    accept_invites_from_  = InvitePolicy::Parse(c.GetStringDefault("Playerbot.Interact.AcceptInvitesFrom", "anyone", true));
     auto_leader_handover_ = c.GetBoolDefault  ("Playerbot.Interact.AutoLeaderHandover", true, true);
     {
         std::string prefix = c.GetStringDefault("Playerbot.Interact.CommandPrefix", "!", true);

@@ -346,7 +346,7 @@ World bots are ambient characters with no owner (`Playerbot.World.Enable = 1` sp
 - **Politeness** (`PoliteWorldBots`): a trade request is cancelled with "sorry, nothing to trade"; a group
   invite is declined with a short whisper unless the bot is free to group; a duel from a stranger is accepted about
   one time in three when the levels are within 5 and nothing is fighting, otherwise declined with a whisper.
-  Invites: `Playerbot.Interact.AutoAcceptInvites` (`none`, `friends_or_higher`, `guild_or_higher`, `anyone`).
+  Whose invites: `Playerbot.Interact.AcceptInvitesFrom` (`anyone`, `guild`, `friends`, `none`); the owner and GMs are always answered.
 - **No invites to passers-by** (`InvitePassingPlayers` 0): a world bot never sends a group invite to a real player who
   walks past; it only invites other bots. A player invites the bot himself (or whispers `invite` to it). 1 = the old way (invites players within 30 yards).
 - Companion banter (`PartyBanter`): a short lowercase line now and then on ready check, wipe, rez, death, boss
@@ -408,7 +408,7 @@ Defaults are those of `conf/playerbot.conf.dist`. Behaviour switches are read wh
 `Playerbot.Gear.MaxTier` (1), `Playerbot.Gear.RaidIlvlCap` (0).
 
 **Social and world (default)**: `BotWhisperable` 1, `WorldBotSayReply` 1, `PoliteWorldBots` 1, `InvitePassingPlayers` 0, `PartyBanter` 1,
-`SocialEmotes` 1, `Fidget` 1, `Playerbot.Chatter.Enabled` 1, `Playerbot.Interact.AutoAcceptInvites` friends_or_higher,
+`SocialEmotes` 1, `Fidget` 1, `Playerbot.Chatter.Enabled` 1, `Playerbot.Interact.AcceptInvitesFrom` anyone,
 `Playerbot.Interact.AutoLeaderHandover` 1, `Playerbot.World.Enable` 0 (`MaxBots` 100, `BotsPerPlayer` 25,
 `ActivityRadius` 300, `FriendlyPct` 100), `Playerbot.Population.TotalTarget` 0.
 

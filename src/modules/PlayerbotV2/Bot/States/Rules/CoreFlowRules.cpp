@@ -236,6 +236,23 @@ bool GroupInviteAcceptFire(BotSnapshotView const& s, BotAI& ai,
                            GroupSnapshotView const&,
                            BotIntentEmitter& emit, uint32)
 {
+    // Playerbot.Interact.AcceptInvitesFrom (Bot/InvitePolicy.h): a player the setting does not cover is turned down. Bots' own invites,
+    // the owner's and a GM's always go through.
+    if (s.group_invite_leader_is_real())
+    {
+        InvitePolicy::Inviter const who{ true, s.group_invite_leader_owner(), s.group_invite_leader_gm(), s.group_invite_leader_friend(),
+                                         s.group_invite_leader_guildmate() };
+        InvitePolicy::From const policy = Services::Config().accept_invites_from();
+        if (!InvitePolicy::Accepts(policy, who))
+        {
+            TC_LOG_INFO("playerbot.v2", "[group_invite] {} declines {}: Playerbot.Interact.AcceptInvitesFrom = {}", s.name(),
+                        s.group_invite_leader_name(), InvitePolicy::Name(policy));
+            emit.group_decline();
+            ai.set_invite_acked(true);
+            ai.set_last_rule_fired("idle:group_invite_policy");
+            return true;
+        }
+    }
     // Playerbot.Behavior.PoliteWorldBots: a world bot (no owner) that is busy, or whose would-be leader is well
     // above its level, turns a REAL player's invite down with a short whisper instead of being dragged along.
     if (Services::Config().behavior_polite_world_bots() && !s.has_owner_character() &&

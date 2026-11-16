@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Bot/AlwaysBuffs.h"
+#include "Bot/InvitePolicy.h"   // Playerbot.Interact.AcceptInvitesFrom
 #include <vector>
 
 #include "Bot/BotTypes.h"
@@ -59,7 +60,8 @@ public:
     float  population_spawn_cap_factor() const { return pop_spawn_cap_factor_; }
 
     // Interaction
-    std::string const& accept_invites_policy() const { return accept_invites_; }
+    // Playerbot.Interact.AcceptInvitesFrom: whose group invite a bot takes (Bot/InvitePolicy.h). Default anyone.
+    InvitePolicy::From accept_invites_from() const { return accept_invites_from_; }
     bool   auto_leader_handover() const { return auto_leader_handover_; }
     char   command_prefix() const { return command_prefix_; }
 
@@ -619,7 +621,7 @@ private:
     float  pop_max_heavy_factor_ = 0.40f;
     float  pop_spawn_cap_factor_ = 1.10f;
 
-    std::string accept_invites_ = "friends_or_higher";
+    InvitePolicy::From accept_invites_from_ = InvitePolicy::From::Anyone;
     bool        auto_leader_handover_ = true;
     char        command_prefix_ = '!';
 

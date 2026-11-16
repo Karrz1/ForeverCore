@@ -496,9 +496,16 @@ Playerbot.World.TravelSoakLegSeconds = 1200
 # Player interaction
 #-----------------------------------------------------------------------------
 
-# Auto-accept invites: none | friends_or_higher | guild_or_higher | anyone
+# Whose group invite a bot takes: anyone (default) | guild | friends | none
+#   anyone   every player's invite (as before this key)
+#   guild    players on the bot's friend list and members of its guild
+#   friends  players on the bot's friend list (whisper the bot "addfriend <name>")
+#   none     no player's invite
+# The bot's owner and game masters are always answered, and the bots' own invites (pickup groups, listed bot groups, the
+# dungeon finder) are not touched. A turned-down invite is logged as "[group_invite] <bot> declines <player>".
+# (The old Playerbot.Interact.AutoAcceptInvites was never read and is not read now.)
 # HR-yes
-Playerbot.Interact.AutoAcceptInvites = friends_or_higher
+Playerbot.Interact.AcceptInvitesFrom = anyone
 
 # Bot relinquishes leadership on player join.
 # HR-yes

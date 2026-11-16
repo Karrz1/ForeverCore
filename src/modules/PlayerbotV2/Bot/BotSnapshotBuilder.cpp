@@ -2891,8 +2891,18 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             snap->social_events.group_invite_leader_level   = leader->GetLevel();
             snap->social_events.group_invite_leader_is_real = !(leader->GetSession() && leader->GetSession()->IsBot());
             if (WorldSession const* ls = leader->GetSession(); ls && !ls->IsBot())
+            {
                 snap->social_events.group_invite_leader_privileged =
                     ls->GetSecurity() >= SEC_GAMEMASTER || !Services::Owners().BotsOwnedBy(ls->GetAccountId()).empty();
+                uint32 const owner_account = Services::Owners().GetOwner(snap->bot_id).account_id;
+                snap->social_events.group_invite_leader_owner = owner_account != 0 && owner_account == ls->GetAccountId();
+                snap->social_events.group_invite_leader_gm = ls->GetSecurity() >= SEC_GAMEMASTER;
+                // The bot's own friend list only, as for the duel friend flag above: this may run on a snapshot worker, and the player's
+                // list is his session's to change at any moment. HasFriend does not change the list (TC's declaration is not const).
+                if (PlayerSocial* social = const_cast<Player*>(p)->GetSocial())
+                    snap->social_events.group_invite_leader_friend = social->HasFriend(leader->GetGUID());
+                snap->social_events.group_invite_leader_guildmate = p->GetGuildId() != 0 && p->GetGuildId() == leader->GetGuildId();
+            }
         }
     }
     // Skip a dead victim — Player::GetVictim() can stay set for a tick after

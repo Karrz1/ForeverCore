@@ -1842,6 +1842,11 @@ struct SocialEventsState
     uint8      group_invite_leader_level = 0;
     bool       group_invite_leader_is_real = false;
     bool       group_invite_leader_privileged = false;   // a GM, or the owner of some bot: skips the world bot's level rule
+    // Who the inviting player is to this bot (Playerbot.Interact.AcceptInvitesFrom, Bot/InvitePolicy.h).
+    bool       group_invite_leader_owner = false;        // the bot's owner (its account)
+    bool       group_invite_leader_gm = false;
+    bool       group_invite_leader_friend = false;       // on the bot's friend list
+    bool       group_invite_leader_guildmate = false;
 
     void reset() { *this = SocialEventsState{}; }
 };
