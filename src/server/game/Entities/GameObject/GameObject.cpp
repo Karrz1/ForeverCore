@@ -998,8 +998,8 @@ void GameObject::RemoveFromWorld()
             Trinity::Containers::MultimapErasePair(GetMap()->GetGameObjectBySpawnIdStore(), m_spawnId, this);
         GetMap()->GetObjectsStore().Remove<GameObject>(this);
 
-        // Last, after WorldObject::RemoveFromWorld cleared IsInWorld(): a script that removes or deletes this
-        // gameobject from the hook calls RemoveFromWorld again, which returns at the IsInWorld() check above.
+        // Last, after WorldObject::RemoveFromWorld cleared IsInWorld(). Do not despawn, delete or remove this
+        // gameobject from the hook. Never keep the pointer for later: defer by GUID and look it up again next update.
         sScriptMgr->OnGameObjectRemoveWorld(this);
     }
 }

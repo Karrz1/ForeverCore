@@ -505,12 +505,13 @@ class TC_GAME_API AllGameObjectScript : public ScriptObject
 
         ~AllGameObjectScript();
 
-        // Called when a gameobject is added to the world (map thread, maps update in parallel).
+        // Called when a gameobject is added to the world (map thread, maps update in parallel). Transports (boats,
+        // zeppelins) fire add and remove world at every map crossing on the same gameobject, so it is not one-time.
         virtual void OnGameObjectAddWorld(GameObject* go);
 
         // Called when a gameobject has been removed from the world (map thread). IsInWorld() is already false and the
-        // gameobject is out of the map's stores, so removing or deleting it again from the hook does nothing; a script
-        // must not despawn or remove the gameobject from inside this hook, defer that to the next update.
+        // gameobject is out of the map's stores. Do not despawn, delete or remove the gameobject from this hook, and
+        // never keep the pointer for later: defer by GUID and look the gameobject up again on the next update.
         virtual void OnGameObjectRemoveWorld(GameObject* go);
 
         // Called when a player uses a gameobject and the use passed the core's checks: after the AI's OnGossipHello
