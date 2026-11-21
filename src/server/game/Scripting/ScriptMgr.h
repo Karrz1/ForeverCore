@@ -497,13 +497,22 @@ class TC_GAME_API AllCreatureScript : public ScriptObject
         // Called when a creature (pets included) is removed from the world (map thread).
         virtual void OnCreatureRemoveWorld(Creature* creature);
 
-        // Called every time the core creates the AI of a creature (map thread), also for creatures without a ScriptName:
-        // when it is added to the world (before OnCreatureAddWorld), for summons whose AI the summoner picks, and when a
-        // CreatureScript is hot swapped. `ai` is the AI the core picked and does not own any more. A script may replace
-        // it, for example with a wrapper: the wrapper then owns the original AI (and deletes it) and the core owns the
-        // wrapper. A script must never set it to nullptr: the core ignores a null result, logs it and keeps the original.
-        // A wrapper must not hide an AI that the core casts to (SmartAI, PetAI, a CreatureScript's own AI class).
-        virtual void OnCreatureAICreate(Creature* creature, CreatureAI*& ai);
+        // The hooks below only tell a script what happened, for every creature (pets included, no ScriptName needed).
+        // They run on the map thread after the core has run the creature's own AI for the same event, and a script
+        // can not change the AI or the outcome.
+
+        // Called when a creature starts a fight, after the AI's JustEngagedWith (once per engagement).
+        virtual void OnCreatureEngage(Creature* creature, Unit* target);
+
+        // Called when a creature that is still alive leaves combat (evade, or its combat otherwise ending).
+        // A creature that dies fires OnCreatureJustDied instead.
+        virtual void OnCreatureEvade(Creature* creature);
+
+        // Called when a creature dies, after the AI's JustDied. killer can be null.
+        virtual void OnCreatureJustDied(Creature* creature, Unit* killer);
+
+        // Called when a creature appears after its spawn or respawn, after the AI's JustAppeared.
+        virtual void OnCreatureReset(Creature* creature);
 };
 
 class TC_GAME_API CreatureScript : public ScriptObject
@@ -1268,7 +1277,10 @@ class TC_GAME_API ScriptMgr
 
         void OnCreatureAddWorld(Creature* creature);
         void OnCreatureRemoveWorld(Creature* creature);
-        void OnCreatureAICreate(Creature* creature, CreatureAI*& ai);
+        void OnCreatureEngage(Creature* creature, Unit* target);
+        void OnCreatureEvade(Creature* creature);
+        void OnCreatureJustDied(Creature* creature, Unit* killer);
+        void OnCreatureReset(Creature* creature);
 
     public: /* CreatureScript */
 

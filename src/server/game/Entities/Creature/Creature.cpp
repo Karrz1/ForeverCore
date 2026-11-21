@@ -779,6 +779,7 @@ void Creature::Update(uint32 diff)
             m_vehicleKit->Reset();
         m_triggerJustAppeared = false;
         AI()->JustAppeared();
+        sScriptMgr->OnCreatureReset(this);
     }
 
     UpdateMovementCapabilities();
@@ -1089,9 +1090,7 @@ bool Creature::AIM_Create(CreatureAI* ai /*= nullptr*/)
 {
     Motion_Initialize();
 
-    ai = ai ? ai : FactorySelector::SelectAI(this);
-    sScriptMgr->OnCreatureAICreate(this, ai);
-    SetAI(ai);
+    SetAI(ai ? ai : FactorySelector::SelectAI(this));
 
     return true;
 }
@@ -3993,6 +3992,9 @@ void Creature::AtEngage(Unit* target)
 
     if (CreatureAI* ai = AI())
         ai->JustEngagedWith(target);
+
+    sScriptMgr->OnCreatureEngage(this, target);
+
     if (CreatureGroup* formation = GetFormation())
         formation->MemberEngagingTarget(this, target);
 
@@ -4014,6 +4016,10 @@ void Creature::AtDisengage()
         UpdateSpeed(MOVE_SWIM);
         UpdateSpeed(MOVE_FLIGHT);
     }
+
+    // a creature that dies also leaves combat, that is not an evade
+    if (IsAlive())
+        sScriptMgr->OnCreatureEvade(this);
 }
 
 void Creature::ForcePartyMembersIntoCombat()

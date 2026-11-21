@@ -78,6 +78,7 @@
 #include "PlayerAI.h"
 #include "QuestDef.h"
 #include "RecentAllies.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "ScheduledChangeAI.h"
 #include "SpellAuraEffects.h"
@@ -12117,6 +12118,8 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
             ai->OnHealthDepleted(attacker, true);
             ai->JustDied(attacker);
         }
+
+        sScriptMgr->OnCreatureJustDied(creature, attacker);
 
         if (TempSummon * summon = creature->ToTempSummon())
         {

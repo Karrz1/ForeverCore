@@ -1739,19 +1739,32 @@ void ScriptMgr::OnCreatureRemoveWorld(Creature* creature)
     FOREACH_SCRIPT(AllCreatureScript)->OnCreatureRemoveWorld(creature);
 }
 
-void ScriptMgr::OnCreatureAICreate(Creature* creature, CreatureAI*& ai)
+void ScriptMgr::OnCreatureEngage(Creature* creature, Unit* target)
 {
     ASSERT(creature);
 
-    CreatureAI* const original = ai;
-    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureAICreate(creature, ai);
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureEngage(creature, target);
+}
 
-    // a null AI would make the core run this hook again on every update
-    if (!ai)
-    {
-        TC_LOG_ERROR("scripts", "A script set the AI of creature {} to nullptr, keeping the original AI.", creature->GetGUID().ToString());
-        ai = original;
-    }
+void ScriptMgr::OnCreatureEvade(Creature* creature)
+{
+    ASSERT(creature);
+
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureEvade(creature);
+}
+
+void ScriptMgr::OnCreatureJustDied(Creature* creature, Unit* killer)
+{
+    ASSERT(creature);
+
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureJustDied(creature, killer);
+}
+
+void ScriptMgr::OnCreatureReset(Creature* creature)
+{
+    ASSERT(creature);
+
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureReset(creature);
 }
 
 bool ScriptMgr::CanCreateCreatureAI(uint32 scriptId) const
@@ -2889,7 +2902,19 @@ void AllCreatureScript::OnCreatureRemoveWorld(Creature* /*creature*/)
 {
 }
 
-void AllCreatureScript::OnCreatureAICreate(Creature* /*creature*/, CreatureAI*& /*ai*/)
+void AllCreatureScript::OnCreatureEngage(Creature* /*creature*/, Unit* /*target*/)
+{
+}
+
+void AllCreatureScript::OnCreatureEvade(Creature* /*creature*/)
+{
+}
+
+void AllCreatureScript::OnCreatureJustDied(Creature* /*creature*/, Unit* /*killer*/)
+{
+}
+
+void AllCreatureScript::OnCreatureReset(Creature* /*creature*/)
 {
 }
 
