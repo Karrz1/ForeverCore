@@ -370,8 +370,6 @@ void Creature::RemoveFromWorld()
 {
     if (IsInWorld())
     {
-        sScriptMgr->OnCreatureRemoveWorld(this);
-
         if (GetZoneScript())
             GetZoneScript()->OnCreatureRemove(this);
 
@@ -383,6 +381,10 @@ void Creature::RemoveFromWorld()
         if (m_spawnId)
             Trinity::Containers::MultimapErasePair(GetMap()->GetCreatureBySpawnIdStore(), m_spawnId, this);
         GetMap()->GetObjectsStore().Remove<Creature>(this);
+
+        // Last, after Unit::RemoveFromWorld cleared IsInWorld(): a script that removes or despawns this creature
+        // from the hook calls RemoveFromWorld again, which returns at the IsInWorld() check above.
+        sScriptMgr->OnCreatureRemoveWorld(this);
     }
 }
 
@@ -779,7 +781,10 @@ void Creature::Update(uint32 diff)
             m_vehicleKit->Reset();
         m_triggerJustAppeared = false;
         AI()->JustAppeared();
-        sScriptMgr->OnCreatureReset(this);
+
+        // JustAppeared can despawn the creature (a summon that unsummons itself), then it is out of the world already
+        if (IsInWorld())
+            sScriptMgr->OnCreatureAppear(this);
     }
 
     UpdateMovementCapabilities();
@@ -4017,9 +4022,10 @@ void Creature::AtDisengage()
         UpdateSpeed(MOVE_FLIGHT);
     }
 
-    // a creature that dies also leaves combat, that is not an evade
-    if (IsAlive())
-        sScriptMgr->OnCreatureEvade(this);
+    // a creature that dies leaves combat too (OnCreatureJustDied tells that), and a dismissed pet leaves combat after
+    // it left the world (OnCreatureRemoveWorld told that)
+    if (IsAlive() && IsInWorld())
+        sScriptMgr->OnCreatureLeaveCombat(this);
 }
 
 void Creature::ForcePartyMembersIntoCombat()

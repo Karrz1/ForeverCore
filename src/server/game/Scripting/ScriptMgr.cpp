@@ -1746,11 +1746,11 @@ void ScriptMgr::OnCreatureEngage(Creature* creature, Unit* target)
     FOREACH_SCRIPT(AllCreatureScript)->OnCreatureEngage(creature, target);
 }
 
-void ScriptMgr::OnCreatureEvade(Creature* creature)
+void ScriptMgr::OnCreatureLeaveCombat(Creature* creature)
 {
     ASSERT(creature);
 
-    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureEvade(creature);
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureLeaveCombat(creature);
 }
 
 void ScriptMgr::OnCreatureJustDied(Creature* creature, Unit* killer)
@@ -1760,11 +1760,11 @@ void ScriptMgr::OnCreatureJustDied(Creature* creature, Unit* killer)
     FOREACH_SCRIPT(AllCreatureScript)->OnCreatureJustDied(creature, killer);
 }
 
-void ScriptMgr::OnCreatureReset(Creature* creature)
+void ScriptMgr::OnCreatureAppear(Creature* creature)
 {
     ASSERT(creature);
 
-    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureReset(creature);
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureAppear(creature);
 }
 
 bool ScriptMgr::CanCreateCreatureAI(uint32 scriptId) const
@@ -2906,7 +2906,7 @@ void AllCreatureScript::OnCreatureEngage(Creature* /*creature*/, Unit* /*target*
 {
 }
 
-void AllCreatureScript::OnCreatureEvade(Creature* /*creature*/)
+void AllCreatureScript::OnCreatureLeaveCombat(Creature* /*creature*/)
 {
 }
 
@@ -2914,7 +2914,7 @@ void AllCreatureScript::OnCreatureJustDied(Creature* /*creature*/, Unit* /*kille
 {
 }
 
-void AllCreatureScript::OnCreatureReset(Creature* /*creature*/)
+void AllCreatureScript::OnCreatureAppear(Creature* /*creature*/)
 {
 }
 
