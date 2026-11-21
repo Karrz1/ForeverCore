@@ -50,6 +50,7 @@
 #include "PhasingHandler.h"
 #include "PoolMgr.h"
 #include "QueryPackets.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -852,7 +853,7 @@ void SetControlZoneValue::Execute(GameObjectTypeBase& type) const
 }
 
 GameObject::GameObject() : WorldObject(false), MapObject(),
-    m_goValue(), m_stringIds(), m_AI(nullptr), m_respawnCompatibilityMode(false), _animKitId(0), _worldEffectID(0)
+    m_goValue(), m_stringIds(), m_AI(nullptr), m_AIOfferedToScripts(false), m_respawnCompatibilityMode(false), _animKitId(0), _worldEffectID(0)
 {
     m_objectTypeId = TYPEID_GAMEOBJECT;
 
@@ -892,6 +893,7 @@ void GameObject::AIM_Destroy()
 {
     delete m_AI;
     m_AI = nullptr;
+    m_AIOfferedToScripts = false;
 }
 
 bool GameObject::AIM_Initialize()
@@ -904,7 +906,18 @@ bool GameObject::AIM_Initialize()
         return false;
 
     m_AI->InitializeAI();
+
+    // Create runs this before the gameobject is in the world: AddToWorld offers the AI to scripts then
+    if (IsInWorld())
+        OfferAIToScripts();
+
     return true;
+}
+
+void GameObject::OfferAIToScripts()
+{
+    sScriptMgr->OnGameObjectAICreate(this, m_AI);
+    m_AIOfferedToScripts = true;
 }
 
 std::string const& GameObject::GetAIName() const
@@ -969,6 +982,12 @@ void GameObject::AddToWorld()
 
         EnableCollision(toggledState);
         WorldObject::AddToWorld();
+
+        // the AI was created in Create, so this is the first point where it can be offered with spawn id and world
+        if (m_AI && !m_AIOfferedToScripts)
+            OfferAIToScripts();
+
+        sScriptMgr->OnGameObjectAddWorld(this);
     }
 }
 
@@ -977,6 +996,8 @@ void GameObject::RemoveFromWorld()
     ///- Remove the gameobject from the accessor
     if (IsInWorld())
     {
+        sScriptMgr->OnGameObjectRemoveWorld(this);
+
         if (m_zoneScript)
             m_zoneScript->OnGameObjectRemove(this);
 

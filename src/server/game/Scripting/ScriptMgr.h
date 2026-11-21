@@ -495,6 +495,34 @@ class TC_GAME_API CreatureScript : public ScriptObject
         virtual CreatureAI* GetAI(Creature* creature) const = 0;
 };
 
+class TC_GAME_API AllGameObjectScript : public ScriptObject
+{
+    protected:
+
+        explicit AllGameObjectScript(char const* name) noexcept;
+
+    public:
+
+        ~AllGameObjectScript();
+
+        // Called when a gameobject is added to the world, after its AI was offered to OnGameObjectAICreate (map thread,
+        // maps update in parallel).
+        virtual void OnGameObjectAddWorld(GameObject* go);
+
+        // Called when a gameobject is removed from the world (map thread).
+        virtual void OnGameObjectRemoveWorld(GameObject* go);
+
+        // Called once for each AI the core creates for a gameobject, also for gameobjects without a ScriptName, when the
+        // gameobject has its spawn id and is in the world (map thread): from AddToWorld for the AI that Create made, and
+        // right after the core creates a new AI for a gameobject that is already in the world (GameObjectScript hot swap).
+        // The AI is already initialised (InitializeAI ran) and is not initialised again if a script replaces it. `ai` is
+        // the AI the core picked and does not own any more. A script may replace it, for example with a wrapper: the
+        // wrapper then owns the original AI (and deletes it) and the core owns the wrapper. A script must never set it to
+        // nullptr: the core ignores a null result, logs it and keeps the original, so the hook can not run again on every
+        // update. A wrapper must not hide an AI that the core or other scripts cast to.
+        virtual void OnGameObjectAICreate(GameObject* go, GameObjectAI*& ai);
+};
+
 class TC_GAME_API GameObjectScript : public ScriptObject
 {
     protected:
@@ -1243,6 +1271,12 @@ class TC_GAME_API ScriptMgr
 
         bool CanCreateCreatureAI(uint32 scriptId) const;
         CreatureAI* GetCreatureAI(Creature* creature);
+
+    public: /* AllGameObjectScript */
+
+        void OnGameObjectAddWorld(GameObject* go);
+        void OnGameObjectRemoveWorld(GameObject* go);
+        void OnGameObjectAICreate(GameObject* go, GameObjectAI*& ai);
 
     public: /* GameObjectScript */
 

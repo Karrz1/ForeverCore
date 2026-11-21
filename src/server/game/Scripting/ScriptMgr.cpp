@@ -1738,6 +1738,35 @@ CreatureAI* ScriptMgr::GetCreatureAI(Creature* creature)
     return tmpscript->GetAI(creature);
 }
 
+void ScriptMgr::OnGameObjectAddWorld(GameObject* go)
+{
+    ASSERT(go);
+
+    FOREACH_SCRIPT(AllGameObjectScript)->OnGameObjectAddWorld(go);
+}
+
+void ScriptMgr::OnGameObjectRemoveWorld(GameObject* go)
+{
+    ASSERT(go);
+
+    FOREACH_SCRIPT(AllGameObjectScript)->OnGameObjectRemoveWorld(go);
+}
+
+void ScriptMgr::OnGameObjectAICreate(GameObject* go, GameObjectAI*& ai)
+{
+    ASSERT(go);
+
+    GameObjectAI* const original = ai;
+    FOREACH_SCRIPT(AllGameObjectScript)->OnGameObjectAICreate(go, ai);
+
+    // a null AI would make GameObject::Update create a new AI, and run this hook, on every tick
+    if (!ai)
+    {
+        TC_LOG_ERROR("scripts", "A script set the AI of gameobject {} to nullptr, keeping the original AI.", go->GetGUID().ToString());
+        ai = original;
+    }
+}
+
 bool ScriptMgr::CanCreateGameObjectAI(uint32 scriptId) const
 {
     return !!ScriptRegistry<GameObjectScript>::Instance()->GetScriptById(scriptId);
@@ -2852,6 +2881,26 @@ CreatureScript::CreatureScript(char const* name) noexcept
 
 CreatureScript::~CreatureScript() = default;
 
+AllGameObjectScript::AllGameObjectScript(char const* name) noexcept
+    : ScriptObject(name)
+{
+    ScriptRegistry<AllGameObjectScript>::Instance()->AddScript(this);
+}
+
+AllGameObjectScript::~AllGameObjectScript() = default;
+
+void AllGameObjectScript::OnGameObjectAddWorld(GameObject* /*go*/)
+{
+}
+
+void AllGameObjectScript::OnGameObjectRemoveWorld(GameObject* /*go*/)
+{
+}
+
+void AllGameObjectScript::OnGameObjectAICreate(GameObject* /*go*/, GameObjectAI*& /*ai*/)
+{
+}
+
 GameObjectScript::GameObjectScript(char const* name) noexcept
     : ScriptObject(name)
 {
@@ -3511,6 +3560,7 @@ template class TC_GAME_API ScriptRegistry<InstanceMapScript>;
 template class TC_GAME_API ScriptRegistry<BattlegroundMapScript>;
 template class TC_GAME_API ScriptRegistry<ItemScript>;
 template class TC_GAME_API ScriptRegistry<CreatureScript>;
+template class TC_GAME_API ScriptRegistry<AllGameObjectScript>;
 template class TC_GAME_API ScriptRegistry<GameObjectScript>;
 template class TC_GAME_API ScriptRegistry<AreaTriggerScript>;
 template class TC_GAME_API ScriptRegistry<BattlefieldScript>;
