@@ -1692,6 +1692,11 @@ bool ScriptMgr::OnItemUse(Player* player, Item* item, SpellCastTargets const& ta
     ASSERT(player);
     ASSERT(item);
 
+    // Also for items without a ScriptName: ItemScript below only knows the item's own script.
+    FOR_SCRIPTS(PlayerScript, itr, end)
+        if (itr->second->OnItemUse(player, item, targets, castId))
+            return true;
+
     GET_SCRIPT_RET(ItemScript, item->GetScriptId(), tmpscript, false);
     return tmpscript->OnUse(player, item, targets, castId);
 }
@@ -3191,6 +3196,11 @@ void PlayerScript::OnTextEmote(Player* /*player*/, uint32 /*textEmote*/, uint32 
 
 void PlayerScript::OnGossipSelect(Player* /*player*/, ObjectGuid /*source*/, uint32 /*menuId*/, uint32 /*listId*/, std::string const& /*code*/)
 {
+}
+
+bool PlayerScript::OnItemUse(Player* /*player*/, Item* /*item*/, SpellCastTargets const& /*targets*/, ObjectGuid /*castId*/)
+{
+    return false;
 }
 
 void PlayerScript::OnSpellCast(Player* /*player*/, Spell* /*spell*/, bool /*skipCheck*/)

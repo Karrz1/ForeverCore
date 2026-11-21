@@ -824,6 +824,13 @@ class TC_GAME_API PlayerScript : public ScriptObject
         // that menuId is the menu it sent.
         virtual void OnGossipSelect(Player* player, ObjectGuid source, uint32 menuId, uint32 listId, std::string const& code);
 
+        // Called when a player uses an item, for every item and not only items that have a ScriptName, before the item's
+        // own ItemScript::OnUse. Return true when the script handled the use: the core then runs neither the ItemScript nor
+        // the item's spell, and it is up to the script to send the client what it needs so the item does not stay stuck
+        // in its grey cast state. A script must not destroy the item inside the hook (the core still holds the Item
+        // pointer while the hook runs); do it after the hook returned, for example in an event.
+        virtual bool OnItemUse(Player* player, Item* item, SpellCastTargets const& targets, ObjectGuid castId);
+
         // Called in Spell::Cast.
         virtual void OnSpellCast(Player* player, Spell* spell, bool skipCheck);
 
