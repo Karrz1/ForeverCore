@@ -1752,19 +1752,12 @@ void ScriptMgr::OnGameObjectRemoveWorld(GameObject* go)
     FOREACH_SCRIPT(AllGameObjectScript)->OnGameObjectRemoveWorld(go);
 }
 
-void ScriptMgr::OnGameObjectAICreate(GameObject* go, GameObjectAI*& ai)
+void ScriptMgr::OnGameObjectUse(GameObject* go, Player* player)
 {
     ASSERT(go);
+    ASSERT(player);
 
-    GameObjectAI* const original = ai;
-    FOREACH_SCRIPT(AllGameObjectScript)->OnGameObjectAICreate(go, ai);
-
-    // a null AI would make GameObject::Update create a new AI, and run this hook, on every tick
-    if (!ai)
-    {
-        TC_LOG_ERROR("scripts", "A script set the AI of gameobject {} to nullptr, keeping the original AI.", go->GetGUID().ToString());
-        ai = original;
-    }
+    FOREACH_SCRIPT(AllGameObjectScript)->OnGameObjectUse(go, player);
 }
 
 bool ScriptMgr::CanCreateGameObjectAI(uint32 scriptId) const
@@ -2897,7 +2890,7 @@ void AllGameObjectScript::OnGameObjectRemoveWorld(GameObject* /*go*/)
 {
 }
 
-void AllGameObjectScript::OnGameObjectAICreate(GameObject* /*go*/, GameObjectAI*& /*ai*/)
+void AllGameObjectScript::OnGameObjectUse(GameObject* /*go*/, Player* /*player*/)
 {
 }
 

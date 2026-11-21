@@ -536,10 +536,7 @@ class TC_GAME_API GameObject : public WorldObject, public GridObject<GameObject>
             return IsInRange(obj->GetPositionX(), obj->GetPositionY(), obj->GetPositionZ(), dist2compare);
         }
 
-        void OfferAIToScripts();
-
         GameObjectAI* m_AI;
-        bool m_AIOfferedToScripts;
         bool m_respawnCompatibilityMode;
         uint16 _animKitId;
         uint32 _worldEffectID;
