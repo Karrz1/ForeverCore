@@ -2715,9 +2715,8 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
         playerUser->PlayerTalkClass->ClearMenus();
         if (AI()->OnGossipHello(playerUser))
         {
-            // the AI handled the use: tell the scripts, unless the AI removed the gameobject
-            if (IsInWorld())
-                sScriptMgr->OnGameObjectUse(this, playerUser);
+            // the AI handled the use: tell the scripts, also when the AI removed the gameobject as part of that use
+            sScriptMgr->OnGameObjectUse(this, playerUser);
             return;
         }
 

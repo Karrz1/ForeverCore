@@ -518,7 +518,8 @@ class TC_GAME_API AllGameObjectScript : public ScriptObject
         // called for a use that the core rejects (cooldown, immunity flag), and only for players as users. It only tells
         // a script what happened: it can not change the AI or the outcome, and it runs for every gameobject, also those
         // without a ScriptName (map thread). The gameobject can still be removed by the script (the core stops the use
-        // then), but prefer to defer that to the next update.
+        // then), but prefer to defer that to the next update. When the AI handled the use, IsInWorld() may already be
+        // false here: OnGossipHello can remove the gameobject as part of a valid use.
         virtual void OnGameObjectUse(GameObject* go, Player* player);
 };
 
