@@ -495,8 +495,8 @@ class TC_GAME_API AllCreatureScript : public ScriptObject
         virtual void OnCreatureAddWorld(Creature* creature);
 
         // Called when a creature (pets included) has been removed from the world (map thread). IsInWorld() is already
-        // false, so removing or despawning it again from the hook does nothing; a script must not despawn or remove the
-        // creature from inside this hook, defer that to the next update.
+        // false. Do not despawn, delete or remove the creature from this hook, and never keep the pointer for later:
+        // defer by GUID and look the creature up again on the next update.
         virtual void OnCreatureRemoveWorld(Creature* creature);
 
         // The hooks below only tell a script what happened, for every creature (pets included, no ScriptName needed).
@@ -516,7 +516,8 @@ class TC_GAME_API AllCreatureScript : public ScriptObject
         // combat end (an evade, a scripted end of the engagement, a pet or guardian whose combat ends, a charm ending).
         // It does not fire when the creature dies (OnCreatureJustDied) or leaves the world while in combat (a dismissed
         // pet only gets OnCreatureRemoveWorld). After a respawn a combat end can arrive without a matching
-        // OnCreatureEngage, when the creature despawned in JustDied before the core ended its engagement.
+        // OnCreatureEngage, when the creature despawned in JustDied before the core ended its engagement. Vehicle AIs
+        // (VehicleAI) may never fire it: they do not end their engagements.
         virtual void OnCreatureLeaveCombat(Creature* creature);
 
         // Called when a creature dies, after the AI's JustDied. killer can be null. The creature may already be out of

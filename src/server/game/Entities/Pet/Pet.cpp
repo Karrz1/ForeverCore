@@ -109,8 +109,8 @@ void Pet::RemoveFromWorld()
         Unit::RemoveFromWorld();
         GetMap()->GetObjectsStore().Remove<Pet>(this);
 
-        // Last, after Unit::RemoveFromWorld cleared IsInWorld(): a script that removes this pet from the hook calls
-        // RemoveFromWorld again, which returns at the IsInWorld() check above.
+        // Last, after Unit::RemoveFromWorld cleared IsInWorld(). Do not despawn, delete or remove this pet from the
+        // hook. Never keep the pointer for later: defer by GUID and look it up again next update.
         sScriptMgr->OnCreatureRemoveWorld(this);
     }
 }
