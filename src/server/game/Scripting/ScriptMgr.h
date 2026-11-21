@@ -524,8 +524,8 @@ class TC_GAME_API AllCreatureScript : public ScriptObject
         // do not keep the pointer.
         virtual void OnCreatureJustDied(Creature* creature, Unit* killer);
 
-        // Called when a creature appears in the world after its spawn or respawn, after the AI's JustAppeared (not on
-        // every AI Reset, which also runs on evade). Not called if JustAppeared already despawned the creature.
+        // Called when a living creature appears in the world after its spawn or respawn, after the AI's JustAppeared
+        // (not on every AI Reset, which also runs on evade). Not for a corpse, and not if JustAppeared despawned it.
         virtual void OnCreatureAppear(Creature* creature);
 };
 

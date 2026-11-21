@@ -782,8 +782,9 @@ void Creature::Update(uint32 diff)
         m_triggerJustAppeared = false;
         AI()->JustAppeared();
 
-        // JustAppeared can despawn the creature (a summon that unsummons itself), then it is out of the world already
-        if (IsInWorld())
+        // JustAppeared can despawn the creature (a summon that unsummons itself), then it is out of the world already.
+        // A corpse (a dead pet at login) does not appear: the hook is for living creatures only.
+        if (IsInWorld() && IsAlive())
             sScriptMgr->OnCreatureAppear(this);
     }
 
