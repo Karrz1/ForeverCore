@@ -481,6 +481,31 @@ class TC_GAME_API UnitScript : public ScriptObject
         virtual void OnUnitDeath(Unit* victim, Unit* killer);
 };
 
+class TC_GAME_API AllCreatureScript : public ScriptObject
+{
+    protected:
+
+        explicit AllCreatureScript(char const* name) noexcept;
+
+    public:
+
+        ~AllCreatureScript();
+
+        // Called when a creature (pets included) is added to the world (map thread, maps update in parallel).
+        virtual void OnCreatureAddWorld(Creature* creature);
+
+        // Called when a creature (pets included) is removed from the world (map thread).
+        virtual void OnCreatureRemoveWorld(Creature* creature);
+
+        // Called every time the core creates the AI of a creature (map thread), also for creatures without a ScriptName:
+        // when it is added to the world (before OnCreatureAddWorld), for summons whose AI the summoner picks, and when a
+        // CreatureScript is hot swapped. `ai` is the AI the core picked and does not own any more. A script may replace
+        // it, for example with a wrapper: the wrapper then owns the original AI (and deletes it) and the core owns the
+        // wrapper. A script must never set it to nullptr: the core ignores a null result, logs it and keeps the original.
+        // A wrapper must not hide an AI that the core casts to (SmartAI, PetAI, a CreatureScript's own AI class).
+        virtual void OnCreatureAICreate(Creature* creature, CreatureAI*& ai);
+};
+
 class TC_GAME_API CreatureScript : public ScriptObject
 {
     protected:
@@ -1238,6 +1263,12 @@ class TC_GAME_API ScriptMgr
         bool OnItemExpire(Player* player, ItemTemplate const* proto);
         bool OnItemRemove(Player* player, Item* item);
         bool OnCastItemCombatSpell(Player* player, Unit* victim, SpellInfo const* spellInfo, Item* item);
+
+    public: /* AllCreatureScript */
+
+        void OnCreatureAddWorld(Creature* creature);
+        void OnCreatureRemoveWorld(Creature* creature);
+        void OnCreatureAICreate(Creature* creature, CreatureAI*& ai);
 
     public: /* CreatureScript */
 

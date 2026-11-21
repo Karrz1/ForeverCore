@@ -1725,6 +1725,35 @@ bool ScriptMgr::OnCastItemCombatSpell(Player* player, Unit* victim, SpellInfo co
     return tmpscript->OnCastItemCombatSpell(player, victim, spellInfo, item);
 }
 
+void ScriptMgr::OnCreatureAddWorld(Creature* creature)
+{
+    ASSERT(creature);
+
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureAddWorld(creature);
+}
+
+void ScriptMgr::OnCreatureRemoveWorld(Creature* creature)
+{
+    ASSERT(creature);
+
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureRemoveWorld(creature);
+}
+
+void ScriptMgr::OnCreatureAICreate(Creature* creature, CreatureAI*& ai)
+{
+    ASSERT(creature);
+
+    CreatureAI* const original = ai;
+    FOREACH_SCRIPT(AllCreatureScript)->OnCreatureAICreate(creature, ai);
+
+    // a null AI would make the core run this hook again on every update
+    if (!ai)
+    {
+        TC_LOG_ERROR("scripts", "A script set the AI of creature {} to nullptr, keeping the original AI.", creature->GetGUID().ToString());
+        ai = original;
+    }
+}
+
 bool ScriptMgr::CanCreateCreatureAI(uint32 scriptId) const
 {
     return !!ScriptRegistry<CreatureScript>::Instance()->GetScriptById(scriptId);
@@ -2844,6 +2873,26 @@ void UnitScript::OnUnitDeath(Unit* /*victim*/, Unit* /*killer*/)
 {
 }
 
+AllCreatureScript::AllCreatureScript(char const* name) noexcept
+    : ScriptObject(name)
+{
+    ScriptRegistry<AllCreatureScript>::Instance()->AddScript(this);
+}
+
+AllCreatureScript::~AllCreatureScript() = default;
+
+void AllCreatureScript::OnCreatureAddWorld(Creature* /*creature*/)
+{
+}
+
+void AllCreatureScript::OnCreatureRemoveWorld(Creature* /*creature*/)
+{
+}
+
+void AllCreatureScript::OnCreatureAICreate(Creature* /*creature*/, CreatureAI*& /*ai*/)
+{
+}
+
 CreatureScript::CreatureScript(char const* name) noexcept
     : ScriptObject(name)
 {
@@ -3510,6 +3559,7 @@ template class TC_GAME_API ScriptRegistry<WorldMapScript>;
 template class TC_GAME_API ScriptRegistry<InstanceMapScript>;
 template class TC_GAME_API ScriptRegistry<BattlegroundMapScript>;
 template class TC_GAME_API ScriptRegistry<ItemScript>;
+template class TC_GAME_API ScriptRegistry<AllCreatureScript>;
 template class TC_GAME_API ScriptRegistry<CreatureScript>;
 template class TC_GAME_API ScriptRegistry<GameObjectScript>;
 template class TC_GAME_API ScriptRegistry<AreaTriggerScript>;

@@ -46,6 +46,7 @@
 #include "Player.h"
 #include "PoolMgr.h"
 #include "QueryPackets.h"
+#include "ScriptMgr.h"
 #include "ScriptedGossip.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
@@ -360,6 +361,8 @@ void Creature::AddToWorld()
 
         if (GetZoneScript())
             GetZoneScript()->OnCreatureCreate(this);
+
+        sScriptMgr->OnCreatureAddWorld(this);
     }
 }
 
@@ -367,6 +370,8 @@ void Creature::RemoveFromWorld()
 {
     if (IsInWorld())
     {
+        sScriptMgr->OnCreatureRemoveWorld(this);
+
         if (GetZoneScript())
             GetZoneScript()->OnCreatureRemove(this);
 
@@ -1084,7 +1089,9 @@ bool Creature::AIM_Create(CreatureAI* ai /*= nullptr*/)
 {
     Motion_Initialize();
 
-    SetAI(ai ? ai : FactorySelector::SelectAI(this));
+    ai = ai ? ai : FactorySelector::SelectAI(this);
+    sScriptMgr->OnCreatureAICreate(this, ai);
+    SetAI(ai);
 
     return true;
 }
