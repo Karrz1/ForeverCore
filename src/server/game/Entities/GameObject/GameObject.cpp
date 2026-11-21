@@ -2720,6 +2720,10 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                 sScriptMgr->OnGameObjectUse(this, playerUser);
             return;
         }
+
+        // the AI did not handle the use, but it may have removed the gameobject: a removed one takes no further use
+        if (!IsInWorld())
+            return;
     }
 
     // If cooldown data present in template
