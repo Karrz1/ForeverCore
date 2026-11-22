@@ -32,6 +32,7 @@
 #include "PhasingHandler.h"
 #include "Player.h"
 #include "QueryHolder.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
@@ -83,6 +84,8 @@ void Pet::AddToWorld()
         AIM_Initialize();
         if (ZoneScript* zoneScript = GetZoneScript() ? GetZoneScript() : GetInstanceScript())
             zoneScript->OnCreatureCreate(this);
+
+        sScriptMgr->OnCreatureAddWorld(this);
     }
 
     // Prevent stuck pets when zoning. Pets default to "follow" when added to world
@@ -105,6 +108,10 @@ void Pet::RemoveFromWorld()
         ///- Don't call the function for Creature, normal mobs + totems go in a different storage
         Unit::RemoveFromWorld();
         GetMap()->GetObjectsStore().Remove<Pet>(this);
+
+        // Last, after Unit::RemoveFromWorld cleared IsInWorld(). Do not despawn, delete or remove this pet from the
+        // hook. Never keep the pointer for later: defer by GUID and look it up again next update.
+        sScriptMgr->OnCreatureRemoveWorld(this);
     }
 }
 

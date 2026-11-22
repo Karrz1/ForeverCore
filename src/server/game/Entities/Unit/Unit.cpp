@@ -79,6 +79,7 @@
 #include "PlayerAI.h"
 #include "QuestDef.h"
 #include "RecentAllies.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "ScheduledChangeAI.h"
 #include "ClassicRounding.h"
@@ -12277,6 +12278,9 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
             ai->OnHealthDepleted(attacker, true);
             ai->JustDied(attacker);
         }
+
+        // the AI's JustDied may have despawned the creature already, the hook then runs on an object that is out of the world
+        sScriptMgr->OnCreatureJustDied(creature, attacker);
 
         if (TempSummon * summon = creature->ToTempSummon())
         {

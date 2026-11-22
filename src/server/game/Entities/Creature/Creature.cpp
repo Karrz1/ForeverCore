@@ -46,6 +46,7 @@
 #include "Player.h"
 #include "PoolMgr.h"
 #include "QueryPackets.h"
+#include "ScriptMgr.h"
 #include "ScriptedGossip.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
@@ -360,6 +361,8 @@ void Creature::AddToWorld()
 
         if (GetZoneScript())
             GetZoneScript()->OnCreatureCreate(this);
+
+        sScriptMgr->OnCreatureAddWorld(this);
     }
 }
 
@@ -378,6 +381,10 @@ void Creature::RemoveFromWorld()
         if (m_spawnId)
             Trinity::Containers::MultimapErasePair(GetMap()->GetCreatureBySpawnIdStore(), m_spawnId, this);
         GetMap()->GetObjectsStore().Remove<Creature>(this);
+
+        // Last, after Unit::RemoveFromWorld cleared IsInWorld(). Do not despawn, delete or remove this creature
+        // from the hook. Never keep the pointer for later: defer by GUID and look it up again next update.
+        sScriptMgr->OnCreatureRemoveWorld(this);
     }
 }
 
@@ -774,6 +781,11 @@ void Creature::Update(uint32 diff)
             m_vehicleKit->Reset();
         m_triggerJustAppeared = false;
         AI()->JustAppeared();
+
+        // JustAppeared can despawn the creature (a summon that unsummons itself), then it is out of the world already.
+        // A corpse (a dead pet at login) does not appear: the hook is for living creatures only.
+        if (IsInWorld() && IsAlive())
+            sScriptMgr->OnCreatureAppear(this);
     }
 
     UpdateMovementCapabilities();
@@ -4007,6 +4019,9 @@ void Creature::AtEngage(Unit* target)
 
     if (CreatureAI* ai = AI())
         ai->JustEngagedWith(target);
+
+    sScriptMgr->OnCreatureEngage(this, target);
+
     if (CreatureGroup* formation = GetFormation())
         formation->MemberEngagingTarget(this, target);
 
@@ -4028,6 +4043,11 @@ void Creature::AtDisengage()
         UpdateSpeed(MOVE_SWIM);
         UpdateSpeed(MOVE_FLIGHT);
     }
+
+    // a creature that dies leaves combat too (OnCreatureJustDied tells that), and a dismissed pet leaves combat after
+    // it left the world (OnCreatureRemoveWorld told that)
+    if (IsAlive() && IsInWorld())
+        sScriptMgr->OnCreatureLeaveCombat(this);
 }
 
 void Creature::ForcePartyMembersIntoCombat()

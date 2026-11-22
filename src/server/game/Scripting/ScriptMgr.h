@@ -481,6 +481,55 @@ class TC_GAME_API UnitScript : public ScriptObject
         virtual void OnUnitDeath(Unit* victim, Unit* killer);
 };
 
+class TC_GAME_API AllCreatureScript : public ScriptObject
+{
+    protected:
+
+        explicit AllCreatureScript(char const* name) noexcept;
+
+    public:
+
+        ~AllCreatureScript();
+
+        // Called when a creature (pets included) is added to the world (map thread, maps update in parallel).
+        virtual void OnCreatureAddWorld(Creature* creature);
+
+        // Called when a creature (pets included) has been removed from the world (map thread). IsInWorld() is already
+        // false. Do not despawn, delete or remove the creature from this hook, and never keep the pointer for later:
+        // defer by GUID and look the creature up again on the next update.
+        virtual void OnCreatureRemoveWorld(Creature* creature);
+
+        // The hooks below only tell a script what happened, for every creature (pets included, no ScriptName needed).
+        // They run on the map thread after the core has run the creature's own AI for the same event, and a script
+        // can not change the AI or the outcome.
+        // A handler must not kill, despawn or teleport units, end combat or change threat synchronously: OnCreatureLeaveCombat
+        // can run inside CombatManager::EndAllPvECombat's loop over the combat references, where that frees a reference
+        // that loop still uses. Queue such work and run it on the next update.
+
+        // Called when a creature starts a fight, after the AI's JustEngagedWith (once per engagement). Only AIs that engage
+        // fire it: totems and NullCreatureAI creatures never do. Charming or possessing a creature swaps its AI without
+        // ending the engagement, so engagements can nest (engage of the own AI, engage of the pet or possess AI, then the
+        // two combat ends in reverse order).
+        virtual void OnCreatureEngage(Creature* creature, Unit* target);
+
+        // Called when a creature that is alive and in the world leaves combat. This is not evade-only: it fires on every
+        // combat end (an evade, a scripted end of the engagement, a pet or guardian whose combat ends, a charm ending).
+        // It does not fire when the creature dies (OnCreatureJustDied) or leaves the world while in combat (a dismissed
+        // pet only gets OnCreatureRemoveWorld). After a respawn a combat end can arrive without a matching
+        // OnCreatureEngage, when the creature despawned in JustDied before the core ended its engagement. Vehicle AIs
+        // (VehicleAI) may never fire it: they do not end their engagements.
+        virtual void OnCreatureLeaveCombat(Creature* creature);
+
+        // Called when a creature dies, after the AI's JustDied. killer can be null. The creature may already be out of
+        // the world and OnCreatureRemoveWorld may have fired (a summon whose JustDied despawns it): check IsInWorld() and
+        // do not keep the pointer.
+        virtual void OnCreatureJustDied(Creature* creature, Unit* killer);
+
+        // Called when a living creature appears in the world after its spawn or respawn, after the AI's JustAppeared
+        // (not on every AI Reset, which also runs on evade). Not for a corpse, and not if JustAppeared despawned it.
+        virtual void OnCreatureAppear(Creature* creature);
+};
+
 class TC_GAME_API CreatureScript : public ScriptObject
 {
     protected:
@@ -1261,6 +1310,15 @@ class TC_GAME_API ScriptMgr
         bool OnItemExpire(Player* player, ItemTemplate const* proto);
         bool OnItemRemove(Player* player, Item* item);
         bool OnCastItemCombatSpell(Player* player, Unit* victim, SpellInfo const* spellInfo, Item* item);
+
+    public: /* AllCreatureScript */
+
+        void OnCreatureAddWorld(Creature* creature);
+        void OnCreatureRemoveWorld(Creature* creature);
+        void OnCreatureEngage(Creature* creature, Unit* target);
+        void OnCreatureLeaveCombat(Creature* creature);
+        void OnCreatureJustDied(Creature* creature, Unit* killer);
+        void OnCreatureAppear(Creature* creature);
 
     public: /* CreatureScript */
 
