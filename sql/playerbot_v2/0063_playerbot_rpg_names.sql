@@ -1,4 +1,4 @@
--- Migration: 9001_playerbot_rpg_names
+-- Migration: 0063_playerbot_rpg_names
 -- Date:    2026-11-23
 -- Purpose: Schema for race/sex-appropriate RPG names for V2 bot characters
 --          (the "RPG names" feature; code in Fleet/BotNamePool.cpp):
@@ -64,9 +64,9 @@ CREATE TABLE IF NOT EXISTS {SHARED}.`playerbots_surname_parts` (
   KEY `idx_race` (`race`,`half`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Seed data is in 9002_playerbot_rpg_names_data.sql
+-- Seed data is in 0064_playerbot_rpg_names_data.sql
 -- 
 
 INSERT INTO {SHARED}.playerbot_v2_schema_version (version, sha256) VALUES
-    (9001, REPEAT('0', 64))
+    (63, REPEAT('0', 64))
 ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP;

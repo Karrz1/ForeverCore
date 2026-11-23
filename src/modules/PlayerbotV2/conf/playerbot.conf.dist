@@ -188,7 +188,7 @@ Playerbot.Population.SpawnCapFactor = 1.10
 # "Firstname Surname" (character select, party frames, mail, /who).
 # Surnames come from {shared}.playerbots_surnames (whole names) and
 # {shared}.playerbots_surname_parts (combinable halves), both race-keyed;
-# apply sql-changes/0073_playerbot_rpg_names.sql to the shared database first.
+# filled by the bot migrations 0063/0064 (sql/playerbot_v2), applied at startup.
 # HR-no
 Playerbot.Names.Surnames = 1
 
