@@ -138,7 +138,8 @@ enum SpellSpecificType
     SPELL_SPECIFIC_PHASE                         = 29,
     SPELL_SPECIFIC_BANE                          = 30,
     SPELL_SPECIFIC_BLESSING                      = 31, // Classic: one blessing per paladin on a target
-    SPELL_SPECIFIC_JUDGEMENT                     = 32  // Classic: one judgement per paladin on a target
+    SPELL_SPECIFIC_JUDGEMENT                     = 32, // Classic: one judgement per paladin on a target
+    SPELL_SPECIFIC_TRACKER_RESOURCES             = 33  // Forever: one resource finder at a time (herbs/minerals/fish)
 };
 
 enum SpellCustomAttributes

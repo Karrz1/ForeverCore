@@ -2267,7 +2267,8 @@ bool SpellInfo::IsAuraExclusiveBySpecificWith(SpellInfo const* spellInfo) const
         case SPELL_SPECIFIC_WARRIOR_ENRAGE:
         case SPELL_SPECIFIC_MAGE_ARCANE_BRILLANCE:
         case SPELL_SPECIFIC_PRIEST_DIVINE_SPIRIT:
-        case SPELL_SPECIFIC_TRACKER: // Classic: one form of tracking at a time (Find Herbs and Find Minerals included)
+        case SPELL_SPECIFIC_TRACKER: // Forever: creature trackers only — resource finders are their own group, Find Treasure stacks on top
+        case SPELL_SPECIFIC_TRACKER_RESOURCES:
             return spellSpec1 == spellSpec2;
         case SPELL_SPECIFIC_FOOD:
             return spellSpec2 == SPELL_SPECIFIC_FOOD
@@ -3243,9 +3244,13 @@ void SpellInfo::_LoadSpellSpecific()
                         if (Id == 30645) // Gas Cloud Tracking
                             return SPELL_SPECIFIC_NORMAL;
                         [[fallthrough]];
-                    case SPELL_AURA_TRACK_RESOURCES:
                     case SPELL_AURA_TRACK_STEALTHED:
                         return SPELL_SPECIFIC_TRACKER;
+                    case SPELL_AURA_TRACK_RESOURCES:
+                        // Forever: one resource finder at a time; Find Treasure (misc 6) stacks on top
+                        if (effect.MiscValue == 6)
+                            return SPELL_SPECIFIC_NORMAL;
+                        return SPELL_SPECIFIC_TRACKER_RESOURCES;
                     default:
                         break;
                 }
