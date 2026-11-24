@@ -104,6 +104,11 @@ out of date AddOns"). The addon only sends ordinary chat, so it needs nothing el
   circle|arrow|line|none`, `/fb spacing tight|close|spread`, `/fb distance <1-20>`, `/fb maintank [name]`, `/fb tank
   <name> <marker>|clear`, `/fb assign <name> <marker> [role]`, `/fb assign list`.
 - Confirmation whispers from bots are hidden from your chat frame by the addon (they feed the status line).
+- **Lazy key** (Key Bindings > AddOns > "WoW Forever Bots"): one key that plays your own character, one spell per press, in
+  combat too: `.playerbot lazy` for every class on the role of your spec, "Lazy key: heal" (`.playerbot lazy heal`) and
+  "Lazy key: tank" (`.playerbot lazy tank`) for that role whatever the spec. The server picks the spell from what you know, what
+  is ready, your resources and what is on the target; heals go to the most hurt group member in 40 yards. The warlock keeps its
+  own rotation. The add-on's README lists what each role does.
 
 There is also an older `PlayerbotControl` addon (roster, stats, alts); this guide covers `ForeverBots`.
 
@@ -437,6 +442,7 @@ The module logs nothing unless `Logger.playerbot.v2=3` is set. Grep the server l
 | `[quest]` | A quest order the parser handed to `QuestOrders` (`[owner_order] [quest] ...`). |
 | `[InstanceCap]` | Group larger than the map holds. |
 | `[say_reply]` | A world bot's answer to a player's /say. |
+| `[lazykey]` | Every press of the lazy key (not the warlock's, that is `[lazy]`): the spell, the rule that chose it, the server's answer, role, tree and resources. |
 | `[world]` | Spawner status line every 60 s. |
 | `[death-recovery]`, `[raid_pull]`, `[raid_tank]`, `[solo_flee]`, `[bg_queue]`, `[cast_speed]`, `[GroupRelogin]` | Corpse runs, raid pulls and tanking, fleeing, battleground queues, cast pacing, bots re-joining after your login. |
 

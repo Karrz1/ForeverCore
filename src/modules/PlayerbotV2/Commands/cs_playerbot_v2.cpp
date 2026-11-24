@@ -102,6 +102,7 @@
 #include "Bot/BotSnapshot.h"
 #include "Bot/BotSnapshotView.h"
 #include "Session/AddonControl.h"
+#include "Session/LazyKey.h"
 #include "Session/LazyLock.h"
 #include "World/WorldMetadata.h"
 #include "ObjectMgr.h"
@@ -8753,9 +8754,10 @@ public:
     //
     // Status sub-form prints whether bot logic is currently attached to self
     // without changing anything, useful for verifying the toggle.
-    // `.playerbot lazy`: one press casts the next spell of the warlock rotation on the target (the add-on's "Lazy lock" key runs this
-    // line as a secure macro, so it works in combat).
-    static bool HandleLazy(ChatHandler* handler)
+    // `.playerbot lazy [dps|tank|heal]`: one press casts the next spell of the player's rotation on the target (the add-on's "Lazy key"
+    // runs this line as a secure macro, so it works in combat). The warlock has its own rotation (Session/LazyLock.h), every other class
+    // the one in Session/LazyKey.h; the role word overrides the role of the player's spec for that press.
+    static bool HandleLazy(ChatHandler* handler, Optional<std::string> role)
     {
         Playerbot::BotLanguage::LocalizedHandler localized(handler); handler = localized.Get();   // replies in the player's language
         WorldSession* sess = handler->GetSession();
@@ -8764,7 +8766,15 @@ public:
             handler->SendSysMessage("`.playerbot lazy` is in-game only (needs your character).");
             return false;
         }
-        std::string const msg = Playerbot::LazyLockPress(sess->GetPlayer());
+        Player* me = sess->GetPlayer();
+        std::string word = role ? *role : std::string();
+        for (char& c : word) if (c >= 'A' && c <= 'Z') c = char(c + 32);
+        if (!word.empty() && word != "dps" && word != "damage" && word != "tank" && word != "heal" && word != "healer")
+        {
+            handler->SendSysMessage("Usage: .playerbot lazy [dps|tank|heal]");
+            return false;
+        }
+        std::string const msg = me->GetClass() == CLASS_WARLOCK ? Playerbot::LazyLockPress(me) : Playerbot::LazyKeyPress(me, word);
         if (!msg.empty())
             handler->SendSysMessage(msg.c_str());
         return true;
