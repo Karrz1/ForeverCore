@@ -9251,7 +9251,7 @@ void Spell::FinishTargetProcessing()
 
 void Spell::LoadScripts()
 {
-    sScriptMgr->CreateSpellScripts(m_spellInfo->Id, m_loadedScripts, this);
+    sScriptMgr->CreateSpellScripts(m_spellInfo, m_loadedScripts, this);
     for (SpellScript* script : m_loadedScripts)
     {
         TC_LOG_DEBUG("spells", "Spell::LoadScripts: Script `{}` for spell `{}` is loaded now", script->GetScriptName(), m_spellInfo->Id);

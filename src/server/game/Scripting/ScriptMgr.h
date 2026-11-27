@@ -196,7 +196,10 @@ class TC_GAME_API ScriptObject
 
     private:
 
-        std::string const _name;
+        // Names are interned for the lifetime of the process, so this reference, and every view
+        // taken from it, stays valid after the script object itself was destroyed by a script
+        // context release while spells created from it are still alive.
+        std::string const& _name;
 };
 
 class TC_GAME_API SpellScriptLoader : public ScriptObject
@@ -212,6 +215,34 @@ class TC_GAME_API SpellScriptLoader : public ScriptObject
 
         // Should return a fully valid AuraScript pointer.
         virtual AuraScript* GetAuraScript() const;
+};
+
+// Attaches SpellScript and AuraScript hooks to any spell, not only to the spells listed in
+// spell_script_names. The loader is asked for every spell and every aura created, on map threads,
+// so it must answer from an immutable per-spell set and must not allocate when it returns null.
+// Every call has to return a new object: an attachment is validated for the spell like a
+// table-bound script is validated on startup, and then created once more for the spell, aura or
+// cast which uses it. Validation and construction therefore run on map threads and must not
+// mutate shared state. A global loader must return a script only for spells it fits: the core
+// validates the script on every cast/aura apply (a global script is not checked once at startup
+// like a spell_script_names one), so a script whose hooks do not match the spell's effects logs
+// an error on every cast; return nullptr for spells you do not handle. The core builds the
+// script twice per matching cast (a validation probe, then the real one), so keep Register()
+// cheap. Returning the same script class from a global loader and from a spell_script_names row
+// for the same spell attaches it twice; the core does not warn.
+class TC_GAME_API GlobalSpellScriptLoader : public ScriptObject
+{
+    protected:
+
+        explicit GlobalSpellScriptLoader(char const* name) noexcept;
+
+    public:
+
+        // Return a fully valid SpellScript pointer, or nullptr for a spell this loader does not handle.
+        virtual SpellScript* GetSpellScript(SpellInfo const* spellInfo) const;
+
+        // Return a fully valid AuraScript pointer, or nullptr for a spell this loader does not handle.
+        virtual AuraScript* GetAuraScript(SpellInfo const* spellInfo) const;
 };
 
 class TC_GAME_API ServerScript : public ScriptObject
@@ -1204,8 +1235,8 @@ class TC_GAME_API ScriptMgr
 
     public: /* SpellScriptLoader */
 
-        void CreateSpellScripts(uint32 spellId, std::vector<SpellScript*>& scriptVector, Spell* invoker) const;
-        void CreateAuraScripts(uint32 spellId, std::vector<AuraScript*>& scriptVector, Aura* invoker) const;
+        void CreateSpellScripts(SpellInfo const* spellInfo, std::vector<SpellScript*>& scriptVector, Spell* invoker) const;
+        void CreateAuraScripts(SpellInfo const* spellInfo, std::vector<AuraScript*>& scriptVector, Aura* invoker) const;
         SpellScriptLoader* GetSpellScriptLoader(uint32 scriptId);
 
     public: /* ServerScript */

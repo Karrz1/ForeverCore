@@ -51,6 +51,7 @@
 #include "Vehicle.h"
 #include "Weather.h"
 #include "WorldPacket.h"
+#include <set>
 #include <unordered_map>
 
 // Trait which indicates whether this script type
@@ -61,6 +62,12 @@ struct is_script_database_bound
 
 template<>
 struct is_script_database_bound<SpellScriptLoader>
+    : std::true_type { };
+
+// A global loader is not bound to a spell id, but it registers like a bound one so its script
+// name is mapped to the module context which keeps the module loaded for the live scripts.
+template<>
+struct is_script_database_bound<GlobalSpellScriptLoader>
     : std::true_type { };
 
 template<>
@@ -1271,7 +1278,19 @@ private:
     if (!V) \
         return R;
 
-ScriptObject::ScriptObject(char const* name) noexcept : _name(name)
+namespace
+{
+    // Script names have to outlive the script objects which register them: a live spell or aura
+    // keeps a view of the name of the loader it was created from, and releasing a script context
+    // destroys that loader while the spells it was attached to can still be used.
+    std::string const& InternScriptName(char const* name)
+    {
+        static std::set<std::string> names;
+        return *names.insert(name).first;
+    }
+}
+
+ScriptObject::ScriptObject(char const* name) noexcept : _name(InternScriptName(name))
 {
     sScriptMgr->IncreaseScriptCount();
 }
@@ -1423,10 +1442,25 @@ void ScriptMgr::FillSpellSummary()
     UnitAI::FillAISpellInfo();
 }
 
-template<typename T, Trinity::invocable_r<T*, SpellScriptLoader const*> GetScriptFn, typename O>
-void CreateSpellOrAuraScripts(uint32 spellId, std::vector<T*>& scriptVector, GetScriptFn extractor, O* objectInvoker)
+template<typename T, typename O>
+void AddSpellOrAuraScript(std::string const& scriptName, T* script, uint32 spellId, std::vector<T*>& scriptVector, O* objectInvoker)
 {
-    SpellScriptsBounds bounds = sObjectMgr->GetSpellScriptsBounds(spellId);
+    script->_Init(scriptName, spellId);
+    if (!script->_Load(objectInvoker))
+    {
+        delete script;
+        return;
+    }
+
+    scriptVector.push_back(script);
+}
+
+template<typename T, Trinity::invocable_r<T*, SpellScriptLoader const*> GetScriptFn,
+    Trinity::invocable_r<T*, GlobalSpellScriptLoader const*> GetGlobalScriptFn, typename O>
+void CreateSpellOrAuraScripts(SpellInfo const* spellInfo, std::vector<T*>& scriptVector, GetScriptFn extractor,
+    GetGlobalScriptFn globalExtractor, O* objectInvoker)
+{
+    SpellScriptsBounds bounds = sObjectMgr->GetSpellScriptsBounds(spellInfo->Id);
     for (auto itr = bounds.first; itr != bounds.second; ++itr)
     {
         // When the script is disabled continue with the next one
@@ -1441,25 +1475,48 @@ void CreateSpellOrAuraScripts(uint32 spellId, std::vector<T*>& scriptVector, Get
         if (!script)
             continue;
 
-        script->_Init(tmpscript->GetName(), spellId);
-        if (!script->_Load(objectInvoker))
-        {
-            delete script;
-            continue;
-        }
+        AddSpellOrAuraScript(tmpscript->GetName(), script, spellInfo->Id, scriptVector, objectInvoker);
+    }
 
-        scriptVector.push_back(script);
+    // Global loaders may attach scripts to any spell, the loop is empty when none is registered.
+    for (auto const& storedLoader : SCR_REG_LST(GlobalSpellScriptLoader))
+    {
+        GlobalSpellScriptLoader const* loader = storedLoader.second.get();
+
+        // A global attachment has no database binding which could be disabled, so it is validated
+        // for this spell in the same order ObjectMgr::ValidateSpellScripts uses for a bound one and
+        // dropped when its Validate hook rejects it.
+        std::unique_ptr<T> probe(globalExtractor(loader));
+        if (!probe)
+            continue;
+
+        probe->_Init(loader->GetName(), spellInfo->Id);
+        probe->_Register();
+        if (!probe->_Validate(spellInfo))
+            continue;
+
+        T* script = globalExtractor(loader);
+        if (!script)
+            continue;
+
+        AddSpellOrAuraScript(loader->GetName(), script, spellInfo->Id, scriptVector, objectInvoker);
     }
 }
 
-void ScriptMgr::CreateSpellScripts(uint32 spellId, std::vector<SpellScript*>& scriptVector, Spell* invoker) const
+void ScriptMgr::CreateSpellScripts(SpellInfo const* spellInfo, std::vector<SpellScript*>& scriptVector, Spell* invoker) const
 {
-    CreateSpellOrAuraScripts(spellId, scriptVector, [](SpellScriptLoader const* loader) { return loader->GetSpellScript(); }, invoker);
+    CreateSpellOrAuraScripts(spellInfo, scriptVector,
+        [](SpellScriptLoader const* loader) { return loader->GetSpellScript(); },
+        [spellInfo](GlobalSpellScriptLoader const* loader) { return loader->GetSpellScript(spellInfo); },
+        invoker);
 }
 
-void ScriptMgr::CreateAuraScripts(uint32 spellId, std::vector<AuraScript*>& scriptVector, Aura* invoker) const
+void ScriptMgr::CreateAuraScripts(SpellInfo const* spellInfo, std::vector<AuraScript*>& scriptVector, Aura* invoker) const
 {
-    CreateSpellOrAuraScripts(spellId, scriptVector, [](SpellScriptLoader const* loader) { return loader->GetAuraScript(); }, invoker);
+    CreateSpellOrAuraScripts(spellInfo, scriptVector,
+        [](SpellScriptLoader const* loader) { return loader->GetAuraScript(); },
+        [spellInfo](GlobalSpellScriptLoader const* loader) { return loader->GetAuraScript(spellInfo); },
+        invoker);
 }
 
 SpellScriptLoader* ScriptMgr::GetSpellScriptLoader(uint32 scriptId)
@@ -2568,6 +2625,22 @@ AuraScript* SpellScriptLoader::GetAuraScript() const
     return nullptr;
 }
 
+GlobalSpellScriptLoader::GlobalSpellScriptLoader(char const* name) noexcept
+    : ScriptObject(name)
+{
+    ScriptRegistry<GlobalSpellScriptLoader>::Instance()->AddScript(this);
+}
+
+SpellScript* GlobalSpellScriptLoader::GetSpellScript(SpellInfo const* /*spellInfo*/) const
+{
+    return nullptr;
+}
+
+AuraScript* GlobalSpellScriptLoader::GetAuraScript(SpellInfo const* /*spellInfo*/) const
+{
+    return nullptr;
+}
+
 ServerScript::ServerScript(char const* name) noexcept
     : ScriptObject(name)
 {
@@ -3535,6 +3608,7 @@ void PlayerChoiceScript::OnResponse(WorldObject* /*object*/, Player* /*player*/,
 
 // Specialize for each script type class like so:
 template class TC_GAME_API ScriptRegistry<SpellScriptLoader>;
+template class TC_GAME_API ScriptRegistry<GlobalSpellScriptLoader>;
 template class TC_GAME_API ScriptRegistry<ServerScript>;
 template class TC_GAME_API ScriptRegistry<WorldScript>;
 template class TC_GAME_API ScriptRegistry<FormulaScript>;
