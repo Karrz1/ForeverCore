@@ -293,6 +293,28 @@ class TC_GAME_API WorldScript : public ScriptObject
         // full command path, e.g. "reload config", "reload creature_template", "reload all quest".
         // Lets modules refresh what they cached from the reloaded config or tables.
         virtual void OnAfterReload(std::string_view command);
+
+        // Called once for each instance map after its instance data was created or loaded (the instance
+        // script's Create or Load ran first, when the map has one), including instances whose map has no
+        // InstanceMapScript. Runs with the map registry lock released, on the game thread that created the
+        // map, not on the map update thread; the map is registered but has not been returned to a caller
+        // yet. saveData is the instance save data that was restored, or nullptr when the instance was
+        // started fresh (a new lock, or a dungeon whose saved state is not restored); the pointer is only
+        // valid for the duration of the call. Notification only: do not write instance save data, and do
+        // not despawn or kill creatures or end combat here. The InstanceMap pointer is valid only for the
+        // duration of the call; a module that needs the map later keeps the instance id and looks the map
+        // up again (there is no unload notification in this hook family). Map creation must stay on the
+        // world thread (callers of CreateMap), so a module must not create instance maps from a map update
+        // thread.
+        virtual void OnInstanceMapLoad(InstanceMap* map, char const* saveData);
+
+        // Called when the core asks whether an encounter is running in an instance map. The answer is the
+        // instance script's answer ORed with any module's answer, so a map without a script can report an
+        // encounter. Called on whatever thread asks (instance entry, spell checks), so keep it cheap and
+        // read-only: do not despawn or kill creatures, end combat, or call IsEncounterInProgress() back.
+        // Combat resurrection charges stay on the instance script; a hook-only encounter does not withhold
+        // them, so the limit cannot block resurrections on a map without a script.
+        virtual bool OnInstanceEncounterCheck(InstanceMap* map);
 };
 
 class TC_GAME_API FormulaScript : public ScriptObject
@@ -1231,6 +1253,8 @@ class TC_GAME_API ScriptMgr
         void OnShutdown();
         bool CanCreateBattleground(uint32 battlemasterListId, uint8 bracketId);
         void OnAfterReload(std::string_view command);
+        void OnInstanceMapLoad(InstanceMap* map, char const* saveData);
+        bool OnInstanceEncounterCheck(InstanceMap* map);
 
     public: /* FormulaScript */
 

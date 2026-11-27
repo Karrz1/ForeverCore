@@ -2002,6 +2002,24 @@ void ScriptMgr::OnAfterReload(std::string_view command)
     FOREACH_SCRIPT(WorldScript)->OnAfterReload(command);
 }
 
+void ScriptMgr::OnInstanceMapLoad(InstanceMap* map, char const* saveData)
+{
+    ASSERT(map);
+
+    FOREACH_SCRIPT(WorldScript)->OnInstanceMapLoad(map, saveData);
+}
+
+bool ScriptMgr::OnInstanceEncounterCheck(InstanceMap* map)
+{
+    ASSERT(map);
+
+    FOR_SCRIPTS(WorldScript, itr, end)
+        if (itr->second->OnInstanceEncounterCheck(map))
+            return true;
+
+    return false;
+}
+
 // Achievement
 void ScriptMgr::OnAchievementCompleted(Player* player, AchievementEntry const* achievement)
 {
@@ -2655,6 +2673,15 @@ bool WorldScript::CanCreateBattleground(uint32 /*battlemasterListId*/, uint8 /*b
 
 void WorldScript::OnAfterReload(std::string_view /*command*/)
 {
+}
+
+void WorldScript::OnInstanceMapLoad(InstanceMap* /*map*/, char const* /*saveData*/)
+{
+}
+
+bool WorldScript::OnInstanceEncounterCheck(InstanceMap* /*map*/)
+{
+    return false;
 }
 
 FormulaScript::FormulaScript(char const* name) noexcept

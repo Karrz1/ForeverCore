@@ -2715,8 +2715,9 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
     if (HasAttribute(SPELL_ATTR8_ENFORCE_IN_COMBAT_RESSURECTION_LIMIT) && sWorld->getBoolConfig(CONFIG_INSTANCE_COMBAT_RES_LIMIT))
         if (Map* map = caster->GetMap())
             if (InstanceMap* iMap = map->ToInstanceMap())
+                // the charge pool lives on the instance script; without one there is nothing to enforce
                 if (InstanceScript* instance = iMap->GetInstanceScript())
-                    if (instance->GetCombatResurrectionCharges() == 0 && instance->IsEncounterInProgress())
+                    if (instance->GetCombatResurrectionCharges() == 0 && iMap->IsEncounterInProgress())
                         return SPELL_FAILED_TARGET_CANNOT_BE_RESURRECTED;
 
     return SPELL_CAST_OK;

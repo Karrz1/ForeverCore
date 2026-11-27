@@ -520,15 +520,17 @@ void WorldSession::HandleResurrectResponse(WorldPackets::Misc::ResurrectResponse
 
     if (Player* ressPlayer = ObjectAccessor::GetPlayer(*GetPlayer(), packet.Resurrecter))
     {
-        if (InstanceScript* instance = ressPlayer->GetInstanceScript())
+        if (InstanceMap* instanceMap = ressPlayer->GetMap()->ToInstanceMap())
         {
-            if (sWorld->getBoolConfig(CONFIG_INSTANCE_COMBAT_RES_LIMIT) && instance->IsEncounterInProgress())
-            {
-                if (!instance->GetCombatResurrectionCharges())
-                    return;
-                else
-                    instance->UseCombatResurrection();
-            }
+            // the charge pool lives on the instance script; without one the combat resurrection limit cannot apply
+            if (InstanceScript* instance = instanceMap->GetInstanceScript())
+                if (sWorld->getBoolConfig(CONFIG_INSTANCE_COMBAT_RES_LIMIT) && instanceMap->IsEncounterInProgress())
+                {
+                    if (!instance->GetCombatResurrectionCharges())
+                        return;
+                    else
+                        instance->UseCombatResurrection();
+                }
         }
     }
 
