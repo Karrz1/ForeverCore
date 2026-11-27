@@ -13948,10 +13948,26 @@ void Player::SwapItem(uint16 src, uint16 dst)
     // impossible merge/fill, do real swap
     InventoryResult msg = EQUIP_ERR_OK;
 
+    // A full equipped bag swapped with an empty bag from the inventory. The full bag's items move into the empty one
+    // (the "bag swap with item exchange" block below), so the full bag lands, empty, in the slot the empty bag held. The move checks
+    // below ran first and refused it as a non-empty bag ("You can only do that with empty bags"), so that block was never reached.
+    // That slot already holds a bag, so a bag may go there.
+    Item* exchangeFullBag = nullptr;
+    if (Bag* srcAsBag = pSrcItem->ToBag())
+        if (Bag* dstAsBag = pDstItem->ToBag())
+        {
+            if (srcAsBag->IsEmpty() && !IsBagPos(src) && !dstAsBag->IsEmpty())
+                exchangeFullBag = dstAsBag;
+            else if (dstAsBag->IsEmpty() && !IsBagPos(dst) && !srcAsBag->IsEmpty())
+                exchangeFullBag = srcAsBag;
+        }
+
     // check src->dest move possibility
     ItemPosCountVec sDest;
     uint16 eDest = 0;
-    if (IsInventoryPos(dst))
+    if (exchangeFullBag == pSrcItem && IsInventoryPos(dst))
+        sDest.emplace_back(dst, 1);
+    else if (IsInventoryPos(dst))
         msg = CanStoreItem(dstbag, dstslot, sDest, pSrcItem, true);
     else if (IsBankPos(dst))
         msg = CanBankItem(dstbag, dstslot, sDest, pSrcItem, true);
@@ -13971,7 +13987,9 @@ void Player::SwapItem(uint16 src, uint16 dst)
     // check dest->src move possibility
     ItemPosCountVec sDest2;
     uint16 eDest2 = 0;
-    if (IsInventoryPos(src))
+    if (exchangeFullBag == pDstItem && IsInventoryPos(src))
+        sDest2.emplace_back(src, 1);
+    else if (IsInventoryPos(src))
         msg = CanStoreItem(srcbag, srcslot, sDest2, pDstItem, true);
     else if (IsBankPos(src))
         msg = CanBankItem(srcbag, srcslot, sDest2, pDstItem, true);
