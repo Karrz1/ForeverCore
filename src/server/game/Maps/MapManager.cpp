@@ -238,10 +238,11 @@ Map* MapManager::CreateMap(uint32 mapId, Player* player, Optional<uint32> lfgDun
     if (!entry)
         return nullptr;
 
-    std::scoped_lock lock(_mapsLock);
+    std::unique_lock lock(_mapsLock);
 
     Map* map = nullptr;
     uint32 newInstanceId = 0;                       // instanceId of the resulting map
+    bool createdInstance = false;                   // the instance load hook runs outside the registry lock
 
     if (entry->IsBattlegroundOrArena())
     {
@@ -315,6 +316,7 @@ Map* MapManager::CreateMap(uint32 mapId, Player* player, Optional<uint32> lfgDun
         {
             map = CreateInstance(mapId, newInstanceId, instanceLock, Difficulty(entries.MapDifficulty->DifficultyID), GetTeamIdForTeam(sCharacterCache->GetCharacterTeamByGuid(instanceOwnerGuid)), group,
                 lfgDungeonsId);
+            createdInstance = true;
             if (group)
                 group->SetRecentInstance(mapId, instanceOwnerGuid, newInstanceId);
             else
@@ -357,6 +359,13 @@ Map* MapManager::CreateMap(uint32 mapId, Player* player, Optional<uint32> lfgDun
             sOutdoorPvPMgr->CreateOutdoorPvPForMap(map);
             sBattlefieldMgr->CreateBattlefieldsForMap(map);
         }
+    }
+
+    if (createdInstance)
+    {
+        // module code may query the map registry from the hook, so drop the registry lock first
+        lock.unlock();
+        map->ToInstanceMap()->NotifyInstanceLoad();
     }
 
     return map;

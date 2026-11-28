@@ -3158,7 +3158,7 @@ TransferAbortParams InstanceMap::CannotEnter(Player* player)
 
     // cannot enter while an encounter is in progress (unless this is a relog, in which case it is permitted); a companion bot is let in:
     // its owner calls it to the fight (otherwise the whole companion group stays outside "encounter in progress" while the owner is inside)
-    if (!player->IsLoading() && !player->GetSession()->IsBot() && IsRaid() && GetInstanceScript() && GetInstanceScript()->IsEncounterInProgress())
+    if (!player->IsLoading() && !player->GetSession()->IsBot() && IsRaid() && IsEncounterInProgress())
         return TRANSFER_ABORT_ZONE_IN_COMBAT;
 
     if (i_instanceLock)
@@ -3316,31 +3316,48 @@ void InstanceMap::CreateInstanceData()
         i_data = sScriptMgr->CreateInstanceData(this);
     }
 
-    if (!i_data)
-        return;
-
     if (!i_instanceLock || i_instanceLock->IsNew())
     {
-        i_data->Create();
+        if (i_data)
+            i_data->Create();
         return;
     }
 
     MapDb2Entries entries{ GetEntry(), GetMapDifficulty() };
     if (!entries.IsInstanceIdBound() && !IsRaid() && !entries.MapDifficulty->IsRestoringDungeonState() && i_owningGroupRef.isValid())
     {
-        i_data->Create();
+        if (i_data)
+            i_data->Create();
         return;
     }
 
+    // an existing save is restored from the lock; keep its payload for the load hook even when no script claims it
     InstanceLockData const* lockData = i_instanceLock->GetInstanceInitializationData();
+    i_savedData = lockData->Data;
+
+    if (!i_data)
+        return;
+
     i_data->SetEntranceLocation(lockData->EntranceWorldSafeLocId);
-    if (!lockData->Data.empty())
+    if (!i_savedData.empty())
     {
         TC_LOG_DEBUG("maps", "Loading instance data for `{}` with id {}", sObjectMgr->GetScriptName(i_script_id), i_InstanceId);
-        i_data->Load(lockData->Data.c_str());
+        i_data->Load(i_savedData.c_str());
     }
     else
         i_data->Create();
+}
+
+void InstanceMap::NotifyInstanceLoad()
+{
+    sScriptMgr->OnInstanceMapLoad(this, i_savedData.empty() ? nullptr : i_savedData.c_str());
+    i_savedData.clear();
+    i_savedData.shrink_to_fit();
+}
+
+bool InstanceMap::IsEncounterInProgress()
+{
+    return (i_data && i_data->IsEncounterInProgress()) || sScriptMgr->OnInstanceEncounterCheck(this);
 }
 
 void InstanceMap::TrySetOwningGroup(Group* group)

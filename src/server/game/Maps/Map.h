@@ -926,11 +926,13 @@ class TC_GAME_API InstanceMap : public Map
         void RemovePlayerFromMap(Player*, bool) override;
         void Update(uint32) override;
         void CreateInstanceData();
+        void NotifyInstanceLoad();
         InstanceResetResult Reset(InstanceResetMethod method);
         uint32 GetScriptId() const { return i_script_id; }
         std::string const& GetScriptName() const;
         InstanceScript* GetInstanceScript() { return i_data; }
         InstanceScript const* GetInstanceScript() const { return i_data; }
+        bool IsEncounterInProgress();
         InstanceScenario* GetInstanceScenario() { return i_scenario.get(); }
         InstanceScenario const* GetInstanceScenario() const { return i_scenario.get(); }
         void SetInstanceScenario(InstanceScenario* scenario);
@@ -958,6 +960,7 @@ class TC_GAME_API InstanceMap : public Map
         Optional<SystemTimePoint> i_instanceExpireEvent;
         bool i_respawnsPersisted = false; // a real player is bound to this raid instance, dead creatures stay dead until the lockout resets
         InstanceScript* i_data;
+        std::string i_savedData; // instance save payload handed to the load hook, emptied once the hook ran
         uint32 i_script_id;
         std::unique_ptr<InstanceScenario> i_scenario;
         InstanceLock* i_instanceLock;
