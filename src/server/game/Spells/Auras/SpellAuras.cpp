@@ -2150,7 +2150,7 @@ void Aura::_DeleteRemovedApplications()
 
 void Aura::LoadScripts()
 {
-    sScriptMgr->CreateAuraScripts(m_spellInfo->Id, m_loadedScripts, this);
+    sScriptMgr->CreateAuraScripts(m_spellInfo, m_loadedScripts, this);
     for (AuraScript* script : m_loadedScripts)
     {
         TC_LOG_DEBUG("spells", "Aura::LoadScripts: Script `{}` for aura `{}` is loaded now", script->GetScriptName(), m_spellInfo->Id);
