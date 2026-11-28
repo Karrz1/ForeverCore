@@ -292,6 +292,8 @@ public:
 
         // Ouro server crash handling
         uint32 m_uiRestoreOuroSpawnTriggerTimer = 0;
+        // The spawner despawns when Ouro comes out; TC then removes it from the map, so it is brought back by spawn
+        ObjectGuid::LowType m_ouroSpawnerSpawnId = 0;
 
         std::vector<std::pair<ObjectGuid, uint32>> cthunWhisperMutes;
         uint32 m_uiCthunWhisperTimer;
@@ -471,6 +473,8 @@ public:
                 case NPC_OURO_SPAWNER:
                 case NPC_CTHUN_PORTAL:
                     m_mNpcEntryGuidStore[pCreature->GetEntry()] = pCreature->GetGUID();
+                    if (pCreature->GetEntry() == NPC_OURO_SPAWNER && pCreature->GetSpawnId())
+                        m_ouroSpawnerSpawnId = pCreature->GetSpawnId();
                     break;
                 case NPC_SARTURA_S_ROYAL_GUARD:
                     m_lRoyalGuardGUIDList.push_back(pCreature->GetGUID());
@@ -535,9 +539,9 @@ public:
                 case TYPE_OURO:
                     if (uiData == FAIL)
                     {
-                        // Respawn the Ouro spawner on fail
-                        if (Creature* pSpawner = GetSingleCreatureFromStorage(NPC_OURO_SPAWNER))
-                            pSpawner->Respawn();
+                        // Respawn the Ouro spawner on fail. It despawned when Ouro came out, and TC removed it from the map
+                        // (VMaNGOS kept it): without the spawn id lookup Ouro could not be summoned again after a wipe.
+                        RespawnOuroSpawner();
                     }
                     SetBossState(uiType, EncounterState(uiData));
                     break;
@@ -959,6 +963,14 @@ public:
             }
         }
 
+        void RespawnOuroSpawner()
+        {
+            if (Creature* pSpawner = GetSingleCreatureFromStorage(NPC_OURO_SPAWNER))
+                pSpawner->Respawn();
+            else
+                ClassicRespawnSpawnIfDead(instance, m_ouroSpawnerSpawnId);
+        }
+
         void RestoreOuroSpawnTrigger()
         {
             if (Creature* pOuroSpawnTrigger = GetSingleCreatureFromStorage(NPC_OURO_SPAWNER))
@@ -967,6 +979,8 @@ public:
                 pOuroSpawnTrigger->SetHomePosition(-9188.45f, 2091.56f, -64.17f, 6.01f);
                 pOuroSpawnTrigger->Respawn();
             }
+            else
+                ClassicRespawnSpawnIfDead(instance, m_ouroSpawnerSpawnId);   // a spawner created again from its spawn is at home
             m_uiRestoreOuroSpawnTriggerTimer = 0;
         }
     };

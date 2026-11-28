@@ -24,12 +24,100 @@
 #include "WorldSession.h"
 #include <cstdarg>
 
+namespace
+{
+bool IsCreatureChat(ChatMsg chatType)
+{
+    switch (chatType)
+    {
+        case CHAT_MSG_MONSTER_SAY:
+        case CHAT_MSG_MONSTER_PARTY:
+        case CHAT_MSG_MONSTER_YELL:
+        case CHAT_MSG_MONSTER_WHISPER:
+        case CHAT_MSG_MONSTER_EMOTE:
+        case CHAT_MSG_RAID_BOSS_EMOTE:
+        case CHAT_MSG_RAID_BOSS_WHISPER:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The live realm sends a creature's line aimed at a player already finished: $n is the player's name, $c the class, $r the race,
+// and $gmale:female; the word for the player's gender, all in the listener's language (captures of 11-22, 43 lines, EN and RU).
+// The client only fills these in for the chat window, so a speech bubble showed "$n". %s (the speaker) stays for the client.
+std::string FillInPlayerTokens(std::string const& text, Player const* target, LocaleConstant locale)
+{
+    if (text.find('$') == std::string::npos)
+        return text;
+
+    bool const female = target->GetNativeGender() == GENDER_FEMALE;
+    auto genderName = [female](LocalizedString const& name, LocalizedString const& nameFemale, LocaleConstant loc) -> std::string
+    {
+        if (female && nameFemale[loc][0] != '\0')
+            return nameFemale[loc];
+        return name[loc];
+    };
+
+    std::string out;
+    out.reserve(text.size() + 16);
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        if (text[i] != '$' || i + 1 >= text.size())
+        {
+            out += text[i];
+            continue;
+        }
+
+        switch (text[i + 1])
+        {
+            case 'n': case 'N':
+                out += target->GetName();
+                ++i;
+                break;
+            case 'c': case 'C':
+                if (ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(target->GetClass()))
+                    out += genderName(classEntry->Name, classEntry->NameFemale, locale);
+                ++i;
+                break;
+            case 'r': case 'R':
+                if (ChrRacesEntry const* raceEntry = sChrRacesStore.LookupEntry(target->GetRace()))
+                    out += genderName(raceEntry->Name, raceEntry->NameFemale, locale);
+                ++i;
+                break;
+            case 'g': case 'G':
+            {
+                // $gmale:female; - without the ':' and ';' it is not a gender pick, keep it as it is
+                std::size_t const colon = text.find(':', i + 2);
+                std::size_t const end = colon == std::string::npos ? std::string::npos : text.find(';', colon + 1);
+                if (end == std::string::npos)
+                {
+                    out += text[i];
+                    break;
+                }
+                out.append(female ? text.substr(colon + 1, end - colon - 1) : text.substr(i + 2, colon - i - 2));
+                i = end;
+                break;
+            }
+            default:
+                out += text[i];
+                break;
+        }
+    }
+    return out;
+}
+}
+
 namespace Trinity
 {
 ChatPacketSender::ChatPacketSender(ChatMsg chatType, ::Language language, WorldObject const* sender, WorldObject const* receiver,
     std::string message, uint32 achievementId /*= 0*/, LocaleConstant locale /*= LOCALE_enUS*/, uint32 broadcastTextId /*= 0*/, uint16 emoteId /*= 0*/, uint32 soundKitId /*= 0*/, SoundKitPlayType soundKitPlayType /*= SoundKitPlayType::Normal*/, uint32 playerConditionId /*= 0*/)
     : Type(chatType), Language(language), Sender(sender), Receiver(receiver), Text(std::move(message)), AchievementId(achievementId), Locale(locale), PlayerConditionID(playerConditionId)
 {
+    if (IsCreatureChat(Type) && sender && !sender->IsPlayer())
+        if (Player const* target = Object::ToPlayer(receiver))
+            Text = FillInPlayerTokens(Text, target, Locale);
+
     UntranslatedPacket.Initialize(Type, Language, Sender, Receiver, Text, AchievementId, "", Locale);
     UntranslatedPacket.Write();
 

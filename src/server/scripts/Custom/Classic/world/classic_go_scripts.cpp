@@ -134,6 +134,19 @@ static constexpr CampFeature CampFeatures[] =
     { 612088, false, SPELL_BOOSTED_CRIT },          // Field Guide (1307243), over a Camp Chair
     { 612142, false, SPELL_BOOSTED_SPIRIT },        // Loom (1307255), over a Faction Banner
     { 612134, false, SPELL_BOOSTED_ATTACK_POWER },  // Molten Foundry (1307264), over a Lodestone
+    // the profession features that also "provide all of the benefits of" a basic one (70399 client texts, Discord, Sagiroth
+    // 2026-11-25). Some have no template yet (Anvil, Alchemy Laboratory, Arcane Forge, Sewing Machine, Trapper's Workbench, Toxin
+    // Study, Seed Hybridizer): they need a sniff of placing them, and count here as soon as they can be placed.
+    { 612125, false, SPELL_EXTRA_STRENGTH },        // Anvil (1307175), over a Sharpening Wheel
+    { 612139, false, SPELL_BOOSTED_MANA_REGEN },    // Alchemy Laboratory (1307172), over a Mana Well
+    { 612143, false, SPELL_BOOSTED_STATS_LUTE },    // Arcane Forge (1307176), over an Enchanted Lute
+    { 654285, false, SPELL_BOOSTED_ATTACK_POWER },  // Rock Garden (1307386), over a Lodestone
+    { 612122, false, SPELL_BOOSTED_REST },          // Tanning Rack (1307395), over a Camp Tent
+    { 612140, false, SPELL_BOOSTED_REST },          // Sewing Machine (1307391), over a Camp Tent
+    { 612123, false, SPELL_BOOSTED_SPIRIT },        // Spinning Wheel (1307393), over a Faction Banner
+    { 612082, false, SPELL_BOOSTED_CRIT },          // Trapper's Workbench (1307397), over a Camp Chair
+    { 612091, false, SPELL_BOOSTED_STAMINA },       // Toxin Study (1307396), over a First Aid Kit
+    { 260105, true,  SPELL_BOOSTED_INTELLECT },     // Seed Hybridizer (1307387, a creature), over an Incense Candle
 };
 
 // The buffs scale with level in steps (client tooltips: "$?$PL<12[3]?$PL<24[8]...[$1230124s1]"); the spell's own value is the
@@ -351,6 +364,20 @@ static constexpr CampPlacement CampPlacements[] =
     { 1307261, { 651950 } },            // Master Forge, over a Sharpening Wheel
     { 1307264, { 651956 } },            // Molten Foundry, over a Lodestone
     { 1307265, { 651953 } },            // Plague Doctor's Laboratory, over a First Aid Kit
+    // the Sharpening Wheel and the profession features were missing, so they did not count against the fire's limit and one placed
+    // over its basic feature did not replace it (Discord, Sagiroth 2026-11-25). What each replaces is its "May be placed over" text
+    // (70399 client). Cookie's Feast and the Iron Oven need a Cooking Fire, not a Campfire, so they are not counted here.
+    { 1307392, { } },                   // Sharpening Wheel
+    { 1307174, { } },                   // Anarchist's Workbench
+    { 1307175, { 651950 } },            // Anvil, over a Sharpening Wheel
+    { 1307172, { 651948 } },            // Alchemy Laboratory, over a Mana Well
+    { 1307176, { 651952 } },            // Arcane Forge, over an Enchanted Lute
+    { 1307386, { 651956 } },            // Rock Garden, over a Lodestone
+    { 1307395, { 528996 } },            // Tanning Rack, over a Camp Tent
+    { 1307391, { 528996 } },            // Sewing Machine, over a Camp Tent
+    { 1307393, { 612350, 612351 } },    // Spinning Wheel, over a Faction Banner
+    { 1307397, { 612275 } },            // Trapper's Workbench, over a Camp Chair
+    { 1307396, { 651953 } },            // Toxin Study, over a First Aid Kit
 };
 
 static CampPlacement const* FindCampPlacement(uint32 spellId)
@@ -438,25 +465,6 @@ class classic_spell_boosted_rest : public SpellScript
     void Register() override
     {
         OnEffectHitTarget += SpellEffectFn(classic_spell_boosted_rest::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
-    }
-};
-
-/*######
-## classic_go_camp_chair (612275)
-######*/
-
-// Sitting in a Camp Chair goes through GameObject::Use, not CMSG_STAND_STATE_CHANGE, so start the campfire rest here as well;
-// returning false lets the chair seat the player as usual (standing up later removes the rest in HandleStandStateChangeOpcode)
-struct classic_go_camp_chair : public GameObjectAI
-{
-    classic_go_camp_chair(GameObject* go) : GameObjectAI(go) { }
-
-    bool OnGossipHello(Player* player) override
-    {
-        // the player is not seated yet: the chair's own fire counts (see FindCampfireOfFeature)
-        if (!player->HasAura(SPELL_CAMPFIRE_REST) && (FindCampfire(player) || FindCampfireOfFeature(me)))
-            player->CastSpell(player, SPELL_CAMPFIRE_REST, true);
-        return false;
     }
 };
 
@@ -680,7 +688,6 @@ void AddSC_classic_go_scripts()
     RegisterAreaTriggerAI(classic_at_rohashi_wind);
     RegisterAreaTriggerAI(classic_at_secluded_house);
     RegisterGameObjectAI(classic_go_field_repair_bot_74A);
-    RegisterGameObjectAI(classic_go_camp_chair);
     RegisterSpellScript(classic_spell_campfire_rest);
     RegisterSpellScript(classic_spell_boosted_rest);
     RegisterSpellScript(classic_spell_camp_feature_placement);

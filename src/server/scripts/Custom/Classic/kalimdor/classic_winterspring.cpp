@@ -17,8 +17,10 @@
 
 // Classic 1.60 port of VMaNGOS src/scripts/kalimdor/winterspring/winterspring.cpp (ScriptDev2 / Nostalrius lineage, GPL-2)
 // Ported: npc_artorius (Artorius the Amiable -> Artorius the Doombringer, Stave of the Ancients)
+// Also here: Mount Hyjal (reached from Winterspring), the Lonely Lantern event that calls Ta'shkal (WoW Forever).
 
 #include "ScriptMgr.h"
+#include "GameTime.h"
 #include "MotionMaster.h"
 #include "Player.h"
 #include "ScriptedCreature.h"
@@ -285,7 +287,57 @@ private:
     uint32 _despawnTimer;
 };
 
+/*######
+## Mount Hyjal: the Lonely Lantern (660408) in Malorne's Retreat
+######*/
+
+// A hunter with a Corrupted Cat Figurine (276909, from the fel pools of the Felblood Scar) uses the Lonely Lantern: the player
+// casts 1301234 (3 s, the figurine is its reagent), whose only effect sends event 104925. The client leaves the event to the
+// server: it calls Ta'shkal <Escaped Experiment> (268231), the tameable 1.0 s cat, beside the lantern. One Ta'shkal at a time,
+// and after a call the lantern rests for a while (live has a cooldown of unknown length; a figurine used during it is lost there too).
+enum LonelyLantern
+{
+    EVENT_LONELY_LANTERN_TASHKAL    = 104925,
+    NPC_TASHKAL                     = 268231
+};
+
+Position const TashkalCallPosition = { 4793.2f, -1849.1f, 1280.53f, 0.0f };     // ground beside the lantern, read on dev
+
+constexpr Seconds TashkalCallCooldown = 5min;
+constexpr Minutes TashkalStaysOutOfCombat = 5min;
+
+class classic_event_lonely_lantern_tashkal : public EventScript
+{
+public:
+    classic_event_lonely_lantern_tashkal() : EventScript("classic_event_lonely_lantern_tashkal") { }
+
+    // object = the event's target (the casting player, the spell targets its caster), invoker = the caster
+    void OnTrigger(WorldObject* object, WorldObject* invoker, uint32 /*eventId*/) override
+    {
+        Player* player = Object::ToPlayer(invoker);
+        if (!player)
+            player = Object::ToPlayer(object);
+        if (!player)
+            return;
+
+        time_t const now = GameTime::GetGameTime();
+        if (now < _nextCall)
+            return;
+
+        // still one about (not yet killed, tamed or gone)
+        if (player->FindNearestCreature(NPC_TASHKAL, 200.0f, true))
+            return;
+
+        if (player->SummonCreature(NPC_TASHKAL, TashkalCallPosition, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, TashkalStaysOutOfCombat))
+            _nextCall = now + TashkalCallCooldown.count();
+    }
+
+private:
+    time_t _nextCall = 0;
+};
+
 void AddSC_classic_winterspring()
 {
     RegisterCreatureAI(classic_npc_artorius);
+    new classic_event_lonely_lantern_tashkal();
 }

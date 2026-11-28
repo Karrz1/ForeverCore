@@ -798,6 +798,10 @@ public:
 
     void OnUnitDeath(Unit* victim, Unit* /*killer*/) override
     {
+        // Blizzard, build 70755: "Devouring Contagion no longer spreads Devouring Plague if it is spreading from a critter."
+        if (victim->GetCreatureType() == CREATURE_TYPE_CRITTER)
+            return;
+
         std::vector<std::pair<ObjectGuid, std::pair<uint32, int32>>> plagues;
         for (AuraEffect const* leech : victim->GetAuraEffectsByType(SPELL_AURA_PERIODIC_LEECH))
         {
@@ -1369,8 +1373,13 @@ class classic_spell_pal_improved_seal_of_fury : public AuraScript
 //   target by up to X and the effect Flash of Light spells used on the target by up to Y". Effect 0 is the Holy Light bonus, effect 1 the
 //   Flash of Light bonus; the best blessing on the target counts (no stacking between paladins), scaled by the heal coefficient (vanilla).
 // - 412019 Sacred Shield: Flash of Light gets the shield's crit bonus (412018 effect 1, +50%) on targets with the paladin's Sacred Shield.
+// - 28851 Libram of Light (items 23006 and 23204): "Increases healing done by Flash of Light by up to 83." The equip aura is a dummy nothing
+//   read, so the libram gave nothing. Its amount is the paladin's own bonus healing for Flash of Light, scaled by the heal coefficient like
+//   the blessing (wowsims/forever, MIT, sim/paladin/item_librams.go). Credit: Everlake (buildthehomelab, GPL-3) found it first.
 class classic_spell_pal_holy_light_flash_of_light : public SpellScript
 {
+    static constexpr uint32 SPELL_ITEM_LIBRAM_OF_LIGHT = 28851;
+
     static bool IsHolyLight(SpellInfo const* spellInfo)
     {
         return (spellInfo->SpellFamilyFlags[0] & 0x80000000) != 0;
@@ -1391,6 +1400,10 @@ class classic_spell_pal_holy_light_flash_of_light : public SpellScript
         for (AuraEffect const* aurEff : victim->GetAuraEffectsByType(SPELL_AURA_DUMMY))
             if (aurEff->GetEffIndex() == blessingEffect && IsBlessingOfLight(aurEff->GetId()))
                 bonus = std::max(bonus, aurEff->GetAmountAsInt());
+
+        if (!IsHolyLight(GetSpellInfo()))
+            if (AuraEffect const* libram = GetCaster()->GetAuraEffect(SPELL_ITEM_LIBRAM_OF_LIGHT, EFFECT_0))
+                bonus += libram->GetAmountAsInt();
 
         if (bonus > 0)
             flatMod += int32(bonus * spellEffectInfo.BonusCoefficient);
@@ -1781,11 +1794,43 @@ class classic_spell_pri_holy_binding : public SpellScript
     }
 };
 
+// 2812, 10318 - Holy Wrath: "Sends bolts of holy power in all directions, causing $s1 Holy damage to all Undead and Demon targets within
+// $a1 yds and stunning them for $429147d." 429145, 429146 (the all-targets version): "... and Stunning Demon and Undead targets for
+// $429147d." Both have only the damage effect; the stun 429147 (SPELL_AURA_MOD_STUN) is the server's to apply.
+class classic_spell_pal_holy_wrath_stun : public SpellScript
+{
+    static constexpr uint32 SPELL_PAL_HOLY_WRATH_STUN = 429147;
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_PAL_HOLY_WRATH_STUN });
+    }
+
+    void HandleAfterHit()
+    {
+        Unit* target = GetHitUnit();
+        if (!target || !target->IsAlive())
+            return;
+
+        uint32 const creatureType = target->GetCreatureType();
+        if (creatureType != CREATURE_TYPE_UNDEAD && creatureType != CREATURE_TYPE_DEMON)
+            return;
+
+        GetCaster()->CastSpell(target, SPELL_PAL_HOLY_WRATH_STUN, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+    }
+
+    void Register() override
+    {
+        AfterHit += SpellHitFn(classic_spell_pal_holy_wrath_stun::HandleAfterHit);
+    }
+};
+
 void AddSC_classic_spells_priest();
 
 void AddSC_classic_talents_priest_paladin()
 {
     AddSC_classic_spells_priest();
+    RegisterSpellScript(classic_spell_pal_holy_wrath_stun);
     RegisterSpellScript(classic_spell_pri_holy_binding);
     // Priest
     RegisterSpellScript(classic_spell_pri_inspiration);

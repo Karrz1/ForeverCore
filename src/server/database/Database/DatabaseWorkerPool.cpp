@@ -35,6 +35,8 @@
 #include "MySQLWorkaround.h"
 #include <boost/asio/use_future.hpp>
 #include <mysqld_error.h>
+#include <chrono>
+#include <thread>
 #include <utility>
 #ifdef TRINITY_DEBUG
 #include <boost/stacktrace.hpp>
@@ -197,6 +199,31 @@ template <class T>
 void DatabaseWorkerPool<T>::Close()
 {
     TC_LOG_INFO("sql.driver", "Closing down DatabasePool '{}'.", GetDatabaseName());
+
+    // Stopping the context drops every queued operation that has not run yet, and the last character saves of a shutdown are
+    // queued just before this. Let the async workers finish the queue first. A database that does not answer at all would keep
+    // the queue full forever, so the wait has an end; whatever is left then is lost, and the log says how much.
+    // (The queue drain idea is from Everlake's core.)
+    if (_ioContext && _queueSize > 0)
+    {
+        using namespace std::chrono_literals;
+        TC_LOG_INFO("sql.driver", "DatabasePool '{}': waiting for {} queued operation(s) to finish.", GetDatabaseName(), size_t(_queueSize));
+        auto const giveUp = std::chrono::steady_clock::now() + 120s;
+        auto nextReport = std::chrono::steady_clock::now() + 5s;
+        while (_queueSize > 0 && std::chrono::steady_clock::now() < giveUp)
+        {
+            std::this_thread::sleep_for(10ms);
+            if (std::chrono::steady_clock::now() >= nextReport)
+            {
+                TC_LOG_INFO("sql.driver", "DatabasePool '{}': {} queued operation(s) still running.", GetDatabaseName(), size_t(_queueSize));
+                nextReport += 5s;
+            }
+        }
+
+        if (_queueSize > 0)
+            TC_LOG_ERROR("sql.driver", "DatabasePool '{}': the database did not finish {} queued operation(s) in 120 seconds, they are lost.",
+                GetDatabaseName(), size_t(_queueSize));
+    }
 
     if (_ioContext)
         _ioContext->stop();

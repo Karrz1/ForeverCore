@@ -192,6 +192,7 @@ class TC_GAME_API PathGenerator
         bool CalculateLiquidAwarePath(float srcX, float srcY, float srcZ, float destX, float destY, float destZ, bool forceDest);
         bool FindClosedDoorOnPath(G3D::Vector3& hit, std::vector<ClosedDoorShape> const* publishedDoors) const;
         bool FinishPath(bool ok);
+        bool SinkSwimRoute(G3D::Vector3 const& start, G3D::Vector3 const& end);
         static LiquidRouteCheck _liquidRouteCheck;
         static WaterRouteAdjust _waterRouteAdjust;
         static ClosedDoorCheck _closedDoorCheck;

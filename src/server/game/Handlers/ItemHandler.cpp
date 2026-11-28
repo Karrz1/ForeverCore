@@ -1390,12 +1390,12 @@ bool IsSortedBefore(BagSortItem const& left, BagSortItem const& right)
     return left.Guid < right.Guid;
 }
 
-// Packs the backpack and the equipped bags: the client's "clean up bags" button is only the request, the slots are
-// moved here and the client follows the resulting item updates.
+// Packs the backpack and the equipped bags (or, for the bank's clean up button, the bank's own slots and the bank bags):
+// the client's "clean up" button is only the request, the slots are moved here and the client follows the item updates.
 class BagSorter
 {
 public:
-    explicit BagSorter(Player* player) : _player(player) { }
+    explicit BagSorter(Player* player, bool bank = false) : _player(player), _bank(bank) { }
 
     void Sort();
 
@@ -1410,11 +1410,14 @@ private:
     uint32 GetSlotRank(BagSortSlot const& slot, BagSortCategory category) const;
     bool CanGoIntoSlot(ItemTemplate const* proto, BagSortSlot const& slot) const;
 
+    void CollectBank();
+
     Player* _player;
+    bool _bank;
     std::vector<BagSortSlot> _slots;
     std::vector<BagSortItem> _items;
     std::array<std::vector<uint32>, BagSortCategoryCount> _preferences;
-    std::array<bool, REAGENT_BAG_SLOT_END> _specializedBags = { };
+    std::array<bool, BANK_SLOT_BAG_END> _specializedBags = { };
     std::vector<std::size_t> _slotOwner;    // slot index -> item index planned for it
 };
 
@@ -1438,6 +1441,12 @@ void BagSorter::Sort()
 
 void BagSorter::Collect()
 {
+    if (_bank)
+    {
+        CollectBank();
+        return;
+    }
+
     bool const rightToLeft = _player->IsSortBagsRightToLeft();
 
     AddContainer(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START, _player->GetInventorySlotCount(), false);
@@ -1457,6 +1466,30 @@ void BagSorter::Collect()
             || (bagProto->GetSubClass() != ITEM_SUBCLASS_CONTAINER && bagProto->GetSubClass() != ITEM_SUBCLASS_REAGENT_CONTAINER);
 
         AddContainer(bagSlot, 0, uint8(bag->GetBagSize()), rightToLeft);
+    }
+}
+
+// Classic 1.60 bank: the bank's own slots are the character bank tab bag in BANK_SLOT_BAG_START, the bought bank bag slots
+// hold the player's bags after it. "Ignore the bank when cleaning up" leaves the bank's own slots alone.
+void BagSorter::CollectBank()
+{
+    bool const rightToLeft = _player->IsSortBagsRightToLeft();
+
+    for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = _player->GetBagByPos(bagSlot);
+        if (!bag)
+            continue;
+
+        bool const bankOwnSlots = bagSlot == BANK_SLOT_BAG_START;
+        if (bankOwnSlots && _player->IsBankAutoSortDisabled())
+            continue;
+
+        ItemTemplate const* bagProto = bag->GetTemplate();
+        _specializedBags[bagSlot] = !bankOwnSlots && (!bagProto || bagProto->GetClass() != ITEM_CLASS_CONTAINER
+            || (bagProto->GetSubClass() != ITEM_SUBCLASS_CONTAINER && bagProto->GetSubClass() != ITEM_SUBCLASS_REAGENT_CONTAINER));
+
+        AddContainer(bagSlot, 0, uint8(bag->GetBagSize()), bankOwnSlots ? false : rightToLeft);
     }
 }
 
@@ -1506,6 +1539,20 @@ uint32 BagSorter::GetSlotRank(BagSortSlot const& slot, BagSortCategory category)
     if (slot.BagSlot == INVENTORY_SLOT_BAG_0)
         return 2;
 
+    if (_bank)
+    {
+        // the bank's own slots play the backpack's part; the bank bags have no priority settings of their own
+        if (slot.BagSlot == BANK_SLOT_BAG_START)
+            return 2;
+
+        if (Bag const* bag = _player->GetBagByPos(slot.BagSlot))
+            if (ItemTemplate const* bagProto = bag->GetTemplate())
+                if (bagProto->GetClass() == ITEM_CLASS_CONTAINER && bagProto->GetSubClass() == ITEM_SUBCLASS_REAGENT_CONTAINER)
+                    return 0;
+
+        return _specializedBags[slot.BagSlot] ? 1 : 3;
+    }
+
     if (slot.BagSlot == REAGENT_BAG_SLOT_START && category == BagSortCategory::Reagent)
         return 0;
 
@@ -1525,7 +1572,7 @@ uint32 BagSorter::GetSlotRank(BagSortSlot const& slot, BagSortCategory category)
 
 bool BagSorter::CanGoIntoSlot(ItemTemplate const* proto, BagSortSlot const& slot) const
 {
-    if (slot.BagSlot == INVENTORY_SLOT_BAG_0)
+    if (slot.BagSlot == INVENTORY_SLOT_BAG_0 || (_bank && slot.BagSlot == BANK_SLOT_BAG_START))
         return true;
 
     Bag* bag = _player->GetBagByPos(slot.BagSlot);
@@ -1642,8 +1689,14 @@ void WorldSession::HandleSortBags(WorldPackets::Item::SortBags& /*sortBags*/)
 
 void WorldSession::HandleSortBankBags(WorldPackets::Item::SortBankBags& /*sortBankBags*/)
 {
-    // TODO: Implement sorting
-    // Placeholder to prevent completely locking out bags clientside
+    // the bank's clean up button: same packing as the bags, over the bank's own slots and the bank bags, only at a banker
+    if (_player->IsAlive() && CanUseBank())
+    {
+        BagSorter sorter(_player, true);
+        sorter.Sort();
+    }
+
+    // always answered, or the client keeps the bank locked
     SendPacket(WorldPackets::Item::BagCleanupFinished().Write());
 }
 

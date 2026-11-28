@@ -42,6 +42,7 @@
 #include "SpellScript.h"
 #include "TemporarySummon.h"
 #include "classic_blackrock_spire.h"
+#include "classic_respawn.h"
 #include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include <algorithm>
@@ -106,6 +107,9 @@ namespace
     constexpr uint32 CLASSIC_BRS_PATH_STADIUM_WAVES = 800000000 + (2000000 + WAYPOINT_ID_STADIUM) * 10;
     constexpr uint32 CLASSIC_BRS_PATH_NEFARIUS      = 810000000 + NPC_LORD_VICTOR_NEFARIUS * 10;
     constexpr uint32 CLASSIC_BRS_PATH_GYTH          = 810000000 + NPC_GYTH * 10;
+
+    // the 7 Blackhand Incarcerators stand within 26 y of Pyroguard Emberseer's spawn (spawns 20040278-82, 20040451-52)
+    constexpr float CLASSIC_BRS_INCARCERATOR_RADIUS = 60.0f;
 
     // Bannok Grimaxe placeholders (VMaNGOS guids 44020, 43764, 44327; spawn id = 20000000 + VMaNGOS guid)
     constexpr ObjectGuid::LowType CLASSIC_BRS_BANNOK_SPAWN_1 = 20000000 + 44020;
@@ -886,9 +890,7 @@ public:
                 {
                     if (Creature* incarcerator = instance->GetCreature(guid))
                     {
-                        if (!incarcerator->IsAlive())
-                            incarcerator->Respawn(true);
-                        else
+                        if (incarcerator->IsAlive())
                         {
                             incarcerator->SetImmuneToAll(true);
                             if (incarcerator->AI())
@@ -896,6 +898,10 @@ public:
                         }
                     }
                 }
+                // VMaNGOS respawned the dead incarcerators in place. TC removes a dead creature from the map when its corpse
+                // decays, so respawn them by spawn (a corpse still there comes back too); the new ones are added in OnCreatureCreate.
+                Position const emberseerHome = emberseer->GetHomePosition();
+                ClassicRespawnDeadSpawns(instance, NPC_BLACKHAND_INCANCERATOR, &emberseerHome, CLASSIC_BRS_INCARCERATOR_RADIUS);
             }
             else
                 _emberseerCheckTimer -= diff;
@@ -1449,13 +1455,10 @@ public:
                 if (instance->GetData(TYPE_STADIUM) == IN_PROGRESS || instance->GetData(TYPE_STADIUM) == DONE)
                     return false;
 
-                // Respawn Nefarius and Rend for the dialogue event if they are not spawned already.
-                if (Creature* nefarius = player->GetMap()->GetCreature(instance->GetGuidData(NPC_LORD_VICTOR_NEFARIUS)))
-                    if (!nefarius->IsAlive())
-                        nefarius->Respawn();
-                if (Creature* rend = player->GetMap()->GetCreature(instance->GetGuidData(NPC_REND_BLACKHAND)))
-                    if (!rend->IsAlive())
-                        rend->Respawn();
+                // Respawn Nefarius and Rend for the dialogue event if they are not spawned already. A failed attempt despawns
+                // them (SetData TYPE_STADIUM FAIL), which in TC removes them from the map: a guid lookup found nothing and the
+                // stadium event could never start again. Respawn by spawn.
+                ClassicRespawnDeadSpawns(player->GetMap(), { NPC_LORD_VICTOR_NEFARIUS, NPC_REND_BLACKHAND });
 
                 instance->SetData(TYPE_STADIUM, IN_PROGRESS);
                 break;

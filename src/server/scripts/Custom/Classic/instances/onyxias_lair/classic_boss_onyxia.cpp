@@ -31,6 +31,7 @@
 #include "ScriptedCreature.h"
 #include "TemporarySummon.h"
 #include "classic_onyxias_lair.h"
+#include "classic_respawn.h"
 #include "classic_script_text.h"
 #include <list>
 
@@ -299,11 +300,10 @@ struct classic_boss_onyxia : public ScriptedAI
         if (m_pInstance)
             m_pInstance->SetData(CLASSIC_OL_DATA_ONYXIA_EVENT, IN_PROGRESS);
 
-        std::list<Creature*> warderList;
-        me->GetCreatureListWithEntryInGrid(warderList, CLASSIC_OL_NPC_ONYXIAN_WARDER, 200.0f);
-        for (Creature* warder : warderList)
-            if (!warder->IsAlive())
-                warder->Respawn();
+        // VMaNGOS respawned the dead warders found within 200 y. TC removes a dead creature from the map when its corpse
+        // decays, so they are respawned by spawn (a corpse still there comes back too).
+        Position const home = me->GetHomePosition();
+        ClassicRespawnDeadSpawns(me->GetMap(), CLASSIC_OL_NPC_ONYXIAN_WARDER, &home, 200.0f);
     }
 
     void JustDied(Unit* /*killer*/) override

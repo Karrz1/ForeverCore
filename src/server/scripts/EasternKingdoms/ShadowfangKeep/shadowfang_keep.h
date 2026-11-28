@@ -42,6 +42,12 @@ enum SFKDataTypes
     DATA_COURTYARD_DOOR
 };
 
+// Instance data the Classic world's converted scripts set (SetData, apart from the boss states above).
+enum SFKClassicData
+{
+    DATA_CLASSIC_FREE_NPC       = 1     // the freed prisoner reached the Courtyard Door (VMaNGOS TYPE_FREE_NPC)
+};
+
 enum SFKCreatureIds
 {
     // Bosses

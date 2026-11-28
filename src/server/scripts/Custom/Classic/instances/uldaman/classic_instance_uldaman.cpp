@@ -25,8 +25,10 @@
 #include "Map.h"
 #include "QuaternionData.h"
 #include "classic_dungeon_encounter_tracker.h"
+#include "classic_respawn.h"
 #include "classic_uldaman.h"
 #include <algorithm>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -156,6 +158,8 @@ public:
         {
             InstanceScript::OnCreatureCreate(creature);
             _encounterTracker.OnCreatureCreate(creature);
+            if (creature->GetSpawnId())
+                _spawnIdByGuid[creature->GetGUID()] = creature->GetSpawnId();
 
             switch (creature->GetEntry())
             {
@@ -285,13 +289,18 @@ public:
         }
 
         // VMaNGOS: SetDeathState(JUST_DIED); RemoveCorpse(); Respawn(); -> TC Respawn(true) (kills first when alive).
-        // TODO(classic): Respawn in place (same GUID) needs the spawn in a compatibility-mode spawn group; in dynamic
-        // spawn mode the creature is re-created and only gets the immune flags from OnCreatureCreate.
+        // VMaNGOS respawns in place (same GUID). In TC (dynamic spawns) the creature is re-created and gets the immune flags
+        // from OnCreatureCreate; one whose corpse decayed (or that was despawned) has left the map and is respawned by spawn.
         Creature* RespawnInPlace(ObjectGuid const& guid)
         {
             Creature* target = instance->GetCreature(guid);
             if (!target)
+            {
+                auto itr = _spawnIdByGuid.find(guid);
+                if (itr != _spawnIdByGuid.end())
+                    ClassicRespawnSpawnIfDead(instance, itr->second);
                 return nullptr;
+            }
 
             target->Respawn(true);
 
@@ -307,7 +316,7 @@ public:
         void RespawnMinion(ObjectGuid const& guid)
         {
             Creature* target = instance->GetCreature(guid);
-            if (!target || (target->IsAlive() && HasImmuneFlags(target)))
+            if (target && target->IsAlive() && HasImmuneFlags(target))
                 return;
 
             if (Creature* respawned = RespawnInPlace(guid))
@@ -332,6 +341,8 @@ public:
                 Creature* target = instance->GetCreature(guid);
                 if (target && target->getDeathState() == DEAD)  // VMaNGOS IsDespawned()
                     target->Respawn();
+                else if (!target)                               // TC: a despawned creature has left the map
+                    RespawnInPlace(guid);
             }
         }
 
@@ -472,9 +483,7 @@ public:
                             for (ObjectGuid const& guid : _stoneKeeper)
                             {
                                 Creature* target = instance->GetCreature(guid);
-                                if (!target)
-                                    continue;
-                                if (target->isDead() || !HasImmuneFlags(target))
+                                if (!target || target->isDead() || !HasImmuneFlags(target))
                                     if (Creature* respawned = RespawnInPlace(guid))
                                         SetFrozenState(respawned);
                             }
@@ -671,6 +680,7 @@ public:
         std::vector<ObjectGuid> _stoneKeeper;
         std::vector<ObjectGuid> _vaultWarder;
         std::vector<ObjectGuid> _vaultWarderFurniture;
+        std::unordered_map<ObjectGuid, ObjectGuid::LowType> _spawnIdByGuid;  // RespawnInPlace of a creature that left the map
         std::vector<ObjectGuid> _earthenGuardian;
         std::vector<ObjectGuid> _archaedasWallMinions; //Minions lined up around the wall
         std::vector<ObjectGuid> _pendingFreeze;

@@ -372,6 +372,26 @@ public:
 
             switch (creature->GetEntry())
             {
+                case NPC_HATEREL:
+                case NPC_ANGERREL:
+                case NPC_VILEREL:
+                case NPC_GLOOMREL:
+                case NPC_SEETHREL:
+                case NPC_DOPEREL:
+                    // A brother respawned by the Tomb of the Seven reset is a new creature in TC (dynamic spawns): it waits
+                    // friendly like the others until Doomrel calls it to fight (classic_boss_tomb_of_seven.cpp CallToFight)
+                    if (GetData(TYPE_TOMB_OF_SEVEN) != IN_PROGRESS && creature->IsAlive())
+                    {
+                        creature->SetImmuneToPC(true);
+                        creature->SetFaction(35);           // BRD_TOMB_FACTION_FRIENDLY
+                    }
+                    break;
+                default:
+                    break;
+            }
+
+            switch (creature->GetEntry())
+            {
                 case NPC_EMPEROR:
                     m_uiEmperorGUID = creature->GetGUID();
                     break;

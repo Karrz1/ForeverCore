@@ -1375,10 +1375,27 @@ static uint32 ClassicUnitDataBit(uint32 bit)
     uint32 classicBit = ClassicUnitDataBit70009(bit);
     if (classicBit >= 140 && ClassicOpcodes::IsBuild70291OrLater())
         ++classicBit;
-    // client 70425 (update reader rva 0x37CE7A0 vs 70291 0x458D7F0): the three int32 after TaxiNodesID (70291 bit 131) are bits
-    // 132..134, every 70291 bit from 132 (GuildGUID) on, group bits too, is three higher
-    if (classicBit >= 132 && ClassicOpcodes::IsBuild70425OrLater())
-        classicBit += 3;
+    // client 70425 and later: the attack power block has five fields between AttackPowerModSupport (bit 99) and RangedAttackPower,
+    // the same order as the create (UnitData::WriteCreate): the two 70291 unknown fields (bits 105 and 110) and the three new ones
+    // are bits 100..104, so RangedAttackPower..RangedAttackPowerModSupport are five higher, the weapon attack powers and
+    // SetAttackSpeedAura four, and every field from Lifesteal on three, stepping over the group bit 128. Official 70959 and 71037
+    // updates of a hunter's own unit taking Aspect of the Hawk carry bits 106 (RangedAttackPowerModPos, 20) and 115/116 (ranged
+    // damage 20.89 - 25.89, 17.74 - 22.74 without it). Sent at the 70291 bits, the client put a hunter's ranged attack power and
+    // ranged damage changes into the unknown fields: the character window kept the values of the last login.
+    // From GuildGUID (70291 bit 132) on, the bits are three higher as before.
+    if (ClassicOpcodes::IsBuild70425OrLater())
+    {
+        if (classicBit >= 100 && classicBit <= 104)
+            classicBit += 5;
+        else if (classicBit >= 106 && classicBit <= 109)
+            classicBit += 4;
+        else if (classicBit >= 111 && classicBit <= 124)
+            classicBit += 3;
+        else if (classicBit >= 125 && classicBit <= 127)
+            classicBit += 4;
+        else if (classicBit >= 129)
+            classicBit += 3;
+    }
     return classicBit;
 }
 
@@ -5424,13 +5441,13 @@ bool TransmogOutfitMetadata::operator==(TransmogOutfitMetadata const& right) con
 
 void ActivePlayerData::WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteBuffer& data, Player const* receiver, Player const* owner) const
 {
-    for (uint32 i = 0; i < 108; ++i)
+    for (uint32 i = 0; i < 144; ++i)
     {
         data << InvSlots[i];
     }
-    // Classic 1.60.1.70009 has 145 InvSlots (client ActivePlayerData create reader rva 0xA882E0, count at rva 0x4E417E0; 70425 too)
-    for (uint32 i = 108; i < 145; ++i)
-        data << ObjectGuid::Empty;
+    // Classic 1.60.1.70009 has 145 InvSlots (client ActivePlayerData create reader rva 0xA882E0, count at rva 0x4E417E0; 70425 too),
+    // the last one is never used (client 70790 bag/slot to InvSlot at rva 0x2605400 ends with the key ring, 112..143)
+    data << ObjectGuid::Empty;
     data << *FarsightObject;
     data << *SummonedBattlePetGUID;
     data << uint32(KnownTitles.size());
@@ -5850,13 +5867,13 @@ void ActivePlayerData::WriteUpdate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlag
 // Classic 1.60.1.70009 ActivePlayerData changes-mask bit numbering (client update reader rva 0xA91D90, 14 blocks, classic_re/upd_bits.py):
 // - group bits 0, 32, 70, 102, 134 like retail; new fields 108 (uint32 after PvpMedals), 111 (float after YesterdayHonorableKills),
 //   120 (float before HomeRealmTimeOffset), 151 (uint8 after ActiveCombatTraitConfigID), 159 (uint8 stable slots, our NumStableSlots
-//   TC 401; read after LootHistoryInstanceID, PetStable 158 is read later with the optional fields: official 70291 stable sniff);
+//   TC 437; read after LootHistoryInstanceID, PetStable 158 is read later with the optional fields: official 70291 stable sniff);
 //   PetSpellPower (TC 116) removed, so NumBankSlots/NumCharacterBankTabs (TC 132/133) move into group 134
 // - TransmogMetadata has its own group: bit 166 (group) + 167 (client rva 0xA9BFF2 reads it only when both are set)
-// - InvSlots has 145 entries (group 168, entries 169..313), every array after it is shifted by 45
+// - InvSlots has 145 entries (group 168, entries 169..313), TC has the first 144, every array after it is shifted by 6
 static uint32 ClassicActivePlayerDataBit70291(uint32 bit)
 {
-    if (bit == 401) return 159;         // NumStableSlots
+    if (bit == 437) return 159;         // NumStableSlots
     if (bit <= 107) return bit;
     if (bit <= 109) return bit + 1;
     if (bit <= 115) return bit + 2;
@@ -5871,8 +5888,8 @@ static uint32 ClassicActivePlayerDataBit70291(uint32 bit)
     if (bit <= 154) return bit + 3;
     if (bit == 155) return 158;         // PetStable
     if (bit <= 161) return bit + 4;     // RequiredMountCapabilityFlags (160), ..., ViewedOutfit (165)
-    if (bit <= 271) return bit + 5;     // TransmogMetadata (167), InvSlots group (168) + InvSlots[0..107] (169..276)
-    return bit + 42;                    // arrays after InvSlots (TC InvSlots has 108 of the client's 145)
+    if (bit <= 307) return bit + 5;     // TransmogMetadata (167), InvSlots group (168) + InvSlots[0..143] (169..312)
+    return bit + 6;                     // arrays after InvSlots (client InvSlots[144], bit 313, is never sent)
 }
 
 // Client 70425 (update reader rva 0x79C6B0 vs 70291 0xA98E40), the group bits 134 and 166 stay where they are:
@@ -7152,7 +7169,7 @@ void ActivePlayerData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Pl
         {
             data << uint64(LootHistoryInstanceID);
         }
-        if (changesMask[401])
+        if (changesMask[437])
         {
             data << uint8(NumStableSlots);
         }
@@ -7221,7 +7238,7 @@ void ActivePlayerData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Pl
     }
     if (changesMask[163])
     {
-        for (uint32 i = 0; i < 108; ++i)
+        for (uint32 i = 0; i < 144; ++i)
         {
             if (changesMask[164 + i])
             {
@@ -7229,111 +7246,111 @@ void ActivePlayerData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Pl
             }
         }
     }
-    if (changesMask[272])
+    if (changesMask[308])
     {
         for (uint32 i = 0; i < 2; ++i)
         {
-            if (changesMask[273 + i])
+            if (changesMask[309 + i])
             {
                 RestInfo[i].WriteUpdate(ignoreNestedChangesMask, data, receiver, owner);
             }
         }
     }
-    if (changesMask[275])
+    if (changesMask[311])
     {
         for (uint32 i = 0; i < 7; ++i)
         {
-            if (changesMask[276 + i])
+            if (changesMask[312 + i])
             {
                 data << int32(ModDamageDonePos[i]);
             }
-            if (changesMask[283 + i])
+            if (changesMask[319 + i])
             {
                 data << int32(ModDamageDoneNeg[i]);
             }
-            if (changesMask[290 + i])
+            if (changesMask[326 + i])
             {
                 data << float(ModDamageDonePercent[i]);
             }
-            if (changesMask[297 + i])
+            if (changesMask[333 + i])
             {
                 data << float(ModHealingDonePercent[i]);
             }
         }
     }
-    if (changesMask[304])
+    if (changesMask[340])
     {
         for (uint32 i = 0; i < 3; ++i)
         {
-            if (changesMask[305 + i])
+            if (changesMask[341 + i])
             {
                 data << float(WeaponDmgMultipliers[i]);
             }
-            if (changesMask[308 + i])
+            if (changesMask[344 + i])
             {
                 data << float(WeaponAtkSpeedMultipliers[i]);
             }
         }
     }
-    if (changesMask[311])
+    if (changesMask[347])
     {
         for (uint32 i = 0; i < 12; ++i)
         {
-            if (changesMask[312 + i])
+            if (changesMask[348 + i])
             {
                 data << uint32(BuybackPrice[i]);
             }
-            if (changesMask[324 + i])
+            if (changesMask[360 + i])
             {
                 data << int64(BuybackTimestamp[i]);
             }
         }
     }
-    if (changesMask[336])
+    if (changesMask[372])
     {
         for (uint32 i = 0; i < 32; ++i)
         {
-            if (changesMask[337 + i])
+            if (changesMask[373 + i])
             {
                 data << int32(CombatRatings[i]);
             }
         }
     }
-    if (changesMask[369])
+    if (changesMask[405])
     {
         for (uint32 i = 0; i < 4; ++i)
         {
-            if (changesMask[370 + i])
+            if (changesMask[406 + i])
             {
                 data << uint32(NoReagentCostMask[i]);
             }
         }
     }
-    if (changesMask[374])
+    if (changesMask[410])
     {
         for (uint32 i = 0; i < 2; ++i)
         {
-            if (changesMask[375 + i])
+            if (changesMask[411 + i])
             {
                 data << int32(ProfessionSkillLine[i]);
             }
         }
     }
-    if (changesMask[377])
+    if (changesMask[413])
     {
         for (uint32 i = 0; i < 5; ++i)
         {
-            if (changesMask[378 + i])
+            if (changesMask[414 + i])
             {
                 data << uint32(BagSlotFlags[i]);
             }
         }
     }
-    if (changesMask[383])
+    if (changesMask[419])
     {
         for (uint32 i = 0; i < 17; ++i)
         {
-            if (changesMask[384 + i])
+            if (changesMask[420 + i])
             {
                 data << float(ItemUpgradeHighWatermark[i]);
             }

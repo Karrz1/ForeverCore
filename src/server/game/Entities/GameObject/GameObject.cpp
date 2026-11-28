@@ -50,6 +50,7 @@
 #include "PhasingHandler.h"
 #include "PoolMgr.h"
 #include "QueryPackets.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -971,6 +972,8 @@ void GameObject::AddToWorld()
 
         EnableCollision(toggledState);
         WorldObject::AddToWorld();
+
+        sScriptMgr->OnGameObjectAddWorld(this);
     }
 }
 
@@ -997,6 +1000,10 @@ void GameObject::RemoveFromWorld()
         if (m_spawnId)
             Trinity::Containers::MultimapErasePair(GetMap()->GetGameObjectBySpawnIdStore(), m_spawnId, this);
         GetMap()->GetObjectsStore().Remove<GameObject>(this);
+
+        // Last, after WorldObject::RemoveFromWorld cleared IsInWorld(). Do not despawn, delete or remove this
+        // gameobject from the hook. Never keep the pointer for later: defer by GUID and look it up again next update.
+        sScriptMgr->OnGameObjectRemoveWorld(this);
     }
 }
 
@@ -1771,7 +1778,14 @@ void GameObject::Update(uint32 diff)
             }
 
             if (!m_respawnDelayTime)
+            {
+                // A consumable chest a script summoned with no despawn time (Archaedas' Ancient Treasure in Uldaman) is used up once
+                // looted. Left in the world it went straight from not ready back to ready with fresh loot (no restock timer), so it
+                // could be looted again and again (Discord, Gefest666)
+                if (GetGoType() == GAMEOBJECT_TYPE_CHEST && GetGOInfo()->IsDespawnAtAction() && !m_spawnedByDefault && !m_spawnId)
+                    Delete();
                 return;
+            }
 
             if (!m_spawnedByDefault)
             {
@@ -2403,6 +2417,12 @@ bool GameObject::ActivateToQuest(Player const* target) const
     {
         case GAMEOBJECT_TYPE_QUESTGIVER:
         {
+            // A quest giver object with its own gossip can always be clicked, as on live: the Un'Goro Crystal Pylons
+            // (164955-164957) offer "Examine the pylon" to players on The Northern/Eastern/Western Pylon (4285/4287/4288),
+            // quests they do not give or end. Gated on quest status only, they could be clicked in GM mode only.
+            if (GetGOInfo()->questgiver.gossipID)
+                return true;
+
             if ((target->GetQuestDialogStatus(this) & ~QuestGiverStatusFutureMask) != QuestGiverStatus::None)
                 return true;
             break;
@@ -2539,10 +2559,17 @@ void GameObject::ActivateObject(GameObjectActions action, int32 param, WorldObje
         case GameObjectActions::Open:
             if (unitCaster)
                 Use(unitCaster);
+            // A gameobject's own script (a lever, a lock, a torch) opening a door or button has no unit to "use" it with, and the
+            // open was dropped: the Shadowfang Keep cell levers, the Blackrock Depths Shadowforge Lock and every other ported lever
+            // script did nothing. A door or button needs no user to open (Use() calls the same thing for them).
+            else if (GetGoType() == GAMEOBJECT_TYPE_DOOR || GetGoType() == GAMEOBJECT_TYPE_BUTTON)
+                UseDoorOrButton(0, false, nullptr);
             break;
         case GameObjectActions::OpenAndUnlock:
             if (unitCaster)
                 UseDoorOrButton(0, false, unitCaster);
+            else if (GetGoType() == GAMEOBJECT_TYPE_DOOR || GetGoType() == GAMEOBJECT_TYPE_BUTTON)
+                UseDoorOrButton(0, false, nullptr);
             RemoveFlag(GO_FLAG_LOCKED);
             break;
         case GameObjectActions::Close:
@@ -2710,16 +2737,32 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
 
         playerUser->PlayerTalkClass->ClearMenus();
         if (AI()->OnGossipHello(playerUser))
+        {
+            // the AI handled the use: tell the scripts, also when the AI removed the gameobject as part of that use
+            sScriptMgr->OnGameObjectUse(this, playerUser);
+            return;
+        }
+
+        // the AI did not handle the use, but it may have removed the gameobject: a removed one takes no further use
+        if (!IsInWorld())
             return;
     }
 
     // If cooldown data present in template
     if (uint32 cooldown = GetGOInfo()->GetCooldown())
     {
-        if (m_cooldownTime > GameTime::GetGameTime())
+        if (m_cooldownTime > GameTime::GetGameTimeMS())
             return;
 
         m_cooldownTime = GameTime::GetGameTimeMS() + cooldown * IN_MILLISECONDS;
+    }
+
+    // the use passed the checks above: tell the scripts, and stop if a script removed the gameobject
+    if (Player* usingPlayer = user->ToPlayer())
+    {
+        sScriptMgr->OnGameObjectUse(this, usingPlayer);
+        if (!IsInWorld())
+            return;
     }
 
     switch (GetGoType())

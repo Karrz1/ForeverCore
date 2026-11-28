@@ -446,11 +446,10 @@ float Player::OCTRegenMPPerSpirit() const
 }
 
 // Classic 1.60 (vanilla, VMaNGOS / TrinityCoreClassic): health per 2 second tick from spirit, out of combat
-float Player::OCTRegenHPPerSpirit() const
+static float ClassicOCTRegenHPFromSpirit(uint8 playerClass, float spirit)
 {
-    float spirit = GetStat(STAT_SPIRIT);
     float regen;
-    switch (GetClass())
+    switch (playerClass)
     {
         case CLASS_DRUID:
         case CLASS_MAGE:    regen = spirit * 0.11f + 1.0f; break;
@@ -464,6 +463,20 @@ float Player::OCTRegenHPPerSpirit() const
         default:            regen = 0.0f; break;
     }
     return std::max(0.0f, regen);
+}
+
+float Player::OCTRegenHPPerSpirit() const
+{
+    float regen = ClassicOCTRegenHPFromSpirit(GetClass(), GetStat(STAT_SPIRIT));
+    // The class formulas fit the vanilla races, and the Dwarf (-1 Spirit) is the lowest of them. High Order Skyborne (race 95,
+    // -3 Spirit) falls under every fit: a low level warrior got 0 to 0.08 health a tick. Floor: never less than a Dwarf of the
+    // same class and level gets from base Spirit. A class no Dwarf can play has no floor (stats stay 0).
+    // Idea from Everlake core 015b97a (GPL-3.0).
+    PlayerLevelInfo dwarfInfo;
+    sObjectMgr->GetPlayerLevelInfo(RACE_DWARF, GetClass(), GetLevel(), &dwarfInfo);
+    if (dwarfInfo.stats[STAT_SPIRIT] > 0)
+        regen = std::max(regen, ClassicOCTRegenHPFromSpirit(GetClass(), float(dwarfInfo.stats[STAT_SPIRIT])));
+    return regen;
 }
 
 void Player::UpdateAttackPowerAndDamage(bool ranged)
@@ -961,9 +974,14 @@ void Player::UpdateArmorPenetration(int32 amount)
 
 // Classic 1.60 (vanilla): players have no innate hit bonus (retail gives 7.5% melee / ranged and 15% spell hit), hit comes from
 // +hit auras and gear only
+// Classic 1.60: the +hit auras (SPELL_AURA_MOD_HIT_CHANCE: Precision, Surefooted, gear) count in Unit::MeleeSpellMissChance, not here.
+// The character sheet reads UiHitModifier (GetHitModifier) and UiSpellHitModifier, which nothing set: it showed no hit with Precision
+// and +hit gear (player report). They get the totals the combat rolls use.
 void Player::UpdateMeleeHitChances()
 {
     m_modMeleeHitChance = GetRatingBonusValue(CR_HIT_MELEE);
+    SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::UiHitModifier),
+        m_modMeleeHitChance + GetTotalAuraModifier(SPELL_AURA_MOD_HIT_CHANCE));
 }
 
 void Player::UpdateRangedHitChances()
@@ -975,6 +993,7 @@ void Player::UpdateSpellHitChances()
 {
     m_modSpellHitChance = GetTotalAuraModifier(SPELL_AURA_MOD_SPELL_HIT_CHANCE);
     m_modSpellHitChance += GetRatingBonusValue(CR_HIT_SPELL);
+    SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::UiSpellHitModifier), m_modSpellHitChance);
 }
 
 void Player::UpdateExpertise(WeaponAttackType attack)
@@ -1425,6 +1444,7 @@ void Creature::CalculateMinMaxDamage(WeaponAttackType attType, bool normalized, 
 #define ENTRY_IMP               416
 #define ENTRY_VOIDWALKER        1860
 #define ENTRY_SUCCUBUS          1863
+#define ENTRY_INCUBUS           185317  // WoW Forever: Summon Incubus 713, the Sayaad as the Succubus
 #define ENTRY_FELHUNTER         417
 #define ENTRY_FELGUARD          17252
 #define ENTRY_WATER_ELEMENTAL   510
@@ -1498,13 +1518,23 @@ void Guardian::UpdateResistances(uint32 school)
 {
     if (school > SPELL_SCHOOL_NORMAL)
     {
-        float baseValue = GetFlatModifierValue(UnitMods(UNIT_MOD_RESISTANCE_START + school), BASE_VALUE);
-        float bonusValue = GetTotalAuraModValue(UnitMods(UNIT_MOD_RESISTANCE_START + school)) - baseValue;
+        UnitMods unitMod = UnitMods(UNIT_MOD_RESISTANCE_START + school);
+
+        // Same math as Unit::UpdateResistances: the full total must land in the main resistance field - it is what
+        // combat reads and what the character sheet displays. Writing only BASE_VALUE there shunted every flat/pct
+        // contribution (trained resistance ranks, owner-scaling pass-through) into the unread bonus field.
+        float value = GetFlatModifierValue(unitMod, BASE_VALUE);
+        value *= GetPctModifierValue(unitMod, BASE_PCT);
+
+        float baseValue = value;
+
+        value += GetFlatModifierValue(unitMod, TOTAL_VALUE);
+        value *= GetPctModifierValue(unitMod, TOTAL_PCT);
 
         // Classic 1.60 (vanilla): pets do not inherit their owner's resistances
 
-        SetResistance(SpellSchools(school), int32(baseValue));
-        SetBonusResistanceMod(SpellSchools(school), int32(bonusValue));
+        SetResistance(SpellSchools(school), int32(value));
+        SetBonusResistanceMod(SpellSchools(school), int32(value - baseValue));
     }
     else
         UpdateArmor();
@@ -1538,7 +1568,8 @@ void Guardian::UpdateMaxHealth()
     {
         case ENTRY_IMP:         multiplicator = 8.4f;   break;
         case ENTRY_VOIDWALKER:  multiplicator = 11.0f;  break;
-        case ENTRY_SUCCUBUS:    multiplicator = 9.1f;   break;
+        case ENTRY_SUCCUBUS:
+        case ENTRY_INCUBUS:     multiplicator = 9.1f;   break;
         case ENTRY_FELHUNTER:   multiplicator = 9.5f;   break;
         case ENTRY_FELGUARD:    multiplicator = 11.0f;  break;
         case ENTRY_BLOODWORM:   multiplicator = 1.0f;   break;

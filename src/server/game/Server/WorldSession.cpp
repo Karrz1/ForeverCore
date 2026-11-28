@@ -471,7 +471,7 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                             sScriptMgr->OnPacketReceive(this, *packet);
                             opHandle->Call(this, *packet);
                         }
-                        else
+                        else if (packet->GetOpcode() != CMSG_LOOT_ITEM) // a dropped auto loot repeat (see EvaluateOpcode) is only skipped
                             processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
                     }
                     // lag can cause STATUS_LOGGEDIN opcodes to arrive after the player started a transfer
@@ -1641,6 +1641,18 @@ bool WorldSession::DosProtection::EvaluateOpcode(WorldPacket& p, time_t time) co
     // Check if player is flooding some packets
     if (++packetCounter.amountCounter <= maxPacketCounterAllowed)
         return true;
+
+    // Auto loot with full bags (or an item the player already holds the maximum of) asks for that item again every frame, once per
+    // item it cannot take. At a high frame rate with a few such items that still passes any fixed limit (Discord 11-22: 148 fps,
+    // three "can't carry any more" items, kicked). Every one of those requests only earns an error answer, so the extra ones are
+    // dropped for the rest of the second instead of kicking a player who did nothing wrong.
+    if (p.GetOpcode() == CMSG_LOOT_ITEM)
+    {
+        if (packetCounter.amountCounter == maxPacketCounterAllowed + 1)
+            TC_LOG_DEBUG("network", "AntiDOS: Account {}, Character: {}, more than {} CMSG_LOOT_ITEM this second, the rest are dropped",
+                Session->GetAccountId(), Session->GetPlayerName(), maxPacketCounterAllowed);
+        return false;
+    }
 
     TC_LOG_WARN("network", "AntiDOS: Account {}, IP: {}, Ping: {}, Character: {}, flooding packet (opc: {} (0x{:X}), count: {})",
         Session->GetAccountId(), Session->GetRemoteAddress(), Session->GetLatency(), Session->GetPlayerName(),

@@ -27,6 +27,7 @@
 #include "ScriptedCreature.h"
 #include "ScriptedGossip.h"
 #include "classic_blackrock_depths.h"
+#include "classic_respawn.h"
 #include "classic_script_text.h"
 
 enum TombOfSeven
@@ -150,12 +151,9 @@ struct classic_boss_doomrel : public ScriptedAI
                 dwarf->SetFaction(BRD_TOMB_FACTION_HOSTILE);
                 CreatureAI::DoZoneInCombat(dwarf);          // attackstart (VMaNGOS SetInCombatWithZone)
             }
-            else
+            else if (dwarf->IsAlive())
             {
-                // TODO(classic): with TC dynamic spawns a dead dwarf may already be removed from the map (not found here)
-                if (!dwarf->IsAlive() || dwarf->isDead())
-                    dwarf->Respawn();
-
+                // dead brothers are respawned by spawn in the reset below; the instance makes the new ones friendly
                 dwarf->SetImmuneToPC(true);
                 dwarf->SetFaction(BRD_TOMB_FACTION_FRIENDLY);
             }
@@ -202,6 +200,10 @@ struct classic_boss_doomrel : public ScriptedAI
             else if (m_pInstance->GetData(TYPE_TOMB_OF_SEVEN) == FAIL ||
                      (m_pInstance->GetData(TYPE_TOMB_OF_SEVEN) == NOT_STARTED && !m_bInitalized))
             {
+                // VMaNGOS respawned the dead brothers in place. TC removes a dead creature from the map when its corpse decays,
+                // so a brother killed early in a failed attempt was no longer found here and stayed dead: respawn by spawn.
+                ClassicRespawnDeadSpawns(me->GetMap(), { NPC_ANGERREL, NPC_SEETHREL, NPC_DOPEREL, NPC_GLOOMREL, NPC_VILEREL, NPC_HATEREL });
+
                 for (m_uiDwarfRound = 0; m_uiDwarfRound < MAX_DWARF; ++m_uiDwarfRound)
                     CallToFight(false);
 

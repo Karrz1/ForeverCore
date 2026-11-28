@@ -27,6 +27,7 @@
 #include "TemporarySummon.h"
 #include "classic_script_text.h"
 #include "classic_zulgurub.h"
+#include "classic_respawn.h"
 #include <list>
 
 namespace
@@ -133,12 +134,10 @@ struct classic_boss_venoxis : public ScriptedAI
 
     void JustReachedHome() override
     {
-        // Respawn snakes
-        std::list<Creature*> cobras;
-        me->GetCreatureListWithEntryInGrid(cobras, NPC_VENOXIS_RAZZASHI_COBRA, DEFAULT_VISIBILITY_INSTANCE);
-        for (Creature* cobra : cobras)
-            if (cobra && !cobra->IsAlive())
-                cobra->Respawn();
+        // Respawn snakes. VMaNGOS respawned the dead cobras found in visibility range; TC removes a dead creature from the
+        // map when its corpse decays, so they are respawned by spawn (a corpse still there comes back too).
+        Position const home = me->GetHomePosition();
+        ClassicRespawnDeadSpawns(me->GetMap(), NPC_VENOXIS_RAZZASHI_COBRA, &home, DEFAULT_VISIBILITY_INSTANCE);
 
         if (m_pInstance)
             m_pInstance->SetData(CLASSIC_ZG_TYPE_VENOXIS, NOT_STARTED);

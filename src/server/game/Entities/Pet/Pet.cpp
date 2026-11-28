@@ -32,12 +32,14 @@
 #include "PhasingHandler.h"
 #include "Player.h"
 #include "QueryHolder.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellHistory.h"
 #include "SpellMgr.h"
 #include "SpellPackets.h"
+#include "Transport.h"
 #include "Unit.h"
 #include "ClassicPetAttackSpeed.h"
 #include "Util.h"
@@ -83,6 +85,8 @@ void Pet::AddToWorld()
         AIM_Initialize();
         if (ZoneScript* zoneScript = GetZoneScript() ? GetZoneScript() : GetInstanceScript())
             zoneScript->OnCreatureCreate(this);
+
+        sScriptMgr->OnCreatureAddWorld(this);
     }
 
     // Prevent stuck pets when zoning. Pets default to "follow" when added to world
@@ -105,6 +109,10 @@ void Pet::RemoveFromWorld()
         ///- Don't call the function for Creature, normal mobs + totems go in a different storage
         Unit::RemoveFromWorld();
         GetMap()->GetObjectsStore().Remove<Pet>(this);
+
+        // Last, after Unit::RemoveFromWorld cleared IsInWorld(). Do not despawn, delete or remove this pet from the
+        // hook. Never keep the pointer for later: defer by GUID and look it up again next update.
+        sScriptMgr->OnCreatureRemoveWorld(this);
     }
 }
 
@@ -403,6 +411,11 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petnumber, bool c
     if (!isTemporarySummon)
         m_charmInfo->LoadPetActionBar(petInfo->ActionBar);
 
+    // Classic 1.60: a pet that appears next to its owner on a ship rides the ship, like any summon made there (Map::SummonCreature).
+    // Before the map add, so the create packet carries the transport.
+    if (TransportBase* transport = owner->GetTransport())
+        transport->AddPassenger(this, transport->GetPositionOffsetTo(GetPosition()));
+
     map->AddToMap(ToCreature());
 
     //set last used pet number (for use in BG's)
@@ -516,12 +529,19 @@ void Pet::SavePetToDB(PetSaveMode mode)
     // save auras before possibly removing them
     _SaveAuras(trans);
 
+    // A warlock demon (any summoned pet) is the current pet through an unslotted index, never an active slot. Saved as the
+    // current pet it stays out with its owner, like a hunter pet in its active slot, so it keeps its auras. Every save of
+    // the warlock (autosave, level up, a GM command) took all of them off: Soul Link 25228 went with them, so the link broke
+    // while the demon was still out (player report), and the demon lost its passives until it was summoned again. A pet put
+    // away still loses them when it leaves the map.
+    bool const staysOutAsCurrent = mode == PET_SAVE_AS_CURRENT && owner->GetPetStable()->GetCurrentUnslottedPetIndex();
+
     if (mode == PET_SAVE_AS_CURRENT)
         if (Optional<uint32> activeSlot = owner->GetPetStable()->GetCurrentActivePetIndex())
             mode = PetSaveMode(*activeSlot);
 
     // stable and not in slot saves
-    if (mode < PET_SAVE_FIRST_ACTIVE_SLOT || mode >= PET_SAVE_LAST_ACTIVE_SLOT)
+    if (!staysOutAsCurrent && (mode < PET_SAVE_FIRST_ACTIVE_SLOT || mode >= PET_SAVE_LAST_ACTIVE_SLOT))
         RemoveAllAuras();
 
     _SaveSpells(trans);
@@ -711,8 +731,12 @@ void Pet::Update(uint32 diff)
             {
                 if (owner->GetPetGUID() != GetGUID())
                 {
-                    TC_LOG_ERROR("entities.pet", "Pet {} is not pet of owner {}, removed", GetEntry(), GetOwner()->GetName());
-                    ASSERT(getPetType() != HUNTER_PET, "Unexpected unlinked pet found for owner %s", owner->GetSession()->GetPlayerInfo().c_str());
+                    // An owner points at one pet at a time; this one is not it. Remove() below puts it away cleanly, so log it rather
+                    // than take the whole server down for a hunter pet (Karrz1/ForeverCore crashed here on 26 Nov after a change to
+                    // how pets load; our load path does not do that, but any other way to strand a pet should not crash either).
+                    TC_LOG_ERROR("entities.pet", "Pet {} ({}) of {} is not its owner's pet ({}), removed; {}", GetEntry(),
+                        getPetType() == HUNTER_PET ? "hunter pet" : "summon", GetOwner()->GetName(), owner->GetPetGUID().ToString(),
+                        owner->GetSession()->GetPlayerInfo());
                     Remove(PET_SAVE_NOT_IN_SLOT);
                     return;
                 }
@@ -739,7 +763,8 @@ void Pet::Update(uint32 diff)
                 else
                 {
                     m_happinessTimer = HAPPINESS_LOSS_INTERVAL;
-                    ModifyPower(POWER_HAPPINESS, -(IsInCombat() ? HAPPINESS_LOSS * 3 / 2 : HAPPINESS_LOSS));
+                    int32 loss = int32(HAPPINESS_LOSS * (IsInCombat() ? 1.5f : 1.0f) * sWorld->getRate(RATE_PET_HAPPINESS_DECAY));
+                    ModifyPower(POWER_HAPPINESS, -loss);
                 }
             }
 
@@ -933,14 +958,19 @@ bool Pet::CreateBaseAtCreature(Creature* creature)
 
     SetDisplayId(creature->GetDisplayId());
 
-    if (CreatureFamilyEntry const* cFamily = sCreatureFamilyStore.LookupEntry(cinfo->family))
+    WorldSession const* osess = GetOwner() ? GetOwner()->GetSession() : nullptr;
+
+    // A tamed rare beast (Broken Tooth, Lupos, ...) keeps its own name, every other beast takes its family's name; the hunter may
+    // rename either (live since 8.1.5, and so in WoW Forever)
+    bool const keepsOwnName = cinfo->Classification == CreatureClassifications::Rare || cinfo->Classification == CreatureClassifications::RareElite;
+    CreatureFamilyEntry const* cFamily = keepsOwnName ? nullptr : sCreatureFamilyStore.LookupEntry(cinfo->family);
+    if (cFamily)
     {
-        WorldSession const* osess = GetOwner() ? GetOwner()->GetSession() : nullptr;
         LocaleConstant loc = osess ? osess->GetSessionDbcLocale() : DEFAULT_LOCALE;
         SetName(cFamily->Name[loc]);
     }
     else
-        SetName(creature->GetNameForLocaleIdx(sObjectMgr->GetDBCLocaleIndex()));
+        SetName(creature->GetNameForLocaleIdx(osess ? osess->GetSessionDbLocaleIndex() : sObjectMgr->GetDBCLocaleIndex()));
 
     return true;
 }

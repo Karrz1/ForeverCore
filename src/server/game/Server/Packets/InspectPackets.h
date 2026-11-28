@@ -129,6 +129,10 @@ namespace WorldPackets
         // (1 to 3 entries on nodes 110291-110315) are not decoded yet, so we send 0 and an empty list.
         struct TraitInspectInfo
         {
+            // Clients before 1.60.1.71037 (70959 and older) read the older layout: no two int32 before the level and no
+            // extra list. Sending them the 71037 layout makes the client misread the rest of the result and crash
+            // (ACCESS_VIOLATION as soon as an add-on inspects a group member, 22 Nov 2026).
+            bool LiveLayout = true;
             int32 Unknown1 = 0;
             int32 Unknown2 = 0;
             int32 PlayerLevel = 0;

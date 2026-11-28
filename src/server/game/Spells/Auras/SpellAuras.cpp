@@ -1215,6 +1215,14 @@ bool Aura::IsSingleTargetWith(Aura const* aura) const
     if (GetSpellInfo()->IsRankOf(aura->GetSpellInfo()))
         return true;
 
+    // Classic 1.60: most class spells have no rank chain in the client data (SkillLineAbility.SupercedesSpell is empty), so two ranks
+    // of a single target spell (Hunter's Mark 1130 / 14325) are told apart by IsRankOf; the ranks share their spell family and flags
+    SpellInfo const* mine = GetSpellInfo();
+    SpellInfo const* other = aura->GetSpellInfo();
+    if (mine->SpellFamilyName && mine->SpellFamilyName == other->SpellFamilyName && mine->SpellFamilyFlags
+        && !(mine->SpellFamilyFlags ^ other->SpellFamilyFlags) && mine->IsSingleTarget() && other->IsSingleTarget())
+        return true;
+
     SpellSpecificType spec = GetSpellInfo()->GetSpellSpecific();
     // spell with single target specific types
     switch (spec)

@@ -23,6 +23,7 @@
 #include "CellImpl.h"
 #include "Containers.h"
 #include "Creature.h"
+#include "CreatureAI.h"
 #include "DB2Stores.h"
 #include "Formulas.h"
 #include "GridNotifiersImpl.h"
@@ -30,6 +31,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Log.h"
+#include "MotionMaster.h"
 #include "Pet.h"
 #include "Player.h"
 #include "Random.h"
@@ -95,6 +97,7 @@ enum ClassicWarriorRogueHunterTalents
     SPELL_HUNTER_EXPOSE_PREY_STATE              = 1310726,  // gives the defensive aura state (SpellInfo::_LoadAuraState): Mongoose Bite
     SPELL_HUNTER_IMPROVED_MEND_PET              = 19572,    // effect 0: cleanse chance per heal (dummy)
     SPELL_HUNTER_IMPROVED_MEND_PET_DISPEL       = 24406,    // dispel 1 Curse, Disease, Magic or Poison on the pet
+    SPELL_HUNTER_SUMMON_HAWK_ASSAULT            = 1293248,  // summons Hawk 264850 (SummonProperties 6837) for 18 s at the dive's target
 };
 
 // The client data of the talent spells these scripts read, once per spell at script validation: name, then per effect the effect,
@@ -370,10 +373,16 @@ class classic_spell_warr_flurry : public AuraScript
 // 12966 - Flurry (the buff): which swings spend a charge beyond its client proc flags. Windfury Totem's strike spends none,
 // and a crit always leaves 3 charges: the talent 12319 recasts the buff on the same event, and the charge drop ran after that recast in
 // part of the cases (wowsims/forever, MIT, docs/evidence EV-0140: 60 of 60 crits end at 3; EV-0138).
+// WoW Forever live push 114097 put melee abilities in the buff's proc types (ProcTypeMask 4 -> 20, hotfix records in
+// 2026_11_24_52_hotfixes): a Heroic Strike or Cleave spends one charge, landed or not (EV-0138: 36 of 36 casts spent one). Other
+// abilities spend none here, as with Unbridled Wrath on the same push (EV-0148: Shield Slam, Revenge, Thunder Clap never roll it).
 class classic_spell_warr_flurry_buff : public AuraScript
 {
     bool CheckProc(ProcEventInfo& eventInfo)
     {
+        if (SpellInfo const* spellInfo = eventInfo.GetSpellInfo(); spellInfo && !spellInfo->IsNextMeleeSwingSpell())
+            return false;
+
         Unit* warrior = GetTarget();
         switch (warrior->GetLastExtraAttackSpell())
         {
@@ -395,6 +404,12 @@ class classic_spell_warr_flurry_buff : public AuraScript
 
 // 12322 - Unbridled Wrath (talent): "Gives you a $m1% chance to generate an additional Rage point when you deal melee damage with a weapon."
 // The client talent triggers 12964 (one rage) with the spell's own 100% proc chance; the rank (aura amount) is the chance.
+// WoW Forever: only white swings (Windfury Totem's strike is an extra white swing here), Heroic Strike and each target a Cleave lands on
+// roll it (hotfix of 16 Nov: "now activates from Cleave and Heroic Strike"; wowsims/forever, MIT, docs/evidence EV-0148: white swings
+// 1,241 of 2,109, Heroic Strike 248 of 402, Windfury Totem 16 of 27, Cleave 0.60 a target; Shield Slam 0 of 977, Revenge 0 of 601,
+// Thunder Clap 0 of 2,238, Retaliation, Victory Rush and Shield Bash none). The 70959 client data let only white swings through
+// (ProcTypeMask 4); live push 114097 adds melee abilities (20, hotfix records in 2026_11_24_52_hotfixes), and this check keeps the two
+// on-next-swing ones. Credit: Everlake (buildthehomelab, GPL-3) found it first.
 class classic_spell_warr_unbridled_wrath : public AuraScript
 {
     bool Validate(SpellInfo const* spellInfo) override
@@ -404,8 +419,12 @@ class classic_spell_warr_unbridled_wrath : public AuraScript
         return true;
     }
 
-    bool CheckProc(ProcEventInfo& /*eventInfo*/)
+    bool CheckProc(ProcEventInfo& eventInfo)
     {
+        // a white swing has no spell; Heroic Strike and Cleave are the warrior's on-next-swing abilities
+        if (SpellInfo const* spellInfo = eventInfo.GetSpellInfo(); spellInfo && !spellInfo->IsNextMeleeSwingSpell())
+            return false;
+
         AuraEffect const* talent = GetEffect(EFFECT_0);
         return talent && roll_chance(talent->GetAmountAsInt());
     }
@@ -951,6 +970,9 @@ class classic_spell_warr_execute : public SpellScript
 
     // VMaNGOS (scripts/spells/spell_warrior.cpp, WarriorExecuteDummyScript): the damage spell is cast from OnCast, not from the effect, with
     // the base points plus the rage still held times the per-rage factor, and the rage is gone afterwards.
+    // WoW Forever: an Execute that misses, is dodged or parried costs its base rage alone and the extra rage stays (MythicSim
+    // docs/mechanics.md, MIT: 36 of 36 avoided Executes from 14 warriors in Forever combat logs). The extra rage stays the warrior's
+    // until the damage spell lands: classic_spell_warr_execute_damage takes it then. Credit: Everlake (buildthehomelab, GPL-3) found it.
     void HandleCast()
     {
         Unit* warrior = GetCaster();
@@ -964,15 +986,19 @@ class classic_spell_warr_execute : public SpellScript
         // The cost is taken before the cast: what is left of the rage, plus whatever the cast took beyond the 15 rage
         // (a cost row that drains everything), is what Execute turns into damage.
         int32 spent = GetSpell()->GetPowerTypeCostAmount(POWER_RAGE).value_or(0);
-        int32 extraRage = std::max(0, spent - EXECUTE_RAGE_COST) + int32(warrior->GetPower(POWER_RAGE));
+        int32 const takenBeyondCost = std::max(0, spent - EXECUTE_RAGE_COST);
+        int32 extraRage = takenBeyondCost + int32(warrior->GetPower(POWER_RAGE));
         int32 damage = GetSpellInfo()->GetEffect(EFFECT_0).CalcValue(warrior) + (extraRage / 10) * GetDamagePerRage(GetSpellInfo()->Id);
+
+        // an avoided Execute keeps the extra rage, so what a draining cost row took beyond the base cost goes back before the damage roll
+        if (takenBeyondCost > 0)
+            warrior->SetPower(POWER_RAGE, warrior->GetPower(POWER_RAGE) + takenBeyondCost);
 
         SpellCastResult result = warrior->CastSpell(target, SPELL_WARRIOR_EXECUTE_DAMAGE, CastSpellExtraArgs(TRIGGERED_FULL_MASK)
             .SetTriggeringSpell(GetSpell())
             .AddSpellBP0(damage));
         TC_LOG_ERROR("scripts.classic", "Execute {}: damage spell {} on {} for {} (extra rage {}) -> cast result {}",
             GetSpellInfo()->Id, SPELL_WARRIOR_EXECUTE_DAMAGE, target->GetGUID().ToString(), damage, extraRage, uint32(result));
-        warrior->SetPower(POWER_RAGE, 0);
     }
 
     void Register() override
@@ -998,6 +1024,21 @@ class classic_spell_warr_overpower_probe : public SpellScript
     void Register() override
     {
         OnCheckCast += SpellCheckCastFn(classic_spell_warr_overpower_probe::CheckCastProbe);
+    }
+};
+
+// 20647 - Execute (the damage spell): a hit that lands, a partial block included, takes the warrior's extra rage, which
+// classic_spell_warr_execute already turned into damage; a miss, dodge or parry runs no effect and leaves it.
+class classic_spell_warr_execute_damage : public SpellScript
+{
+    void HandleLanded(SpellEffIndex /*effIndex*/)
+    {
+        GetCaster()->SetPower(POWER_RAGE, 0);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_warr_execute_damage::HandleLanded, EFFECT_0, SPELL_EFFECT_ANY);
     }
 };
 
@@ -1872,6 +1913,154 @@ class classic_spell_hun_summon_hawk : public SpellScript
     }
 };
 
+// 1312639 - Summon Hawk, the missile every Summon Hawk rank fires (effect 1, TRIGGER_MISSILE): "dealing ... damage and continuing its
+// assault for $1293248d". Its only effect is a dummy the client leaves to the server, so the dive hit once and no hawk ever appeared.
+// The dummy calls the hawk: 1293248 summons Hawk 264850 beside the struck enemy for 18 s.
+class classic_spell_hun_summon_hawk_missile : public SpellScript
+{
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_HUNTER_SUMMON_HAWK_ASSAULT });
+    }
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Unit* hunter = GetCaster();
+        Unit* target = GetHitUnit();
+        if (!hunter || !target || !target->IsAlive())
+            return;
+
+        hunter->CastSpell(target, SPELL_HUNTER_SUMMON_HAWK_ASSAULT, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_hun_summon_hawk_missile::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 1293248 - Summon Hawk (the 18 s hawk): a guardian only joins a fight its owner is in, and a hunter shooting from range is often not yet
+// in combat with the dive's target, so the fresh hawk is sent at the enemy the dive struck (the cast's explicit target).
+class classic_spell_hun_summon_hawk_assault : public SpellScript
+{
+    void HandleAfterCast()
+    {
+        Unit* hunter = GetCaster();
+        Unit* target = GetExplTargetUnit();
+        if (!hunter || !target || !target->IsAlive())
+            return;
+
+        SpellEffectInfo const& summonEffect = GetSpellInfo()->GetEffect(EFFECT_0);
+        if (!summonEffect.IsEffect(SPELL_EFFECT_SUMMON) || summonEffect.MiscValue <= 0)
+            return;
+
+        std::list<Creature*> hawks;
+        hunter->GetCreatureListWithEntryInGrid(hawks, uint32(summonEffect.MiscValue), 60.0f);
+        for (Creature* hawk : hawks)
+        {
+            TempSummon* summon = hawk->ToTempSummon();
+            if (!summon || summon->GetSummonerGUID() != hunter->GetGUID() || hawk->IsInCombat() || !hawk->IsAIEnabled())
+                continue;
+
+            hawk->AI()->AttackStart(target);
+        }
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(classic_spell_hun_summon_hawk_assault::HandleAfterCast);
+    }
+};
+
+// Hawk 264850, the 18 s assault of Summon Hawk (1293248 / 1312637, SummonProperties 6837 / 6838: an allied guardian in totem slot 2 / 3, so
+// the client shows it under the player like a totem). A guardian a player owns has no threat list: its default script looked for an enemy
+// attacking it or its owner, found none while the hunter shot from range, left the fight after the first hit and went home to the
+// hunter (RU Discord, Gire, 11-22: "the hawk only strikes once and disappears, it does not stay for 18 s"). This script keeps on the enemy
+// the dive struck, then on the hunter's target, until the summon runs out; with nothing to fight it follows the hunter. It never evades.
+struct classic_npc_hunter_hawk : public CreatureAI
+{
+    explicit classic_npc_hunter_hawk(Creature* creature) : CreatureAI(creature) { }
+
+    void JustEngagedWith(Unit* who) override
+    {
+        if (_target.IsEmpty() && who)
+            _target = who->GetGUID();
+    }
+
+    void AttackStart(Unit* victim) override
+    {
+        if (!victim)
+            return;
+        _target = victim->GetGUID();
+        CreatureAI::AttackStart(victim);
+    }
+
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void UpdateAI(uint32 /*diff*/) override
+    {
+        Unit* victim = me->GetVictim();
+        if (victim && Fightable(victim))
+            return;
+
+        Unit* next = nullptr;
+        if (Unit* target = ObjectAccessor::GetUnit(*me, _target); target && Fightable(target))
+            next = target;
+        else if (Unit* owner = me->GetOwner())
+            if (Unit* ownerVictim = owner->GetVictim(); ownerVictim && Fightable(ownerVictim))
+                next = ownerVictim;
+
+        if (next)
+        {
+            AttackStart(next);
+            return;
+        }
+
+        if (me->GetVictim())
+            me->AttackStop();
+        if (Unit* owner = me->GetOwner(); owner && me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+            me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, PET_FOLLOW_ANGLE);
+    }
+
+private:
+    bool Fightable(Unit* unit) const
+    {
+        return unit->IsAlive() && me->IsValidAttackTarget(unit) && me->IsWithinDistInMap(unit, 60.0f);
+    }
+
+    ObjectGuid _target;
+};
+
+// 2641 - Dismiss Pet: "Summoned Hawks are now dismissed when the Dismiss Pet spell is completed" (WoW Forever 71139, Nov 25). The hawks
+// (264850, Summon Hawk) are guardians in totem slots, not the hunter's pet, so the pet's dismissal never reached them. Ported from
+// Everlake (buildthehomelab/wow-trinitycore-everlake acedfc2a, GPL-3.0), with thanks.
+class classic_spell_hun_dismiss_pet_hawks : public SpellScript
+{
+    static constexpr uint32 NPC_SUMMONED_HAWK = 264850;
+    static constexpr float HawkSearchRange = 100.0f;
+
+    void DismissHawks()
+    {
+        Unit* hunter = GetCaster();
+        if (!hunter)
+            return;
+
+        std::list<Creature*> hawks;
+        hunter->GetCreatureListWithEntryInGrid(hawks, NPC_SUMMONED_HAWK, HawkSearchRange);
+        for (Creature* hawk : hawks)
+        {
+            TempSummon* summon = hawk->ToTempSummon();
+            if (summon && (hawk->GetOwnerGUID() == hunter->GetGUID() || summon->GetSummonerGUID() == hunter->GetGUID()))
+                summon->UnSummon();
+        }
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(classic_spell_hun_dismiss_pet_hawks::DismissHawks);
+    }
+};
+
 /*######
 ## Damage done talents without a client aura effect
 ######*/
@@ -2207,6 +2396,7 @@ void AddSC_classic_talents_warrior_rogue_hunter()
     RegisterSpellScript(classic_spell_warr_execute);
     RegisterSpellScript(classic_spell_warr_overpower_probe);
     RegisterSpellScript(classic_spell_warr_execute_damage_probe);
+    RegisterSpellScript(classic_spell_warr_execute_damage);
     RegisterSpellScript(classic_spell_warr_spearing_strike);
     RegisterSpellScript(classic_spell_warr_improved_whirlwind_closest);
 
@@ -2234,6 +2424,10 @@ void AddSC_classic_talents_warrior_rogue_hunter()
     RegisterSpellScript(classic_spell_hun_readiness);
     RegisterSpellScript(classic_spell_hun_refocus);
     RegisterSpellScript(classic_spell_hun_summon_hawk);
+    RegisterSpellScript(classic_spell_hun_summon_hawk_missile);
+    RegisterSpellScript(classic_spell_hun_summon_hawk_assault);
+    RegisterCreatureAI(classic_npc_hunter_hawk);
+    RegisterSpellScript(classic_spell_hun_dismiss_pet_hawks);
     new classic_unit_hun_rapid_killing();
     RegisterSpellScript(classic_spell_hun_expose_prey);
     RegisterSpellScript(classic_spell_hun_mongoose_bite);

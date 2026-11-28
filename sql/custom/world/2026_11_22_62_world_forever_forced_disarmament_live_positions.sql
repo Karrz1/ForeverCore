@@ -1,0 +1,24 @@
+-- Wetlands, Forced Disarmament (98293): the 35 Dragonmaw Armaments spawns of 2026_11_19_87 stood on spots worked out from the
+-- Wowhead map pins. The live capture of 2026-11-21 (client 71037, sniff-1122-wetlands-objects.txt) saw 19 of them; each one is
+-- 3-7 yd from one of ours of the same object, so those 19 move to live's exact place and rotation. The other 16 are not in the
+-- capture (13 lie south of the part it covered, 3 inside it, perhaps looted at that moment) and stay where they are.
+-- Loot 142869 (3-5 armaments, 100%) is unchanged. Safe to run more than once.
+UPDATE `gameobject` SET `position_x`=-3469.962, `position_y`=-3292.403, `position_z`=22.828, `orientation`=0.9917, `rotation0`=0, `rotation1`=0, `rotation2`=0.475771, `rotation3`=0.879569 WHERE `guid`=67233406 AND `id`=672334;
+UPDATE `gameobject` SET `position_x`=-3444.542, `position_y`=-3179.394, `position_z`=21.529, `orientation`=2.3896, `rotation0`=0, `rotation1`=0, `rotation2`=0.930138, `rotation3`=0.367211 WHERE `guid`=67233404 AND `id`=672334;
+UPDATE `gameobject` SET `position_x`=-3444.068, `position_y`=-3241.951, `position_z`=22.257, `orientation`=2.1947, `rotation0`=0, `rotation1`=0, `rotation2`=0.890007, `rotation3`=0.455947 WHERE `guid`=67233405 AND `id`=672334;
+UPDATE `gameobject` SET `position_x`=-3389.978, `position_y`=-2903.785, `position_z`=12.114, `orientation`=0.5781, `rotation0`=0, `rotation1`=0, `rotation2`=0.285048, `rotation3`=0.958513 WHERE `guid`=67233400 AND `id`=672334;
+UPDATE `gameobject` SET `position_x`=-3382.582, `position_y`=-3000.144, `position_z`=22.682, `orientation`=0.5781, `rotation0`=0, `rotation1`=0, `rotation2`=0.285048, `rotation3`=0.958513 WHERE `guid`=67233402 AND `id`=672334;
+UPDATE `gameobject` SET `position_x`=-3364.672, `position_y`=-2959.184, `position_z`=22.379, `orientation`=2.3007, `rotation0`=-0.0814967, `rotation1`=0.0736113, `rotation2`=0.905923, `rotation3`=0.408954 WHERE `guid`=67233401 AND `id`=672334;
+UPDATE `gameobject` SET `position_x`=-3467.300, `position_y`=-3219.036, `position_z`=22.772, `orientation`=2.4718, `rotation0`=0, `rotation1`=0, `rotation2`=0.944442, `rotation3`=0.328679 WHERE `guid`=67233605 AND `id`=672336;
+UPDATE `gameobject` SET `position_x`=-3440.214, `position_y`=-3119.799, `position_z`=21.582, `orientation`=0.1210, `rotation0`=0, `rotation1`=0, `rotation2`=0.0604544, `rotation3`=0.998171 WHERE `guid`=67233604 AND `id`=672336;
+UPDATE `gameobject` SET `position_x`=-3418.078, `position_y`=-3072.167, `position_z`=22.682, `orientation`=0.8600, `rotation0`=0, `rotation1`=0, `rotation2`=0.41687, `rotation3`=0.908966 WHERE `guid`=67233603 AND `id`=672336;
+UPDATE `gameobject` SET `position_x`=-3389.682, `position_y`=-2837.042, `position_z`=11.623, `orientation`=4.7907, `rotation0`=0, `rotation1`=0, `rotation2`=-0.678891, `rotation3`=0.734239 WHERE `guid`=67233600 AND `id`=672336;
+UPDATE `gameobject` SET `position_x`=-3385.703, `position_y`=-2916.526, `position_z`=12.942, `orientation`=4.7907, `rotation0`=0, `rotation1`=0, `rotation2`=-0.678891, `rotation3`=0.734239 WHERE `guid`=67233601 AND `id`=672336;
+UPDATE `gameobject` SET `position_x`=-3380.601, `position_y`=-2965.964, `position_z`=21.596, `orientation`=0.4684, `rotation0`=0, `rotation1`=0, `rotation2`=0.232047, `rotation3`=0.972705 WHERE `guid`=67233602 AND `id`=672336;
+UPDATE `gameobject` SET `position_x`=-3471.384, `position_y`=-3277.066, `position_z`=22.009, `orientation`=4.8771, `rotation0`=0, `rotation1`=0, `rotation2`=-0.646554, `rotation3`=0.762868 WHERE `guid`=67233705 AND `id`=672337;
+UPDATE `gameobject` SET `position_x`=-3450.214, `position_y`=-3312.238, `position_z`=22.415, `orientation`=2.1759, `rotation0`=0, `rotation1`=0, `rotation2`=0.885668, `rotation3`=0.464319 WHERE `guid`=67233707 AND `id`=672337;
+UPDATE `gameobject` SET `position_x`=-3446.210, `position_y`=-3258.215, `position_z`=22.257, `orientation`=3.1169, `rotation0`=0, `rotation1`=0, `rotation2`=0.999924, `rotation3`=0.0123526 WHERE `guid`=67233704 AND `id`=672337;
+UPDATE `gameobject` SET `position_x`=-3417.399, `position_y`=-3080.957, `position_z`=22.675, `orientation`=3.4653, `rotation0`=0, `rotation1`=0, `rotation2`=-0.986927, `rotation3`=0.161168 WHERE `guid`=67233703 AND `id`=672337;
+UPDATE `gameobject` SET `position_x`=-3382.974, `position_y`=-2997.653, `position_z`=22.682, `orientation`=4.0073, `rotation0`=0, `rotation1`=0, `rotation2`=-0.907781, `rotation3`=0.419445 WHERE `guid`=67233702 AND `id`=672337;
+UPDATE `gameobject` SET `position_x`=-3381.648, `position_y`=-2882.285, `position_z`=11.641, `orientation`=1.8216, `rotation0`=0, `rotation1`=0, `rotation2`=0.789987, `rotation3`=0.613124 WHERE `guid`=67233701 AND `id`=672337;
+UPDATE `gameobject` SET `position_x`=-3380.960, `position_y`=-2839.823, `position_z`=11.647, `orientation`=4.0073, `rotation0`=0, `rotation1`=0, `rotation2`=-0.907781, `rotation3`=0.419445 WHERE `guid`=67233700 AND `id`=672337;

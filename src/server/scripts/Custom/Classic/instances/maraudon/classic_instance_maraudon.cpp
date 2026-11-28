@@ -27,6 +27,7 @@
 #include "ScriptedCreature.h"
 #include "classic_dungeon_encounter_tracker.h"
 #include "classic_maraudon.h"
+#include "classic_respawn.h"
 
 namespace
 {
@@ -125,6 +126,8 @@ public:
                     break;
                 case NPC_MARA_SPEWED_LARVA:
                     _spewedLarvaGUID = creature->GetGUID();
+                    if (creature->GetSpawnId())
+                        _spewedLarvaSpawnId = creature->GetSpawnId();
                     // No functional spewer no larva
                     if (_encounter[CLASSIC_MARA_TYPE_LARVA_SPEWER] == DONE)
                         creature->DisappearAndDie();
@@ -254,8 +257,11 @@ public:
             {
                 if (_spewedLarvaTimer <= diff)
                 {
+                    // by spawn: a killed larva whose corpse decayed has left the map in TC (VMaNGOS kept it)
                     if (Creature* spewedLarva = instance->GetCreature(_spewedLarvaGUID))
                         spewedLarva->Respawn();
+                    else
+                        ClassicRespawnSpawnIfDead(instance, _spewedLarvaSpawnId);
                     _respawnSpewedLarva = false;
                 }
                 else
@@ -270,6 +276,7 @@ public:
 
         ObjectGuid _celebrasGUID;
         ObjectGuid _spewedLarvaGUID;
+        ObjectGuid::LowType _spewedLarvaSpawnId = 0;
         ObjectGuid _vineGUID;
         ObjectGuid _larvaSpewerGUID;
         bool _respawnSpewedLarva;
