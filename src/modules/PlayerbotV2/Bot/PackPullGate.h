@@ -31,14 +31,16 @@ public:
         return it->second.gated ? Verdict::Gated : Verdict::Walkable;
     }
 
-    void Note(std::uint64_t pack, bool gated, std::uint32_t now_ms)
+    // `gated_ms`: how long a gated verdict stands. A pack the tank could not pull at all (no opener spot, or an opener and a hand pull
+    // that never woke it: a door or a wall between) is passed by for longer than one it can only walk to the long way round.
+    void Note(std::uint64_t pack, bool gated, std::uint32_t now_ms, std::uint32_t gated_ms = kGatedMs)
     {
         for (auto it = entries_.begin(); it != entries_.end();)
         {
             if (std::int32_t(now_ms - it->second.until_ms) >= 0) it = entries_.erase(it);
             else ++it;
         }
-        entries_[pack] = Entry{ now_ms + (gated ? kGatedMs : kWalkableMs), gated };
+        entries_[pack] = Entry{ now_ms + (gated ? gated_ms : kWalkableMs), gated };
     }
 
     void Clear() { entries_.clear(); }

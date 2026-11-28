@@ -32,8 +32,8 @@ uint32 HunterPetEntryForRace(uint32 race);
 constexpr uint32 GenericAllianceHunterPet = 299;   // Young Wolf (Elwynn Forest)
 constexpr uint32 GenericHordeHunterPet    = 3099;  // Dire Mottled Boar (Valley of Trials; 5826 was Geolord Mottle, a quilboar)
 
-// A world (ambient) hunter's own first pet, stable per bot: one of the faction's classic starter beasts picked by guid, so a street of
-// hunters is not all one race's beast. Creature entries of HunterPetEntryForRace's classic races; the caller's tameable check still
+// A hunter bot's own first pet, stable per bot: one of the faction's classic starter beasts picked by guid, so a street of hunters, or
+// a player's hired ones, is not all one race's beast. Creature entries of HunterPetEntryForRace's classic races; the caller's tameable check still
 // decides whether the pick exists as a beast in this data. `fallback` (the race's pet) is returned for an owned bot (guid 0).
 inline uint32 VariedHunterPetEntry(bool alliance, uint64 guid, uint32 fallback)
 {

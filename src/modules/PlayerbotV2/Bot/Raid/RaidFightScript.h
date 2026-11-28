@@ -34,6 +34,15 @@ struct Fight
     uint32_t freeAura = 0;         // a DPS bot carrying this aura is left to the generic rules (Delusions of Jin'do: only it sees the Shades)
     float campX = 0.f, campY = 0.f; // campReach > 0: the raid fights from one camp (Nefarian); an enemy counts for a DPS bot only within campReach
     float campReach = 0.f;         // of it and in the bot's line of sight, while any enemy of the fight is (else every enemy counts again)
+    float meleeFirstReach = 0.f;   // > 0: the first rank counts for a melee DPS bot only within this many yards of it (Kel'Thuzad's Soldiers)
+    bool campHold = false;         // campReach > 0: a DPS bot with only a first-rank enemy, out of its sight and spell reach, holds at its post
+    bool heldOnly = false;         // the kill order after its first rank counts only while a tank holds it (the boss excepted)
+    uint8_t firstRankSquad = 0;    // > 0: only this many ranged DPS bots (the first by guid) take the first rank; the rest skip it
+    uint32_t meleeOff = 0;         // a creature entry no melee DPS bot attacks (off limits for it, the generic rules included)
+    uint32_t untanked = 0;         // heldOnly: this entry counts though no tank holds it (nobody tanks it)
+    float meleeCampReach = 0.f;    // campReach > 0: an enemy farther than this from the camp is off limits for a melee DPS bot (Kel'Thuzad)
+    uint8_t squadPerEnemy = 0;     // firstRankSquad: > 0, the squad splits over the first rank, this many bots on each enemy (Kel'Thuzad)
+    bool meleeHeldOnly = false;    // a later-rank enemy no tank holds is off limits for a melee DPS bot, its own rules too (Kel'Thuzad)
 };
 
 // Lucifron (MC 409): the two Flamewaker Protectors first, then Lucifron. The start wait is the raid's one boss opening wait (Playerbot::kRaidBossOpenWaitMs, 8 s: the main tank takes a while to run in); there is no threat cap after
@@ -83,6 +92,45 @@ struct Fight
 // with no script the Priority rows only steered a DPS bot with no target, so the bots already on Fankriss or a Hatchling stayed there
 // ("on the focus 0", 13-21 of 24 on one other enemy); the Spawns lived 12-25 s, each at 93-95% 6-8 s in, and from 215 s the enraged
 // ones killed 39 of the 40. Fankriss himself has no enrage: his tank keeps him while the adds die.
+// Kel'Thuzad (Naxxramas 533): phase 1 is Kel'Thuzad immune on his dais sending adds from the seven alcoves at random raiders
+// (classic_boss_kelthuzad.cpp): a Soldier of the Frozen Wastes (16427, 2,000 health) every 3.75 s down to 2 s, which blows up on arrival
+// (Dark Blast 28457, 1,750 to the whole room), Unstoppable Abominations (16428, 90,000, Mortal Wound on the tank) and Soul Weavers
+// (16429, 70,000, Wail of Souls in front of them). The raid fights from one camp in the middle of the room (RaidEncounterData_NAXX.cpp),
+// the tanks hold the Abominations and Weavers on an arc round it. The order: a Soldier that has come in to the camp first (one dies to a
+// single volley), then an Abomination a tank holds, then a Weaver, then Kel'Thuzad himself (phases 2 and 3; the Guardians of Icecrown are
+// shackled and not on the list). No start wait: the first Soldier is on its way at the pull. A melee DPS bot leaves a Soldier further than
+// 8 y from it to the ranged (meleeFirstReach): sent at a random raider it can be anywhere in the camp, and the melee walked from the tanks
+// to it and back. naxx_kelthuzad kt67a / kt67b (1124), no script: each DPS bot took its own pick by the generic rows, the raid stood spread
+// over the whole room between the alcove keep-outs and the Weavers' cones (768-792 of 1,028-1,132 forced moves a run were that ping-pong),
+// and 16 and 25 raiders died to Wail of Souls.
+// campReach is 36 y, the whole floor inside the alcove keep-outs: a bot at the camp (7 y round it) then takes a Soldier as soon as it is in
+// its 30 y spell reach. At 28 y (kt69a, 1124) a Soldier counted only 2-3 s before it reached the tanks' arc and blew up there: 20 of the 42
+// dead were Dark Blast.
+// campHold: a DPS bot with no enemy in its 30 y sight and spell reach waits at its post. Without it every enemy counted again, the pick was a
+// Soldier just sent from an alcove 35-42 y off, and the ranged walked out after it (kt69b, 1124: "[hunter_chase] ... dist 40-42", a
+// "role position" walk back every 1-2 s, 364 "leave hazard" at the keep-out rims); the raid drifted north, and 23 raiders 3-30 y from a
+// Soul Weaver at 3702,-5079 (31 y from the camp) died to its Wail of Souls in 8 s.
+// firstRankSquad: eight ranged DPS bots shoot the Soldiers, the others stay on the held Abomination. kt69i (1124), every DPS bot on the
+// squadPerEnemy: the squad splits two to a Soldier, nearest the camp first. The whole squad on one Soldier (2,000 health) put most of its
+// casts into one already dead: kt73a (1125), 7-13 bots on the top target in the samples from 218 s, loose mobs 14 -> 24 in 40 s, and
+// Soldiers reaching the camp together killed 8 with Dark Blast at 258-261 s, 27 of the 43 dead in all.
+// first rank: 45 of the 63 focus changes went to a Soldier, 232 of 290 script attacks were on one (each dies to the first hits and
+// a new one comes every 2-3.75 s, so the casters spent the pull starting casts on the next), the focus was an Abomination 4 times,
+// raid damage was 1,528/s, and the Abominations killed all four tanks with Mortal Wound.
+// meleeOff: no melee DPS bot attacks a Soul Weaver (it has no melee of its own; the ranged and its tank kill it), and the encounter keeps them
+// 8 y from one (RaidEncounterData_NAXX.cpp). A Weaver whose victim is out of its melee reach turns to the nearest raider in it
+// (classic_soul_weaver_ai), so the melee beside it took it from its tank: kt69p (1124), a Weaver was on a tank in 4 of 94 [raid_fight]
+// samples and on a raider in 73, most often a warrior or rogue (Mcwarra, Mcwarrb, Mcwarrc, Mcrogued, Mcreta), and 29 died to Wail of Souls.
+// AzerothCore-style variant (script17ac): the Weavers are not tanked (RaidEncounterData_NAXX.cpp). The order is Soldier, Weaver, Abomination,
+// Kel'Thuzad: the eight squad bots take the Soldiers, the other ranged the Weaver nearest the camp's 36 y, the melee (meleeOff) the held
+// Abomination; untanked lets a Weaver count under heldOnly.
+// heldOnly: an Abomination or Weaver counts only while a tank holds it. A Soul Weaver turns on whoever is nearest in its melee reach when its
+// victim is not (classic_soul_weaver_ai), so DPS bots that ran out to a loose one at the alcove rim could hold it there, facing the camp
+// (kt69c, 1124: 28 dead to Wail of Souls from a Weaver at 3697-3701,-5079, 31 y from the camp; the camp reach of 36 y counts it).
+// meleeHeldOnly: heldOnly steers the script's focus only; a melee DPS bot's own rules still went for a loose Abomination walking in, met it
+// 13-23 y from the camp (the row's tanks fetch one only within 22 y of it, and 15 y of themselves), took it off the raider it was sent at
+// and died to its Mortal Wound: naxx_kelthuzad kt80a-c (1125), 11 of the 21 deaths to an Abomination before 200 s were melee DPS bots on
+// a fresh one (97-100%) sent at another raider, no tank on it.
 inline constexpr Fight kFights[] = {
     { 409, 12118, { 12119, 12118, 0, 0 }, kRaidBossOpenWaitMs, "Lucifron" },
     { 409, 12057, { 12057, 0, 0, 0 }, kRaidBossOpenWaitMs, "Garr" },
@@ -106,6 +154,8 @@ inline constexpr Fight kFights[] = {
     { 309, 15084, { 15084, 0, 0, 0 }, kRaidBossOpenWaitMs, "Renataki" },
     { 309, 15085, { 15085, 0, 0, 0 }, kRaidBossOpenWaitMs, "Wushoolay" },
     { 531, 15510, { 15630, 15962, 15510, 0 }, kRaidBossOpenWaitMs, "Fankriss the Unyielding" },
+    { 533, 15990, { 16427, 16429, 16428, 15990, 0 }, 0, "Kel'Thuzad", false, 0, true, 0, false, 0, 3716.0f, -5106.0f, 36.0f, 8.0f, true, true, 8, 16429,
+      16429, 26.0f, 2, true },
 };
 
 // The fight an engaged enemy belongs to on this map (nullptr: none).

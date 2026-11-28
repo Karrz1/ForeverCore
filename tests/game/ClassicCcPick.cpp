@@ -57,3 +57,11 @@ TEST_CASE("Locked, skull, wrong-type, unlisted and self-attacking adds are skipp
     CHECK(PickCcTarget({ locked, skull, wrong, hits, unlisted }) == kNoCcTarget);
     CHECK(PickCcTarget({ locked, skull, wrong, hits, unlisted, Eligible() }) == 5);
 }
+
+TEST_CASE("An idle add the tank cannot walk to is not crowd-controlled", "[ClassicCcPick]")
+{
+    // lbrs_full af58: the mage sheeped a mob 13 y below the ledge (a 210 y walk for the tank), the pack came up and the priest died.
+    CcCandidate below = Eligible(true); below.tank_cannot_pull = true;
+    CHECK(PickCcTarget({ below }) == kNoCcTarget);
+    CHECK(PickCcTarget({ below, Eligible() }) == 1);
+}

@@ -14,6 +14,8 @@ void ApplyRaidAdvice(uint32_t mapId, DungeonAdvice& advice)
         advice.bosses = rules->bosses;
     advice.dangerous_auras.clear();
     advice.spread_on_self_auras.clear();
+    advice.keep_clear_of_carriers.clear();   // the raid rules keep clear of carriers themselves (avoidCarrier)
+    advice.spread_from_bosses.clear();       // and spread by their own raid positions
     advice.kite_creature_entries.clear();
     advice.soak_spells.clear();
     advice.stack_on_cast_spells.clear();

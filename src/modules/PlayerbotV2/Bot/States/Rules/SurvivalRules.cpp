@@ -10,6 +10,8 @@
 #include "Bot/BotAI.h"
 #include "Bot/BotSnapshotView.h"
 #include "Bot/BotIntentEmitter.h"
+#include "Bot/States/MaintainHelpers.h"   // BreathDue / SurfaceForAir
+#include "Log.h"
 
 #include <cmath>
 
@@ -18,17 +20,27 @@ namespace Playerbot {
 namespace {
 
 // ---------- idle:flee_hazard ----------
+// Inside a hazard as the core tests it: a trap fires on a unit within its radius in 3D (GameObject::Update, IsWithinDist), so a
+// bonfire on the floor below a ledge is no hazard to a bot standing on the ledge. The flat test ignored the height
+// (lbrs_full af58: on the ledge above the lower hall the tank walked back and forth, the route stepping it south and this
+// rule sending it north; the [flee_hazard] line names the object a bot leaves).
+bool InsideHazard(float bx, float by, float bz, BotSnapshot::NearbyObject const& obj, float& out_d)
+{
+    if (!obj.is_hazard || obj.hazard_radius <= 0.0f) return false;
+    const float dx = bx - obj.x, dy = by - obj.y, dz = bz - obj.z;
+    const float d2 = dx*dx + dy*dy + dz*dz;
+    if (d2 >= obj.hazard_radius * obj.hazard_radius) return false;
+    out_d = std::sqrt(d2);
+    return true;
+}
+
 bool FleeHazardGate(BotSnapshotView const& s, BotAI&, GroupSnapshotView const&,uint32)
 {
     float bx, by, bz; s.position(bx, by, bz);
+    float d = 0.0f;
     for (auto const& obj : s.raw().world_objects.nearby_objects)
-    {
-        if (!obj.is_hazard || obj.hazard_radius <= 0.0f) continue;
-        const float dx = bx - obj.x;
-        const float dy = by - obj.y;
-        if (dx*dx + dy*dy < obj.hazard_radius * obj.hazard_radius)
+        if (InsideHazard(bx, by, bz, obj, d))
             return true;
-    }
     return false;
 }
 
@@ -39,12 +51,9 @@ bool FleeHazardFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
     float worst_overlap = 0.0f;
     for (auto const& obj : s.raw().world_objects.nearby_objects)
     {
-        if (!obj.is_hazard || obj.hazard_radius <= 0.0f) continue;
-        const float dx = bx - obj.x;
-        const float dy = by - obj.y;
-        const float d2 = dx*dx + dy*dy;
-        if (d2 >= obj.hazard_radius * obj.hazard_radius) continue;
-        const float overlap = obj.hazard_radius - std::sqrt(d2);
+        float d3 = 0.0f;
+        if (!InsideHazard(bx, by, bz, obj, d3)) continue;
+        const float overlap = obj.hazard_radius - d3;
         if (overlap > worst_overlap) { worst_overlap = overlap; worst = &obj; }
     }
     if (!worst) return false;
@@ -52,8 +61,16 @@ bool FleeHazardFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
     const float dy = by - worst->y;
     const float d  = std::max(0.5f, std::sqrt(dx*dx + dy*dy));
     const float scale = (worst->hazard_radius + 5.0f) / d;
-    emit.move_to(worst->x + dx * scale, worst->y + dy * scale, bz);
+    const float fx = worst->x + dx * scale, fy = worst->y + dy * scale;
+    emit.move_to(fx, fy, bz);
     ai.set_last_rule_fired("idle:flee_hazard");
+    static uint32 s_flee_hazard_log_ms = 0;   // all bots, one line per 2 s
+    if (s.published_at_ms() - s_flee_hazard_log_ms > 2000u)
+    {
+        s_flee_hazard_log_ms = s.published_at_ms();
+        TC_LOG_INFO("playerbot.v2", "[flee_hazard] {} at ({:.1f},{:.1f},{:.1f}) leaves entry {} at ({:.1f},{:.1f},{:.1f}) radius {:.1f} -> ({:.1f},{:.1f})",
+            s.name(), bx, by, bz, worst->entry, worst->x, worst->y, worst->z, worst->hazard_radius, fx, fy);
+    }
     return true;
 }
 
@@ -88,28 +105,20 @@ bool FleeDamagingLiquidFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotVi
 }
 
 // ---------- idle:surface_to_breathe ----------
-// Breath lasts 60 s (Player::getMaxTimer BREATH_TIMER). A player swimming under water to the shore keeps going and comes up only when
-// the breath runs short; the rule used to lift every submerged bot to the surface at once, and the swim to dry land (idle:water_escape,
-// idle:leave_water), whose path runs along the bottom, took it under again the next tick: r10 12 Nov, 23 leave_water and 14 water_escape
-// flips, bots bobbing in place instead of reaching the bank. Up after 35 s under water, with 25 s of breath to spare.
-constexpr uint32 kSurfaceAfterUnderwaterMs = 35000u;
-
+// A player swimming under water to the shore, or fighting there, keeps going and comes up only when the breath runs short; the rule
+// used to lift every submerged bot to the surface at once, and the swim to dry land (idle:water_escape, idle:leave_water), whose path
+// runs along the bottom, took it under again the next tick: r10 12 Nov, 23 leave_water and 14 water_escape flips, bots bobbing in place
+// instead of reaching the bank. It went on a 35 s clock of its own after that, which counted only the time out of combat: a mage that
+// fought on the Vile Reef sat down to eat 25 y deep afterwards and drowned (vile_reef_fight af64). Now the server's own breath timer
+// decides, in every state (SurfaceForAir): up with 25 s left, and up there until the bar is full.
 bool SurfaceToBreatheGate(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&, uint32)
 {
-    bool const under = s.is_underwater() && s.water_surface_z() != 0.0f;
-    uint32 const under_ms = ai.note_underwater(under, s.published_at_ms());
-    if (!under) return false;
-    float bx, by, bz; s.position(bx, by, bz);
-    if (bz >= s.water_surface_z() - 0.5f) return false;
-    return under_ms >= kSurfaceAfterUnderwaterMs;
+    return States::BreathDue(s, ai);
 }
 
 bool SurfaceToBreatheFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&,BotIntentEmitter& emit, uint32)
 {
-    float bx, by, bz; s.position(bx, by, bz);
-    emit.move_to(bx, by, s.water_surface_z() + 0.5f, /*run*/ true);
-    ai.set_last_rule_fired("idle:surface_to_breathe");
-    return true;
+    return States::SurfaceForAir(s, ai, emit, "idle:surface_to_breathe");
 }
 
 // ---------- idle:res_sick_wait ----------

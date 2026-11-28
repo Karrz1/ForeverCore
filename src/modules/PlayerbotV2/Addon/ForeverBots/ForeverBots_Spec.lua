@@ -1,7 +1,8 @@
 --[[
 ForeverBots_Spec: the Spec page of the bot manager. The picked bot's spec and role, buttons to give it another role (its
-talents follow the role) or to hand the role back to its talents, and Re-pick talents (the starter build of its spec).
-The bot's own orders setrole and talents apply, sent hidden.
+talents follow the role) or to hand the role back to its talents, a button per spec of its class (Elemental or Enhancement
+for a damage shaman, Fire or Frost for a mage), and Re-pick talents (the starter build of its spec).
+The bot's own orders setrole, setspec and talents apply, sent hidden.
 ]]
 
 local ADDON, ns = ...
@@ -24,6 +25,13 @@ for k, v in pairs(SPEC_NAME) do SPEC_NAME[k] = L[v] end
 local CLASS_ROLES = {
     WARRIOR = { "tank", "dps" }, PALADIN = { "tank", "healer", "dps" }, SHAMAN = { "healer", "dps" }, HUNTER = { "dps" },
     ROGUE = { "dps" }, PRIEST = { "healer", "dps" }, MAGE = { "dps" }, WARLOCK = { "dps" }, DRUID = { "tank", "healer", "dps" },
+}
+-- The specs of each class, in talent tab order: "setspec <id>" plays that spec and re-learns its talents. "Damage" alone keeps
+-- the damage spec the bot plays, Enhancement for a new shaman; Elemental was only a whisper away (row 286).
+local CLASS_SPECS = {
+    WARRIOR = { 71, 72, 73 }, PALADIN = { 65, 66, 70 }, HUNTER = { 253, 254, 255 }, ROGUE = { 259, 260, 261 },
+    PRIEST = { 256, 257, 258 }, SHAMAN = { 262, 263, 264 }, MAGE = { 62, 63, 64 }, WARLOCK = { 265, 266, 267 },
+    DRUID = { 102, 103, 104, 105 },
 }
 local ROLE_LABEL = { tank = L["Tank"], healer = L["Healer"], dps = L["Damage"] }
 local ROLE_TOKEN = { TANK = "tank", HEALER = "healer", DPS = "dps" }
@@ -66,6 +74,19 @@ local function Refresh(bot)
             b:Hide()
         end
     end
+    local specs = bot and CLASS_SPECS[bot.class] or {}
+    for i, b in ipairs(pane.specButtons) do
+        local s = specs[i]
+        b.spec = s
+        if s then
+            b:SetText(SPEC_NAME[s] or tostring(s))
+            b:SetEnabled(bot.online and true or false)
+            if bot.specId == s then b:LockHighlight() else b:UnlockHighlight() end
+            b:Show()
+        else
+            b:Hide()
+        end
+    end
     local online = bot and bot.online or false
     pane.auto:SetEnabled(online)
     pane.talents:SetEnabled(online)
@@ -97,6 +118,17 @@ local function Build(p)
     p.talents:SetPoint("TOPLEFT", p, "TOPLEFT", 118, -134)
     p.talents:SetScript("OnClick", function() Order("talents", "apply") end)
     W.Tip(p.talents, L["Re-pick talents"], L["The bot takes the starter talent build of its spec again (not in combat)."])
+    local shead = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    shead:SetPoint("TOPLEFT", 0, -170)
+    shead:SetText(L["Pick a spec"])
+    p.specButtons = {}
+    for i = 1, 4 do
+        local b = W.MakeButton(p, "", 68)
+        b:SetPoint("TOPLEFT", p, "TOPLEFT", (i - 1) * 72, -188)
+        b:SetScript("OnClick", function(self) if self.spec then Order("setspec", self.spec) end end)
+        W.Tip(b, L["Pick a spec"], L["The bot plays this spec from now on (its role follows) and re-learns its talents for it. Kept across relog and Call."])
+        p.specButtons[i] = b
+    end
 end
 
 W.AddTab({

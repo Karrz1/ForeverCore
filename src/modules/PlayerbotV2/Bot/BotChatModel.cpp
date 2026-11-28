@@ -1,6 +1,7 @@
 // BotChatModel - see header.
 
 #include "BotChatModel.h"
+#include "Bot/BotBridgeFormat.h"
 #include "BotBridge.h"
 #include "BotChatModelClient.h"
 #include "BotConversation.h"
@@ -38,6 +39,7 @@ struct Job
     BotId                          bot = 0;
     std::string                    bot_name;
     std::string                    sender_name;
+    std::vector<std::string>       talk_names;   // AskSay: the speakers of the talk so far
     BotChatModel::Channel          channel = BotChatModel::Channel::Whisper;
     uint64                         history_key = 0;
     std::string                    question;
@@ -169,7 +171,10 @@ void WorkerLoop()
         }
         if (job.bot == 0)
             continue;
-        std::string answer = ChatModel::CleanReply(raw, job.bot_name);
+        std::vector<std::string> names = job.talk_names;
+        if (!job.sender_name.empty())
+            names.push_back(job.sender_name);
+        std::string answer = ChatModel::CleanReply(raw, job.bot_name, 250, names);
         if (answer.empty())
         {
             TC_LOG_INFO("playerbot.v2", "[conv] {} <- {}: chat model reply unusable: \"{}\"", job.bot_name, job.sender_name, raw);
@@ -345,6 +350,7 @@ bool BotChatModel::AskSay(Player* bot, std::string const& system, std::string co
     job.bot = id;
     job.bot_name = bot->GetName();
     job.channel = Channel::Say;
+    job.talk_names = Bridge::TalkSpeakers(chat);
     job.history_key = key;
     job.settings = SettingsFrom(cfg);
     job.asked = now;

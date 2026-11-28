@@ -6,6 +6,7 @@
 #include "Bot/QuestDoable.h"
 #include "Bot/QuestObjectiveLocations.h"
 #include "Services.h"
+#include "Fleet/OwnerRegistry.h"
 #include "Util/ConfigReader.h"
 #include "Player.h"
 #include "GameObject.h"
@@ -21,6 +22,7 @@
 #include <cmath>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Playerbot {
 namespace CompanionQuest {
@@ -34,7 +36,8 @@ constexpr float kBotReachYd       = 40.0f;
 // Quest objects: near the owner, without a long detour for the bot.
 constexpr float kObjectOwnerYd    = 25.0f;
 constexpr float kObjectBotYd      = 30.0f;
-// Owner within this of a quest object he needs too: he is about to click it himself, leave it to him.
+// Owner within this of a quest object that goes away when used and that he still needs: he is about to click it himself, leave it
+// to him.
 constexpr float kObjectOwnerAtYd  = 6.0f;
 constexpr size_t kMaxPerList      = 6;
 
@@ -65,6 +68,24 @@ bool FindGiverPos(BotSnapshot const& snap, ObjectGuid guid, float& x, float& y)
     return false;
 }
 
+// "[cq]" line, at most every 15 s per bot: what the companion quest help saw (or why it stopped) for a bot that has quests and a
+// quest partner. Without it a companion that never accepts, hands in or clicks leaves no trace of which gate held it.
+void Trace(Player const* bot, CompanionQuestState const& cq, char const* why)
+{
+    static std::mutex mtx;
+    static std::unordered_map<uint64, uint32> last;
+    uint32 const now = GameTime::GetGameTimeMS();
+    {
+        std::lock_guard lk(mtx);
+        if (last.size() > 4096) last.clear();
+        uint32& at = last[bot->GetGUID().GetCounter()];
+        if (at != 0 && now - at < 15000u) return;
+        at = now;
+    }
+    TC_LOG_INFO("playerbot.v2", "[cq] {} {}: accept {} turn_in {} share {} objects {}, bot in combat {}", bot->GetName(), why,
+        cq.accept.size(), cq.turn_in.size(), cq.share.size(), cq.objects.size(), bot->IsInCombat() ? 1 : 0);
+}
+
 bool ListHas(std::vector<CompanionQuestAction> const& v, ObjectGuid giver, uint32 quest_id)
 {
     for (auto const& a : v)
@@ -72,17 +93,39 @@ bool ListHas(std::vector<CompanionQuestAction> const& v, ObjectGuid giver, uint3
     return false;
 }
 
+bool ObjectiveOpen(QuestObjectiveEntry const& o)
+{
+    if (o.amount <= 0 || o.progress >= o.amount) return false;
+    return !(o.flags & (QUEST_OBJECTIVE_FLAG_HIDDEN | QUEST_OBJECTIVE_FLAG_OPTIONAL));
+}
+
 // Is the bot's open objective served by this game object? GAMEOBJECT objectives name the entry; ITEM
 // objectives are served by a chest / node / prop whose loot (or gameobject_questitem row) yields the item.
 bool ObjectServesObjective(QuestObjectiveEntry const& o, NearbyObject const& go)
 {
-    if (o.amount <= 0 || o.progress >= o.amount) return false;
-    if (o.flags & (/*HIDDEN*/ QUEST_OBJECTIVE_FLAG_HIDDEN | /*OPTIONAL*/ QUEST_OBJECTIVE_FLAG_OPTIONAL)) return false;
-    if (o.type == /*GAMEOBJECT*/ 2)
+    if (!ObjectiveOpen(o)) return false;
+    if (o.type == QUEST_OBJECTIVE_GAMEOBJECT)
         return uint32(o.object_id) == go.entry;
-    if (o.type == /*ITEM*/ 1)
+    if (o.type == QUEST_OBJECTIVE_ITEM)
         return o.object_id > 0 && QuestItemDropsFromGameObject(uint32(o.object_id), go.entry);
     return false;
+}
+
+// The open objective of `q` this object serves, or nullptr. Beside the objectives above: an object that is there for this
+// quest (its template names the quest: a goober, a prop, a chest only a holder of the quest can use) serves the quest's first
+// open objective of any other kind. Those are the "use the X" objectives that a script or the object's spell credits as a
+// kill or an event (a summoned alt stood beside such objects and never used them, row 240).
+QuestObjectiveEntry const* ServedObjective(QuestEntry const& q, NearbyObject const& go, GameObjectTemplate const* tmpl)
+{
+    for (auto const& o : q.objectives)
+        if (ObjectServesObjective(o, go))
+            return &o;
+    if (!tmpl || tmpl->GetQuestID() != q.quest_id)
+        return nullptr;
+    for (auto const& o : q.objectives)
+        if (ObjectiveOpen(o) && o.type != QUEST_OBJECTIVE_GAMEOBJECT && o.type != QUEST_OBJECTIVE_ITEM)
+            return &o;
+    return nullptr;
 }
 
 } // namespace
@@ -121,6 +164,25 @@ std::string QuestLabel(uint32 quest_id)
     return "quest " + std::to_string(quest_id);
 }
 
+bool QuestStartedByItemOnly(uint32 quest_id)
+{
+    static std::unordered_set<uint32> item_only;
+    static std::once_flag built;
+    std::call_once(built, []
+    {
+        std::unordered_set<uint32> given;   // quests a creature or game object hands out
+        for (auto const& [giver, q] : *sObjectMgr->GetCreatureQuestRelationMapHACK())
+            given.insert(q);
+        for (auto const& [giver, q] : *sObjectMgr->GetGOQuestRelationMapHACK())
+            given.insert(q);
+        for (auto const& [entry, tmpl] : sObjectMgr->GetItemTemplateStore())
+            if (uint32 const q = tmpl.GetStartQuest())
+                if (!given.contains(q))
+                    item_only.insert(q);
+    });
+    return item_only.contains(quest_id);
+}
+
 bool BotCanTake(Player* bot, uint32 quest_id)
 {
     return bot && bot->SatisfyQuestLog(false) && BotCanStillTakeQuestForHub(bot, quest_id);
@@ -133,8 +195,14 @@ void BuildState(Player* bot, BotAI* ai, BotSnapshot& snap)
     // The quest partner is the owner, or, for a world bot a player invited (no owner), the player who leads the group: he gets the same
     // accept / turn-in / share / quest-object help (a grouped world bot used to leave a finished quest unrewarded).
     ObjectGuid const partner = snap.owner_in_group ? snap.owner_guid : (snap.led_by_player ? snap.controller_guid : ObjectGuid::Empty);
-    if (!bot || partner.IsEmpty() || !bot->IsAlive())
+    if (!bot || partner.IsEmpty())
         return;
+    bool const trace = !snap.quest_log.quests.empty() && Services::Owners().OwnerCharacter(bot->GetGUID().GetCounter()) != 0;
+    if (!bot->IsAlive())
+    {
+        if (trace) Trace(bot, cq, "dead");
+        return;
+    }
     if (bot->InBattleground() || bot->InArena())
         return;
     ConfigReader const& cfg = Services::Config();
@@ -147,7 +215,10 @@ void BuildState(Player* bot, BotAI* ai, BotSnapshot& snap)
 
     Player* owner = ObjectAccessor::FindConnectedPlayer(partner);
     if (!owner || !owner->IsInWorld() || owner->GetMapId() != bot->GetMapId() || owner == bot)
+    {
+        if (trace) Trace(bot, cq, owner == bot ? "partner is the bot itself" : "partner offline or on another map");
         return;
+    }
     cq.owner_here = true;
     cq.owner_x = owner->GetPositionX();
     cq.owner_y = owner->GetPositionY();
@@ -172,7 +243,9 @@ void BuildState(Player* bot, BotAI* ai, BotSnapshot& snap)
                 if (ListHas(cq.accept, giver, qid)) continue;
                 if (bot->GetQuestStatus(qid) != QUEST_STATUS_NONE) continue;
                 QuestStatus const os = owner->GetQuestStatus(qid);
-                bool const owner_holds = os == QUEST_STATUS_INCOMPLETE;
+                // Complete counts: a quest with nothing to do but hand it in (a note found at a camp, quest 79008) is complete
+                // the moment the owner takes it, and the companion never followed him into it.
+                bool const owner_holds = os == QUEST_STATUS_INCOMPLETE || os == QUEST_STATUS_COMPLETE;
                 if (!owner_holds && !accept_all) continue;
                 // The player holds the quest: the companion takes it too, whatever other bots elsewhere gave up on.
                 if (ai && ai->quest_blacklisted(qid, now_ms, /*fleet_memory*/ !owner_holds)) continue;
@@ -193,6 +266,27 @@ void BuildState(Player* bot, BotAI* ai, BotSnapshot& snap)
         {
             if (o.go_type != GAMEOBJECT_TYPE_QUESTGIVER) continue;
             consider(o.guid, o.x, o.y, sObjectMgr->GetGOQuestRelations(o.entry));
+        }
+        // A quest an item starts (a crest from a dungeon boss, a note): no giver to walk to, and the one item went to the owner.
+        // On his "accept" the companion takes it from him like a shared quest (row 240: Crest of Lordaeron 95189).
+        if (accept_all && Dist2d(bx, by, cq.owner_x, cq.owner_y) <= kBotReachYd)
+        {
+            for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE && cq.accept.size() < kMaxPerList; ++slot)
+            {
+                uint32 const qid = owner->GetQuestSlotQuestId(slot);
+                if (qid == 0 || !QuestStartedByItemOnly(qid)) continue;
+                QuestStatus const os = owner->GetQuestStatus(qid);
+                if (os != QUEST_STATUS_INCOMPLETE && os != QUEST_STATUS_COMPLETE) continue;
+                if (bot->GetQuestStatus(qid) != QUEST_STATUS_NONE) continue;
+                if (ListHas(cq.accept, owner->GetGUID(), qid)) continue;
+                if (ai && ai->quest_blacklisted(qid, now_ms, /*fleet_memory*/ false)) continue;
+                if (!BotCanTake(bot, qid)) continue;
+                CompanionQuestAction a;
+                a.giver = owner->GetGUID();
+                a.quest_id = qid;
+                a.via_order = true;
+                cq.accept.push_back(a);
+            }
         }
     }
 
@@ -288,21 +382,26 @@ void BuildState(Player* bot, BotAI* ai, BotSnapshot& snap)
         {
             if (cq.objects.size() >= kMaxPerList) break;
             if (go.go_type != GAMEOBJECT_TYPE_CHEST && go.go_type != GAMEOBJECT_TYPE_GOOBER &&
-                go.go_type != GAMEOBJECT_TYPE_GATHERING_NODE && go.go_type != GAMEOBJECT_TYPE_GENERIC)
+                go.go_type != GAMEOBJECT_TYPE_GATHERING_NODE && go.go_type != GAMEOBJECT_TYPE_GENERIC &&
+                go.go_type != GAMEOBJECT_TYPE_BUTTON)
                 continue;
             if (Dist2d(bx, by, go.x, go.y) > kObjectBotYd) continue;
             float const od = Dist2d(cq.owner_x, cq.owner_y, go.x, go.y);
             if (od > kObjectOwnerYd) continue;
+            GameObjectTemplate const* tmpl = sObjectMgr->GetGameObjectTemplate(go.entry);
             for (auto const& q : snap.quest_log.quests)
             {
                 if (q.state == 1) continue;
-                bool served = false;
-                for (auto const& o : q.objectives)
-                    if (ObjectServesObjective(o, go)) { served = true; break; }
+                QuestObjectiveEntry const* served = ServedObjective(q, go, tmpl);
                 if (!served) continue;
-                // The owner is standing at it on the same quest: he clicks it first (a quest prop can despawn
-                // for everyone); the bot takes it once he steps away, or at once when he does not need it.
-                if (od <= kObjectOwnerAtYd && owner->GetQuestStatus(q.quest_id) == QUEST_STATUS_INCOMPLETE) continue;
+                // The owner is standing at an object that goes away when used and still needs it for the same objective: he
+                // clicks it first; the bot takes it once he steps away or has his credit. An object every holder of the quest
+                // can use (most quest props and goobers) is used at once: an owner who clicked it and then waited beside it for
+                // his summoned alt held the alt back for good (row 240).
+                if (od <= kObjectOwnerAtYd && tmpl && tmpl->IsDespawnAtAction() &&
+                    owner->GetQuestStatus(q.quest_id) == QUEST_STATUS_INCOMPLETE &&
+                    !owner->IsQuestObjectiveComplete(q.quest_id, served->id))
+                    continue;
                 CompanionQuestObject co;
                 co.go = go.guid;
                 co.entry = go.entry;
@@ -312,6 +411,8 @@ void BuildState(Player* bot, BotAI* ai, BotSnapshot& snap)
             }
         }
     }
+    if (trace)
+        Trace(bot, cq, owner->IsInCombat() ? "built, partner in combat" : "built");
 }
 
 } // namespace CompanionQuest

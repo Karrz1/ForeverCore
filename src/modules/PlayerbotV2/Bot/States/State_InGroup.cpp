@@ -218,7 +218,9 @@ void DispatchInGroup(BotAI& ai,
     // When THIS bot is leader AND any non-bot human is in the group,
     // hand over leadership. Picks the first non-bot human in the
     // member list (stable enough; could be refined to prefer owner).
-    if (group.leader() == snapshot.raw().guid)
+    // A self bot is that human: it keeps the lead (selfbot-loot af59c: it handed the group to the other player at once, then counted
+    // as led by him and left every corpse of the party).
+    if (group.leader() == snapshot.raw().guid && !snapshot.raw().plays_as_human)
     {
         BotRegistry& reg_promote = Services::Registry();
         ObjectGuid promote_target;

@@ -145,8 +145,8 @@ TEST_CASE("BotLocale: per-bot confirmations keep the bot's name", "[BotLocale]")
 
 TEST_CASE("BotLocale: the tank lead lines keep the tank's name", "[BotLocale]")
 {
-    CHECK(Translate(Lang::Ru, "Raveni leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.") ==
-          "Raveni ведет группу по подземелью: пулит по одной группе мобов и ждет ману и вас. Скажите 'lead pause', чтобы он ждал, 'lead off', чтобы вести самому.");
+    CHECK(Translate(Lang::Ru, "Raveni leads the dungeon now: it pulls pack by pack and waits for you, and before a boss for a healer low on mana. Say 'lead pause' to hold, 'lead off' to lead yourself.") ==
+          "Raveni ведет группу по подземелью: пулит по одной группе мобов и ждет вас, а перед боссом и лекаря, если у него мало маны. Скажите 'lead pause', чтобы он ждал, 'lead off', чтобы вести самому.");
     CHECK(Translate(Lang::Ru, "Raveni holds here and pulls nothing until you say 'go'.") == "Raveni ждет здесь и никого не пулит, пока вы не скажете 'go'.");
     CHECK(Translate(Lang::Ru, "waiting for mana") == "жду ману");
     CHECK(Translate(Lang::Ru, "You lead again: your bots follow you.") == "Снова ведете вы: ваши боты следуют за вами.");
@@ -334,5 +334,17 @@ TEST_CASE("BotLocale: template syntax", "[BotLocale]")
     CHECK(c.Translate("level 45!") == "ур. 45!");
     CHECK(c.Translate("level x!") == "level x!");   // {#} takes a number only
 }
+
+TEST_CASE("BotLocale: the gear mode lines say the tier sets start at the level cap", "[BotLocale]")
+{
+    // AveenZero, playerbots #12 11-24: "gear t3" and Regear all on a priest below 60 left its weapon, and the English lines said nothing why.
+    CHECK(Translate(Lang::Ru, "Kelna: 3 slot(s) regeared. Gear t3 starts at level 60; below that it wears gear for its level (match).") ==
+          "Kelna: переодето ячеек: 3. Экипировка t3 начинается с 60-го уровня; до него спутник носит экипировку по своему уровню (match).");
+    CHECK(Translate(Lang::Ru, "Kelna: 3 slot(s) regeared.") == "Kelna: переодето ячеек: 3.");
+    CHECK(Translate(Lang::Ru, "Kelna: gear mode t3 (this applies at level 60; below that: match)") ==
+          "Kelna: экипировка спутников: t3 (действует с 60-го уровня; до него: match)");
+    CHECK(Translate(Lang::Ru, "gear mode best") == "экипировка спутников: best");
+}
+
 
 #endif

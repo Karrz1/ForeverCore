@@ -8,6 +8,7 @@
 // its ranks ascend by base level. A real chain wins where there is one.
 #pragma once
 
+#include "DB2Structure.h"
 #include "Define.h"
 #include "Log.h"
 #include "SpellInfo.h"
@@ -40,6 +41,20 @@ inline std::string KeyOf(SpellInfo const* si, LocaleConstant loc)
            std::to_string(uint32(e0.ApplyAuraName)) + '|' + (si->IsPassive() ? 'p' : 'a');
 }
 
+// A spell the class can never learn: it has skill line abilities and every one of them is NeverLearned. The Forever client
+// carries no-rank copies of some class spells next to their real ranks (Holy Light 19968/19980/19981/19982 with 1 healing,
+// Flash of Light 19993): same name, family and first effect, so without this they joined the family as its "highest" rank.
+inline bool IsNeverLearned(uint32 spell_id)
+{
+    SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spell_id);
+    if (bounds.first == bounds.second)
+        return false;
+    for (auto it = bounds.first; it != bounds.second; ++it)
+        if (it->second->GetAcquireMethod() != SkillLineAbilityAcquireMethod::NeverLearned)
+            return false;
+    return true;
+}
+
 inline Index const& GetIndex()
 {
     static Index idx;
@@ -69,6 +84,19 @@ inline Index const& GetIndex()
                 uint32 const la = sa ? sa->BaseLevel : 0, lb = sb ? sb->BaseLevel : 0;
                 return la != lb ? la < lb : a < b;
             });
+        // Never-learnable copies leave a family that has a learnable rank (they keep pointing at it through family_of, so a copy
+        // a bot already has in its book still resolves to the real ranks). The Forever client's 1-point Holy Light 19981 sorted
+        // after rank 2 639 (both base level 6) and paladin bots healed for 1 (VempirE, Dumpins, y_dem, Discord 2026-11-24).
+        uint32 dropped = 0;
+        for (auto& f : idx.families)
+        {
+            if (f.size() < 2 || std::all_of(f.begin(), f.end(), IsNeverLearned))
+                continue;
+            size_t const before = f.size();
+            std::erase_if(f, IsNeverLearned);
+            dropped += uint32(before - f.size());
+        }
+        TC_LOG_INFO("playerbot.v2", "[spell_data] {} never-learnable spell copies left out of their rank families", dropped);
         // [spell_data] (client moves 70205 -> 70291): which of the curses and tank / raid debuff spells the loaded DB2 data carries and how
         // many ranks each family has, once at the first lookup. Curse of the Elements 1490 and Curse of Shadow 17862 were missing in 70205.
         for (uint32 const id : { 704u, 702u, 980u, 1490u, 17862u, 1714u, 8647u, 7386u, 20271u, 1130u })
@@ -84,6 +112,8 @@ inline Index const& GetIndex()
 }
 
 } // namespace detail
+
+using detail::IsNeverLearned;
 
 // Ranks of the spell, lowest first: the spell data's chain ranks together with every spell of the same family. The two overlap for
 // most spells and differ for some: Mark of the Wild 1126 has a chain that holds only part of its ranks, and a bot that cast a rank

@@ -143,6 +143,10 @@ struct ScenarioDef
     // like the owner: he walks the dungeon's route, stops at the next pack, says "pull back" with it selected (the tank pulls it to him),
     // "attack" once the tank has it, fights the tank's target, and walks on when the group has its health and mana back.
     bool player_lead = false;
+    // "Tank leads" (`lead on`): the stand-in is made the group leader and a player as above, but plays the player who follows his tank
+    // (PlayStandIn) while the bot tank leads the run. The run fails if the tank ever holds a trash pull for mana (limits.no_mana_hold):
+    // a player's five-man waits for mana only before a boss, for a healer low on it (GitHub #23, 2026-11-22).
+    bool tank_lead = false;
     // Checkpoint starts (`scenario run <name>@<key>`): the squad enters at the entrance as usual, then is moved to a spot in sight of the first
     // spawn of the checkpoint's creature (a boss or a pack's mob) and plays on from there, bot-led and with no Hold, so a run does not replay
     // the part that is already solved. The goal and the first-death rule stay. Earlier bosses stay alive in the instance.
@@ -843,8 +847,11 @@ inline constexpr RaidBossRow kNaxxBosses[] = {
       15952, "Maexxna",                20 }, 48.f),   // sees 40 y
     { "naxx_noth",       "Naxxramas: 40 level 60 raiders to Noth the Plaguebringer (the curse dispelled first, spread, balcony adds)",
       15954, "Noth the Plaguebringer", 20 },
-    { "naxx_heigan",     "Naxxramas: 40 level 60 raiders to Heigan the Unclean (the eruption dance, Decrepit Fever, Mana Burn range)",
-      15936, "Heigan the Unclean",     20 },
+    // The ring search landed the raid at 2827.0,-3685.0 (40 y east of him): in his doorway, past his leash line (he evades east of x 2825,
+    // classic_instance_naxxramas.cpp HandleEvadeOutOfHome) and past the entrance that shuts 15 s into the fight. naxx_heigan r3af55-1: a
+    // druid there drew him over the line and he evaded at 32 s. The raid lands inside, 40 y north of him on the room's floor.
+    Staged({ "naxx_heigan",     "Naxxramas: 40 level 60 raiders to Heigan the Unclean (the eruption dance, Decrepit Fever, Mana Burn range)",
+      15936, "Heigan the Unclean",     20 }, 2800.0f, -3668.0f, 273.8f),
     { "naxx_loatheb",    "Naxxramas: 40 level 60 raiders to Loatheb (spores, Corrupted Mind heal rotation)",
       16011, "Loatheb",                25 },
     // The fight opens on a priest's Mind Control on an understudy (RaidMechanics_Naxx.cpp, NaxxPrePullRazuvious); the main tank's order is
@@ -1265,6 +1272,21 @@ inline std::vector<ScenarioDef> const& ScenarioCatalogue()
                 // Ragefire, 40 minutes: RC10 reached route point 50 of 54 at 1737 s of its 1800, 54 of its 62 waits on the 60 % led rest.
                 if (base == "rfc_oggleflint")
                     l.timeout_ms = 40u * 60u * 1000u;
+                // The same run with the bot tank leading and the rogue following it: rfc_oggleflint_tanklead.
+                if (base == "rfc_oggleflint")
+                {
+                    ScenarioDef t = v[plain_at];
+                    s_led_names.push_back(base + "_tanklead");
+                    s_led_names.push_back(std::string(r.summary) + ", the tank leads (lead on): no stop for mana on trash");
+                    t.name = s_led_names[s_led_names.size() - 2].c_str();
+                    t.summary = s_led_names.back().c_str();
+                    t.stand_in = "Scnrogue";
+                    t.tank_lead = true;
+                    t.limits.no_mana_hold = true;
+                    t.limits.pull_ready_mana_pct = 60.f;   // a player's bots drink below 60 % (Classic::kLedDrinkBelowManaPct)
+                    t.timeout_ms = 40u * 60u * 1000u;
+                    v.push_back(std::move(t));
+                }
                 v.push_back(std::move(l));
             }
             // The Library at 36 with an owner's two orders a bot-only squad never gets (test items 4 and 19 of the dungeon list): the
@@ -1314,6 +1336,18 @@ inline std::vector<ScenarioDef> const& ScenarioCatalogue()
             // No route yet, so no route crumbs to stage on: the runner searches a ring round each boss. The Abandoned has no spawn
             // (the statue summons him), so he has no checkpoint: a checkpoint starts the squad in sight of its creature's spawn.
             d.checkpoints = { { "witherfang", 250483 }, { "baron", 250660 }, { "rathmael", 250657 }, { "bjork", 256097 } };
+            v.push_back(std::move(d));
+        }
+        // Excavation Site: Wetlands (Forever, map 2998), the entrance to the Relic Guardian: Saltspine, Shadetooth, the Highland Horror,
+        // then the Relic Guardian, whom the tank wakes at the Archival Panel (ExcavationSiteScript's order). Bot-led, at 30.
+        // Until now only exc_saltspine ran here, so no bot group had ever finished the dungeon.
+        {
+            static constexpr DungeonRow kExc = { "exc_full", "Excavation Site: Wetlands: level 30 party, entrance to the Relic Guardian",
+                                                 2998, -3698.41f, -2355.64f, 165.531f, 296.f, 30, 260326, "Relic Guardian", 60 };
+            ScenarioDef d = MakeDungeonScenario(kExc);
+            d.full_clear = true;
+            // No route yet, so no route crumbs to stage on: the runner searches a ring round each boss.
+            d.checkpoints = { { "saltspine", 260322 }, { "shadetooth", 260325 }, { "horror", 260808 }, { "guardian", 260326 } };
             v.push_back(std::move(d));
         }
         // The Drowned City (Forever, map 2970), the cave landing to Min'loth the Serpent: Zul'Alai, Var'Taka, Captain Dreadrise,
@@ -1572,6 +1606,10 @@ inline std::vector<ScenarioDef> const& ScenarioCatalogue()
                               { "smite", 646, -2.585f, -766.284f, 6.172f },   // [41] the ramp up to the ship
                               { "greenskin", 647, -89.643f, -781.119f, 29.200f },   // [47] the gangway
                               { "vancleef", 639, -49.167f, -795.944f, 38.956f } };   // [50] the deck
+            // Greenskin's gangway and VanCleef's deck are one fight as often as not: VanCleef came down into the Greenskin pull and died
+            // first, with Greenskin 4 y from the tank, and the run ended as "Greenskin skipped" (deadmines_full af58). The goal counts once
+            // the checkpoint bosses are dead too, in any order.
+            d.goal_after_checkpoints = true;
             // The same clear with the rogue played like the owner's own: it follows the tank and hits the tank's target, nothing else.
             ScenarioDef p = d;
             p.name = "deadmines_player";
@@ -1580,64 +1618,68 @@ inline std::vector<ScenarioDef> const& ScenarioCatalogue()
             v.push_back(std::move(d));
             v.push_back(std::move(p));
         }
-        // Alcaz Prison (Forever, map 2994), the landing on the entrance stair to Blazeroar: Overseer Wrex, Katerina the Cleaner, The
-        // Questioner, Tidemistress Ca'zass, Blazeroar (the route and AlcazPrisonScript's order). Bot-led, the standard five at 53.
+        // Alcaz Prison (Forever, map 2994), live's landing on the entrance stair to The Questioner, in live's kill order (Karrz's capture,
+        // 26 Nov): Overseer Wrex, then the Maximum Security Door (the rogue picks it, as Karrz did) to Katerina the Cleaner and
+        // Blazeroar, then the self-closing Prison Gate to The Questioner (the route and AlcazPrisonScript's order). Tidemistress Ca'zass
+        // is not spawned (live has her nowhere). Bot-led, the standard five at 53 (live's bosses are 50-53).
         {
-            static constexpr DungeonRow kAlcaz = { "alcaz_full", "Alcaz Prison: level 53 party, entrance to Blazeroar",
-                                                   2994, -8796.8f, 2838.1f, 29.9f, 90.f, 53, 255702, "Blazeroar", 45 };
+            static constexpr DungeonRow kAlcaz = { "alcaz_full", "Alcaz Prison: level 53 party, entrance to The Questioner",
+                                                   2994, -8796.59f, 2838.67f, 28.77f, 89.2f, 53, 256236, "The Questioner", 45 };
             ScenarioDef d = MakeDungeonScenario(kAlcaz);
-            // The prison's creature spawns span x -8916..-8728, y 2838..3003, z 5..30; 50 y around them.
-            d.limits.bounds = { true, -8966.f, -8678.f, 2788.f, 3053.f, -20.f, 80.f };
+            // Live's creature and object spawns span x -8927..-8723, y 2826..3007, z 6..32; 50 y around them.
+            d.limits.bounds = { true, -8977.f, -8673.f, 2776.f, 3057.f, -44.f, 82.f };
             d.full_clear = true;
-            // Staging spots: crumbs of the 0043 route 30-40 y of walk before each boss.
-            d.checkpoints = { { "wrex", 255391, -8762.13f, 2882.13f, 15.31f },
-                              { "katerina", 257016, -8823.64f, 2889.6f, 15.58f },
-                              { "questioner", 256236, -8852.4f, 2889.38f, 14.02f },
-                              { "cazass", 255997, -8763.29f, 2924.71f, 6.69f },
-                              { "blazeroar", 255702, -8837.6f, 2968.53f, 7.04f } };
+            // Staging spots: crumbs of the 0071 route 33-45 y of walk before each boss.
+            d.checkpoints = { { "wrex", 255391, -8873.15f, 2887.47f, 14.2f },
+                              { "katerina", 257016, -8807.93f, 2949.0f, 7.22f },
+                              { "blazeroar", 255702, -8858.47f, 2966.2f, 7.22f },
+                              { "questioner", 256236, -8764.98f, 2887.64f, 15.13f } };
+            // The goal counts once the checkpoint bosses are dead too.
+            d.goal_after_checkpoints = true;
             v.push_back(std::move(d));
         }
-        // Blackmaw Hold (Forever, map 2974), the landing in the entrance tunnel to Varrox Bleakhoof: Withermaw, Bonesnout the
-        // Unbroken, Impaan the Imprisoner, the Unbound Spirit (Elder Bramblesnap's ritual starts when the party comes near), the
-        // Blackmaw Behemoth with Clawbert, Elder Shaman Bloodmane, Varrox (the route and BlackmawHoldScript's order). Bot-led, at 57.
+        // Blackmaw Hold (Forever, map 2974), live's landing at the tunnel's north end to Varrox Bleakhoof: Withermaw, Bonesnout the
+        // Unbroken, Impaan the Imprisoner, the Unbound Spirit (Elder Bramblesnap's ritual starts when the party comes near), Elder
+        // Shaman Bloodmane, the Blackmaw Behemoth with Clawbert, then the 200 y fall into the pool and Varrox in the chamber below
+        // (the route and BlackmawHoldScript's order). Bot-led, at 60: live's bosses are 57-60 (world 2026_11_26_42).
         {
-            static constexpr DungeonRow kBlackmaw = { "blackmaw_full", "Blackmaw Hold: level 57 party, entrance to Varrox Bleakhoof",
-                                                      2974, 3470.f, 3690.f, 301.9f, 90.f, 57, 247234, "Varrox Bleakhoof", 75 };
+            static constexpr DungeonRow kBlackmaw = { "blackmaw_full", "Blackmaw Hold: level 60 party, entrance to Varrox Bleakhoof",
+                                                      2974, 3375.09f, 3822.24f, 306.98f, 274.3f, 60, 247234, "Varrox Bleakhoof", 75 };
             ScenarioDef d = MakeDungeonScenario(kBlackmaw);
-            // The hold's creature spawns span x 3255..3745, y 2819..3712, z 136..361; 50 y around them.
-            d.limits.bounds = { true, 3205.f, 3795.f, 2769.f, 3762.f, 86.f, 411.f };
+            // Live's creature and object spawns and the landing span x 3238..3749, y 2789..3830, z -62..360; 50 y round them.
+            d.limits.bounds = { true, 3188.f, 3799.f, 2739.f, 3880.f, -112.f, 410.f };
             d.full_clear = true;
-            // Staging spots: crumbs of the 0044 route 35-60 y of walk before each boss.
-            d.checkpoints = { { "withermaw", 247195, 3701.07f, 3371.38f, 289.5f },
-                              { "bonesnout", 247198, 3424.16f, 3379.36f, 254.1f },
-                              { "impaan", 247206, 3317.33f, 3529.87f, 347.07f },
-                              { "spirit", 247231, 3293.4f, 2942.53f, 210.16f },
-                              { "behemoth", 247207, 3622.4f, 2892.76f, 172.65f },
-                              { "bloodmane", 247209, 3521.33f, 2971.67f, 146.29f },
-                              { "varrox", 247234, 3571.87f, 2869.2f, 169.49f } };
+            // Staging spots: crumbs of the 0069 route 39-48 y of walk before each boss (Varrox's is on the shore below the fall).
+            d.checkpoints = { { "withermaw", 247195, 3697.27f, 3359.0f, 287.47f },
+                              { "bonesnout", 247198, 3338.67f, 3402.67f, 251.34f },
+                              { "impaan", 247206, 3318.31f, 3616.27f, 343.98f },
+                              { "spirit", 247231, 3276.0f, 2933.81f, 207.41f },
+                              { "bloodmane", 247209, 3637.33f, 2868.27f, 172.74f },
+                              { "behemoth", 247207, 3510.08f, 2977.12f, 145.17f },
+                              { "varrox", 247234, 3463.84f, 2962.83f, -63.1f } };
             v.push_back(std::move(d));
         }
-        // The Shaper's Terrace (Forever, map 3001), the landing beside the client's trigger of the dungeon to Nanaya: Venomridge, Bolt,
-        // Cinder, Tor'Rel and Izha'Rel, Snowtalon, Vitrix, Titanosaur, Thunderhoof, King Op, the Direhorn Matriarch, Nanaya (the route
-        // and ShapersTerraceScript's order). Bot-led, at 59.
+        // The Shaper's Terrace (Forever, map 3001), live's landing ledge to Nanaya: the jump into the pool, then Cinder,
+        // Snowtalon, Vitrix, Tor'Rel and Izha'Rel, Venomridge, Bolt, Thunderhoof, King Op, the Direhorn Matriarch, Nanaya (the route
+        // and ShapersTerraceScript's order). Bot-led, at 60: live's bosses are 61-62 (world 2026_11_25_83/84), made for a party at 60.
+        // Not the Titanosaur: he stands behind the Titanic Door, live's locked raid gate.
         {
-            static constexpr DungeonRow kShapers = { "shapers_full", "The Shaper's Terrace: level 59 party, entrance to Nanaya",
-                                                     3001, -5792.65f, -1252.98f, -5.95f, 75.f, 59, 261809, "Nanaya", 90 };
+            static constexpr DungeonRow kShapers = { "shapers_full", "The Shaper's Terrace: level 60 party, entrance to Nanaya",
+                                                     3001, -5921.34f, -975.49f, 63.26f, 75.f, 60, 261809, "Nanaya", 90 };
             ScenarioDef d = MakeDungeonScenario(kShapers);
-            // The terrace's creature spawns span x -6038..-5496, y -1829..-554, z -6..113; 50 y around them.
-            d.limits.bounds = { true, -6088.f, -5446.f, -1879.f, -504.f, -56.f, 163.f };
+            // Live's creature spawns span x -6112..-5418, y -1971..-555, z -8..152 (the fliers over the hills left out); 50 y round them.
+            d.limits.bounds = { true, -6162.f, -5368.f, -2021.f, -505.f, -58.f, 202.f };
             d.full_clear = true;
-            // Staging spots: crumbs of the 0045 route 35-55 y of walk before each boss.
-            d.checkpoints = { { "venomridge", 261813, -5882.29f, -1233.07f, 6.88f },
-                              { "bolt", 262081, -5920.0f, -1226.67f, 9.37f },
-                              { "cinder", 261974, -5909.07f, -821.07f, 98.06f },
-                              { "torrel", 261811, -5728.0f, -736.0f, 31.33f },
-                              { "snowtalon", 262297, -5685.33f, -650.67f, 20.0f },
-                              { "vitrix", 272561, -5536.91f, -820.75f, 18.66f },
-                              { "titanosaur", 253201, -5664.93f, -1409.13f, 30.66f },
-                              { "thunderhoof", 261812, -5983.73f, -1547.64f, 7.57f },
-                              { "kingop", 261993, -5988.62f, -1808.44f, 44.53f },
-                              { "direhorn", 262127, -5770.35f, -1758.24f, 21.19f },
+            // Staging spots: crumbs of the route 26-56 y of walk before each boss (Bolt's is Venomridge's spot, 25 y from him).
+            d.checkpoints = { { "cinder", 261974, -5907.38f, -828.89f, 104.17f },
+                              { "snowtalon", 262297, -5483.11f, -809.87f, 20.62f },
+                              { "vitrix", 272561, -5484.2f, -813.07f, 19.0f },
+                              { "torrel", 261811, -5644.64f, -1205.6f, 34.6f },
+                              { "venomridge", 261813, -5854.45f, -1186.03f, -0.71f },
+                              { "bolt", 262081, -5908.77f, -1192.19f, 6.76f },
+                              { "thunderhoof", 261812, -5962.67f, -1418.67f, 10.77f },
+                              { "kingop", 261993, -6061.24f, -1946.13f, 48.8f },
+                              { "direhorn", 262127, -5900.84f, -1738.36f, 14.04f },
                               { "nanaya", 261809, -5813.33f, -1589.33f, 37.33f } };
             v.push_back(std::move(d));
         }

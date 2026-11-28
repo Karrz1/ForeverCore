@@ -1,6 +1,10 @@
 #include "OwnerRegistry.h"
 #include "Bot/CcDeny.h"
+#include "BotAccountMgr.h"
+#include "CharacterCache.h"
 #include "DatabaseEnv.h"
+#include "ObjectGuid.h"
+#include "Services.h"
 #include "Log.h"
 #include <algorithm>
 #include <cctype>
@@ -170,7 +174,12 @@ uint64 OwnerRegistry::OwnerCharacter(BotId bot) const
     if (it->second.player_guid != 0)
         return it->second.player_guid;
     auto online = online_owner_character_.find(it->second.account_id);
-    return online == online_owner_character_.end() ? 0 : online->second;
+    // A character never owns itself. A self bot (.playerbot self) is bound to its own account, and the character online on that account
+    // is the self bot: taken as its own owner, it counted as "its owner is in the group" in every group it was in, so it looted like a
+    // companion (only its own quest drops) and left every corpse of the party (selfbot-loot af59 check, BUGS-ALL #207).
+    if (online == online_owner_character_.end() || online->second == bot)
+        return 0;
+    return online->second;
 }
 
 void OwnerRegistry::SetOwner(BotId bot, uint32 account_id, uint64 player_guid)
@@ -203,6 +212,12 @@ void OwnerRegistry::SetOwner(BotId bot, uint32 account_id, uint64 player_guid)
         "SET owner_account_id = {}, owner_player_guid = {}, companion_saved = {}, companion_saved_by = {} "
         "WHERE character_guid_low = {}",
         account_id, player_guid, saved ? 1 : 0, saved_by, bot);
+    // A pool bot let go (dismissed for good, unmarked, owner cleared) drops its last owner's standing orders: back in the world it
+    // would otherwise roll on everything and gather for nobody, and its next owner would inherit them. A player's own alt keeps
+    // them: they are its player's, and a dismissed alt is summoned again with them (row 245).
+    if (account_id == 0 && player_guid == 0 && Services::Initialized() &&
+        Services::Accounts().is_pool_account(sCharacterCache->GetCharacterAccountIdByGuid(ObjectGuid::Create<HighGuid::Player>(bot))))
+        SaveOwnerOrders(bot, 0);
 }
 
 bool OwnerRegistry::SavedBy(BotId bot, uint64 character) const
@@ -623,7 +638,13 @@ OwnerRegistry::SquadState OwnerRegistry::SquadStateFromFields(Field const* f)
     out.formation_slot   = f[1].GetUInt8();
     out.follow_distance  = f[2].GetFloat();
     out.owner_verbose    = f[3].GetBool();
+    out.owner_orders     = f[4].GetUInt8();
     return out;
+}
+
+void OwnerRegistry::SaveOwnerOrders(BotId bot, uint8 orders) const
+{
+    Db().DirectPExecute("UPDATE playerbot_v2_character SET owner_orders = {} WHERE character_guid_low = {}", uint32(orders), bot);
 }
 
 void OwnerRegistry::SaveSquadState(BotId bot, SquadState const& s) const

@@ -28,6 +28,13 @@ public:
         };
     }
 
+    std::vector<uint32_t> scripted_spawn_bosses() const override
+    {
+        return {
+            10339,   // Gyth: summoned by Lord Victor Nefarius after the stadium waves (classic_instance_blackrock_spire)
+        };
+    }
+
     DungeonAdvice get_advice(BotSnapshotView const& s) const override
     {
         DungeonAdvice a;

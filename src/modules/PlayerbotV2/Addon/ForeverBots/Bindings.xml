@@ -23,4 +23,6 @@
     <Binding name="CLICK ForeverBotsKeyIgnoreTarget:LeftButton" category="ADDONS"/>
     <Binding name="CLICK ForeverBotsKeyIgnoreClear:LeftButton" category="ADDONS"/>
     <Binding name="CLICK ForeverBotsKeyLazy:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK ForeverBotsKeyLazyHeal:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK ForeverBotsKeyLazyTank:LeftButton" category="ADDONS"/>
 </Bindings>

@@ -664,6 +664,66 @@ std::string CleanSayText(std::string const& raw, std::size_t max_bytes)
 
 namespace {
 
+std::string TrimSpaces(std::string_view s)
+{
+    std::size_t b = 0, e = s.size();
+    while (b < e && (s[b] == ' ' || s[b] == '\t')) ++b;
+    while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t')) --e;
+    return std::string(s.substr(b, e - b));
+}
+
+std::string LowerAscii(std::string s)
+{
+    for (char& c : s)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+} // namespace
+
+std::string StripSpeakerLabel(std::string const& line, std::vector<std::string> const& names)
+{
+    std::size_t const colon = line.find(':');
+    if (colon == std::string::npos || colon > 26)
+        return line;
+    std::string head = TrimSpaces(std::string_view(line).substr(0, colon));
+    if (head.size() >= 2 && ((head.front() == '<' && head.back() == '>') || (head.front() == '[' && head.back() == ']')))
+        head = TrimSpaces(std::string_view(head).substr(1, head.size() - 2));
+    if (head.empty())
+        return line;
+    head = LowerAscii(std::move(head));
+    for (std::string const& n : names)
+        if (!n.empty() && LowerAscii(n) == head)
+        {
+            std::string rest = TrimSpaces(std::string_view(line).substr(colon + 1));
+            return rest.empty() ? line : rest;
+        }
+    return line;
+}
+
+std::vector<std::string> TalkSpeakers(std::string const& talk)
+{
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start < talk.size())
+    {
+        std::size_t const nl = talk.find('\n', start);
+        std::string_view const l = std::string_view(talk).substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (std::size_t const c = l.find(": "); c != std::string_view::npos && c > 0 && c <= 24)
+        {
+            std::string name(l.substr(0, c));
+            if (std::find(out.begin(), out.end(), name) == out.end())
+                out.push_back(std::move(name));
+        }
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+    return out;
+}
+
+namespace {
+
 struct ActWord { Act act; char const* word; };
 constexpr ActWord kActs[] = {
     { Act::Follow, "follow" }, { Act::Stay, "stay" }, { Act::Resume, "resume" }, { Act::Attack, "attack" },

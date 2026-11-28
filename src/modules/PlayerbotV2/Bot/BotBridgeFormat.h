@@ -187,6 +187,15 @@ private:
 // cut to `max_bytes` on a word boundary without splitting a UTF-8 character. Empty when nothing is left.
 std::string CleanSayText(std::string const& raw, std::size_t max_bytes);
 
+// A chat line that opens with a speaker's name as a label ("Name: text", "Name : text", "[Name ]: text", "<Name>: text"), the way
+// a model copies the talk it was shown: the label goes when the name is one of `names` (the bot, the one it answers, the others in
+// its talk; any case). In game the line already carries the speaker's name, so the label read as a second, odd name ("[Botname ]:"
+// in an English talk on a Russian realm, celguar 11-21). The line is returned unchanged when nothing would be left after it.
+std::string StripSpeakerLabel(std::string const& line, std::vector<std::string> const& names);
+
+// The names that open the lines of a talk written as "Name: text" lines (BotChatModel::AskSay / BotBridge::AskTalk's `chat`).
+std::vector<std::string> TalkSpeakers(std::string const& talk);
+
 // ---- actions: the rules that need no game state ----
 
 // What the game side found out about the bot and the one asking. Filled by BotBridge.cpp, read by CheckActionContext.

@@ -30,6 +30,13 @@ public:
         };
     }
 
+    std::vector<uint32_t> scripted_spawn_bosses() const override
+    {
+        return {
+            10439,   // Ramstein the Gorger: summoned by the instance after the abominations (classic_instance_stratholme)
+        };
+    }
+
     DungeonAdvice get_advice(BotSnapshotView const& s) const override
     {
         DungeonAdvice a;

@@ -89,4 +89,49 @@ inline bool SettleKeepsFollowRange(float dx, float dy, float dz, float follow_ra
     return limit > 0.0f && dx * dx + dy * dy + dz * dz < limit * limit;
 }
 
+// A goal under the water: well under the swim z. The navmesh holds deep water as polygons on its surface only, so the polygon nearest
+// such a goal is the surface right over it, not ground a stride off. The far-end snap put a rogue's melee spot by a murloc on the
+// Vile Reef floor 57 y up on the surface (vile_reef_fight af60), and the rogue swam up and down at the surface for the whole fight.
+inline bool IsUnderwaterGoal(float goal_z, float swim_z)
+{
+    return goal_z < swim_z - kDiveMargin;
+}
+
+// One straight swim (no route through the water): across no more than a pool or a flooded hall, longer trips are the router's; down
+// or up as deep as the water goes there. The 40 y cap on the whole leg kept a bot on the surface 57 y over the fight it was ordered to.
+constexpr float kMaxSwimLegAcross = 40.0f;
+constexpr float kMaxSwimLegLength = 90.0f;
+inline bool SwimLegFits(float dxy, float len)
+{
+    return len >= 1.0f && dxy <= kMaxSwimLegAcross && len <= kMaxSwimLegLength;
+}
+
+// A bot under the water by what it is down there for (its fight, or the player who leads its group, himself under the water) stays at
+// that depth: the settle lifted a rogue that catch-up had set beside his leader on the reef floor straight back to the surface, 59 y
+// up (vile_reef_fight af60). Its breath is BreathGoesUp's.
+constexpr float kHoldDepthYards = 12.0f;
+inline bool HoldsDepth(float bot_z, float swim_z, float anchor_dist, float anchor_z)
+{
+    return bot_z < swim_z && anchor_dist <= kHoldDepthYards && IsUnderwaterGoal(anchor_z, swim_z);
+}
+
+// Breath, from the server's own timer (Player::HandleDrowning: it runs down while the head is under water, comes back ten times as fast
+// above it, and stops, -1, once full or for a bot that cannot drown: water breathing, undead's longer breath counted in). A player under
+// water keeps fighting or swimming and goes up when the bar runs short, then stays up until it is full before he dives again. The bot's
+// own 35 s clock counted only the time out of combat: a mage fought on the Vile Reef, sat down to eat at 25 y deep once the fight ended,
+// and drowned before the clock got to 35 s (vile_reef_fight af64). Up with 25 s left: from the reef 60 y down that is 13 s of swimming.
+// `refilling` is the bot's latch across ticks: true from the moment it goes up until the timer stops.
+constexpr int BreathUpAtLeftMs = 25000;
+inline bool BreathGoesUp(int breath_left_ms, bool& refilling)
+{
+    if (breath_left_ms < 0)
+    {
+        refilling = false;
+        return false;
+    }
+    if (breath_left_ms <= BreathUpAtLeftMs)
+        refilling = true;
+    return refilling;
+}
+
 } // namespace Playerbot::BotMovement::Swim

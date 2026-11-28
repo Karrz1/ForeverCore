@@ -18,6 +18,14 @@ public:
     uint32_t  map_id() const override { return 409; }
     char const* name() const override { return "molten_core"; }
 
+    std::vector<uint32_t> scripted_spawn_bosses() const override
+    {
+        return {
+            12018,   // Majordomo Executus: summoned when the eight runes are out (classic_instance_molten_core)
+            11502,   // Ragnaros: summoned by Majordomo's event (classic_boss_majordomo_executus)
+        };
+    }
+
     DungeonAdvice get_advice(BotSnapshotView const& /*s*/) const override
     {
         DungeonAdvice a;

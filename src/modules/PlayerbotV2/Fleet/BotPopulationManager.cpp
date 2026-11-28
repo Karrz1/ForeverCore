@@ -1650,6 +1650,30 @@ Role BotPopulationManager::ApplyCompanionRole(Player* bot, Role requested, char 
     uint8 const cls = bot->GetClass();
     OwnerRegistry& owners = Services::Owners();
 
+    // A player's own character brought as a bot (`.playerbot summon`) plays the spec its own talents say, and nothing here changes
+    // it: no class default spec, no spec or role stored from an earlier call, no raid quota role. Before, every summon pinned one
+    // (a Beast Mastery hunter came as Marksmanship, a protection paladin as a healer) and the talent rules then bought that spec's
+    // talents over the player's own (RU general 11-21: by_hoy_, Alex Black Cat). An owner's /setrole still works for the session
+    // (DeclareRole). At login a spec pinned by an earlier summon is let go.
+    if (IsPlayersOwnCharacter(bot))
+    {
+        bool const login = std::strcmp(where, "login") == 0;
+        if (login)
+        {
+            ::Playerbot::Classic::SetSpecOverride(bot, 0);
+            if (BotAI* ai = Services::Registry().ai(id))
+                ai->set_role_override(Role::Unknown);
+        }
+        uint32 const own_spec = ::Playerbot::Classic::EffectiveSpecId(bot);
+        Role const own_role = IsTankSpec(cls, uint16(own_spec)) ? Role::Tank : IsHealerSpec(cls, uint16(own_spec)) ? Role::Healer : Role::Dps;
+        if (login || requested != Role::Unknown)
+            TC_LOG_INFO("playerbot.v2", "[role] {} is a player's own character: keeps spec {} ({}), nothing pinned ({}{}{})", bot->GetName(),
+                        own_spec, own_role == Role::Tank ? "tank" : own_role == Role::Healer ? "healer" : "dps", where,
+                        requested != Role::Unknown ? ", asked for " : "",
+                        requested == Role::Tank ? "tank" : requested == Role::Healer ? "healer" : requested == Role::Dps ? "dps" : "");
+        return own_role;
+    }
+
     // 1. what the owner asked for now, 2. what is stored with the companion, 3. what its talents say. Only 1 and 2 are pinned and
     // stored; 3 is a guess about a build that may not be bought yet and is never kept (Fleet/CompanionRole.h).
     Role const declared = owners.DeclaredRole(id);
@@ -4065,6 +4089,35 @@ PopulationSnapshot BotPopulationManager::Snapshot() const
     return snap;
 }
 
+// The offline-candidate SELECT: up to 2*cap rows for EACH side, least recently seen first. It used to take 2*cap rows of both sides
+// together; with last_seen_at NULL for every bot (only the queue filler writes it) the order never changed, the window held the same rows
+// every cycle, and a side with none of its bots in them got no logins at all: reconcile stopped at 148/150 Alliance and 145/150 Horde
+// with 3,052 bot characters (ForeverCore issue #386, sqmagellan). One query, two LIMITed halves, so the async path stays one callback.
+static std::string OfflineCandidateSql(uint8 lo, uint8 hi, uint32 cap)
+{
+    static std::string const alliance_races = []
+    {
+        std::string list;
+        for (uint32 race = 1; race < 128; ++race)
+            if (RaceIsAlliance(race))
+                list += (list.empty() ? "" : ",") + std::to_string(race);
+        return list;
+    }();
+    auto half = [&](char const* in)
+    {
+        return Trinity::StringFormat(
+            "(SELECT pv.character_guid_low, c.level, c.race FROM playerbot_v2_character pv "
+            "JOIN characters c ON c.guid = pv.character_guid_low "
+            "WHERE c.level BETWEEN {} AND {} "
+            "AND c.online = 0 "
+            "AND pv.distribution_level > 0 "
+            "AND c.race {} ({}) "
+            "ORDER BY pv.last_seen_at ASC LIMIT {})",
+            uint32(lo), uint32(hi), in, alliance_races, cap * 2);
+    };
+    return half("IN") + " UNION ALL " + half("NOT IN");
+}
+
 void BotPopulationManager::QueueOfflineCandidateFetch(size_t fill_index, uint8 lo, uint8 hi, uint32 cap)
 {
     // Query characters table for V2-marked bots with level ∈ [lo, hi].
@@ -4087,14 +4140,7 @@ void BotPopulationManager::QueueOfflineCandidateFetch(size_t fill_index, uint8 l
     // refuses to start while reconcile_in_progress_, so a bucket can never have
     // two of these outstanding.
     ++reconcile_inflight_;
-    queries_.AddCallback(CharacterDatabase.AsyncQuery(Trinity::StringFormat(
-        "SELECT pv.character_guid_low, c.level, c.race FROM playerbot_v2_character pv "
-        "JOIN characters c ON c.guid = pv.character_guid_low "
-        "WHERE c.level BETWEEN {} AND {} "
-        "AND c.online = 0 "
-        "AND pv.distribution_level > 0 "
-        "ORDER BY pv.last_seen_at ASC LIMIT {}",
-        uint32(lo), uint32(hi), cap * 2).c_str())
+    queries_.AddCallback(CharacterDatabase.AsyncQuery(OfflineCandidateSql(lo, hi, cap).c_str())
         .WithCallback([this, fill_index, gen = reconcile_gen_](QueryResult res)
     {
         // Rows from a cycle the watchdog abandoned: drop them rather than file
@@ -4127,14 +4173,7 @@ BotPopulationManager::FetchOfflineCandidatesSync(uint8 lo, uint8 hi, uint32 cap)
 {
     std::vector<OfflineCandidate> rows;
     SLOW_CALL("FetchOfflineCandidatesSync (database)");
-    auto res = CharacterDatabase.PQuery(
-        "SELECT pv.character_guid_low, c.level, c.race FROM playerbot_v2_character pv "
-        "JOIN characters c ON c.guid = pv.character_guid_low "
-        "WHERE c.level BETWEEN {} AND {} "
-        "AND c.online = 0 "
-        "AND pv.distribution_level > 0 "
-        "ORDER BY pv.last_seen_at ASC LIMIT {}",
-        uint32(lo), uint32(hi), cap * 2);
+    auto res = CharacterDatabase.Query(OfflineCandidateSql(lo, hi, cap).c_str());
     if (!res) return rows;
     do {
         Field* f = res->Fetch();
@@ -4151,17 +4190,16 @@ std::vector<BotPopulationManager::OfflineCandidate>
 BotPopulationManager::FilterOfflineCandidates(std::vector<OfflineCandidate> const& rows,
                                               bool alliance, uint32 cap)
 {
-    // Exactly the client-side filter the synchronous version did, including the
-    // 2*cap row window: the old query's `LIMIT cap*2` is a PREFIX of `rows`
-    // (same ORDER BY, wider limit), so walking only the first 2*cap entries
-    // reproduces its result row for row.
+    // The side's own 2*cap window (OfflineCandidateSql returns up to that many rows per side, each side least recently seen first):
+    // the first 2*cap rows of this side, then the cap.
     std::vector<OfflineCandidate> out;
     if (!cap) return out;
-    size_t const window = std::min<size_t>(rows.size(), size_t(cap) * 2);
-    for (size_t i = 0; i < window; ++i)
+    size_t const window = size_t(cap) * 2;
+    size_t seen = 0;
+    for (OfflineCandidate const& c : rows)
     {
-        OfflineCandidate const& c = rows[i];
         if (c.alliance != alliance) continue;
+        if (++seen > window) break;
         if (Pool::IsScenarioBot(c.char_guid)) continue;   // a scenario test character is never part of the world population
         out.push_back(c);
         if (out.size() >= cap) break;

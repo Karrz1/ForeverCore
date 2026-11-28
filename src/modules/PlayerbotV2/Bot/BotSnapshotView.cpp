@@ -453,6 +453,12 @@ float BotSnapshotView::spell_min_range(uint32 spell_id, NearbyUnit const& t) con
     float min = si->GetMinRange(false);
     if (si->RangeEntry->Flags & SPELL_RANGE_RANGED)
         min += std::max(1.5f + t.combat_reach + 4.0f / 3.0f, 5.0f);   // DEFAULT_PLAYER_COMBAT_REACH + target reach + 4/3, at least NOMINAL_MELEE_RANGE
+    // Spell::CalcMinMaxRange's other branch: a range entry without the ranged flag that has a minimum gets both combat reaches added.
+    // This client's Hunter Range (114, Auto Shot and every shot) has no flags, so against Blazeroar the core's dead zone was 8 + 1.5 + his
+    // reach while this said 8: the hunter "stepped back" to 12 y, still inside, and the core sent it in to melee in front of him
+    // (alcaz_full af70c 2026-11-25, killed by Flame Breath).
+    else if (min > 0.0f)
+        min += 1.5f + t.combat_reach;                                   // DEFAULT_PLAYER_COMBAT_REACH + target reach
     return min;
 }
 

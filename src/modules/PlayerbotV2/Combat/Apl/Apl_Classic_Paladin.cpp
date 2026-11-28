@@ -598,10 +598,29 @@ void DoSaveAlly(ApPredicateContext const& ctx, BotIntentEmitter& e)
     ClassicHeal::EmitHeal(ctx.bot, ctx.group, e, FastHeal(ctx), ClassicHeal::PickPatient(ctx));
 }
 
+// A protection paladin heals itself when nobody else will (VempirE, row 382: "as tank, not even self-heals"; the tank rules had
+// no heal but Lay on Hands): at 35 % or under, with mana for it and no living healer of its group on its map, the fast heal
+// (Flash of Light, before level 20 Holy Light) on itself. With a healer there the tank keeps hitting and the healer heals it.
+bool ShouldTankSelfHeal(ApPredicateContext const& ctx)
+{
+    if (ctx.bot.hp_pct() > 35 || ManaPct(ctx) < 15 || !Ready(ctx, FastHeal(ctx)))
+        return false;
+    if (auto const* members = ctx.group.members())
+        for (GroupMemberSummary const& m : *members)
+            if (m.guid != ctx.bot.raw().guid && m.role == Role::Healer && m.online && m.is_alive && m.map_id == ctx.bot.map_id())
+                return false;
+    return true;
+}
+void DoTankSelfHeal(ApPredicateContext const& ctx, BotIntentEmitter& e)
+{
+    e.cast(FastHeal(ctx), ctx.bot.raw().guid);
+}
+
 ApRule const kTankRules[] = {
     { ShouldDivineShield,        DoDivineShield,        "classic_pal_tank:divine_shield" },
     { ShouldDivineProtection,    DoDivineProtection,    "classic_pal_tank:divine_protection" },
     { ShouldSelfLayOnHands,      DoSelfLayOnHands,      "classic_pal_tank:lay_on_hands" },
+    { ShouldTankSelfHeal,        DoTankSelfHeal,        "classic_pal_tank:self_heal" },
     { ShouldSaveAlly,            DoSaveAlly,            "classic_pal_tank:save_ally" },
     { ShouldRighteousFury,       DoRighteousFury,       "classic_pal_tank:righteous_fury" },
     { ShouldPaladinAura,         DoPaladinAura,         "classic_pal_tank:aura" },

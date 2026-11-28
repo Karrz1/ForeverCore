@@ -112,7 +112,7 @@ public:
         // creature row — skipped); Eye/Body of C'Thun share a spawn.
         a.progression_waypoints = {
             { -8346.0f, 2081.0f,  125.7f },   // Prophet Skeram
-            { -8598.5f, 2165.3f,   -4.0f },   // Bug Trio chamber (Vem spawn)
+            { -8598.5f, 2165.3f,   -4.0f },   // Bug Trio chamber: node 14 of Vem's patrol (path 800876030), 11 y from Yauj
             { -8302.5f, 1657.7f,  -29.8f },   // Battleguard Sartura
             { -8085.4f, 1196.7f,  -92.0f },   // Fankriss the Unyielding
             { -7992.4f,  908.2f,  -52.6f },   // Viscidus

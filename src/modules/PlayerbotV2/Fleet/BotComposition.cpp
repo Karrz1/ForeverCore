@@ -480,7 +480,21 @@ BotComposition::Pick BotComposition::Roll(uint8 race_hint, uint8 cls_hint,
         }
         else
         {
-            p.name = Fleet::BotNamePool::Acquire(p.gender, race);
+            // A pool name is checked as RollUniqueName checks its own: the pool was filtered for length and letters, not for the
+            // client's reserved names (NamesReserved: lore names such as Zuljin), and the character create refuses those. A refused
+            // name was popped and marked used, so the next one is drawn (TestPlayer rotgrip-1121: `.bot add priest healer` failed
+            // with "CheckPlayerName rejected 'Zuljin' with code=104").
+            for (int draw = 0; draw < 8 && p.name.empty(); ++draw)
+            {
+                std::string name = Fleet::BotNamePool::Acquire(p.gender, race);
+                if (name.empty())
+                    break;
+                ResponseCodes const code = ObjectMgr::CheckPlayerName(name, LOCALE_enUS, true);
+                if (code == CHAR_NAME_SUCCESS && !sCharacterCache->GetCharacterCacheByName(name))
+                    p.name = std::move(name);
+                else
+                    TC_LOG_INFO("playerbot.v2", "[BotComposition] pool name '{}' refused (code {}), drawing another", name, uint32(code));
+            }
             if (p.name.empty())
                 p.name = RollUniqueName();
         }

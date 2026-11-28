@@ -85,6 +85,11 @@ bool BotCanTake(Player* bot, uint32 quest_id);
 // "[Title]" for logs and whispers: the quest's log title, or "quest <id>" when unknown. Static data, any thread.
 std::string QuestLabel(uint32 quest_id);
 
+// True for a quest that an item starts (the item's StartQuest names it: a dropped crest, a note) and that no creature or game
+// object hands out. A group mate who holds one can pass it to his companion (API::accept_quest with a player giver). Static
+// data; the first call builds the table from the item templates (world thread at the latest).
+bool QuestStartedByItemOnly(uint32 quest_id);
+
 } // namespace CompanionQuest
 
 } // namespace Playerbot

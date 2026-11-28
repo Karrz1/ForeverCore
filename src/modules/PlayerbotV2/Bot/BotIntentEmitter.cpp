@@ -6,6 +6,7 @@
 #include "AoeDeny.h"
 #include "BotSnapshot.h"
 #include "BotSnapshotView.h"
+#include "PullDelay.h"
 #include "Log.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
@@ -467,6 +468,10 @@ bool BotIntentEmitter::start_attack(ObjectGuid target)
         if (ai_->start_attack_recently_refused(target.GetCounter(), now_ms))
             return false;
     }
+    // The damage dealers' wait after their tank's pull (Bot/PullDelay.h): every engage path starts its attack here, so the wait
+    // holds whichever rule picked the mob (af76 dev run: the rogue opened 0.1 s after the tank by a path that never asked the hold).
+    if (ai_ && school_snap_ && PartyPullDelayHolds(*ai_, BotSnapshotView{ *school_snap_ }, target))
+        return false;
     // An enemy the raid brain forbids this bot is attacked by no rule: the raid layer's own steps honour the list, and so must the
     // rotations and the combat state's own target picks, or the bot swings at it between two raid passes and the next pass drops it
     // again. naxx_horsemen af43: resting spare tanks had Mograine forbidden and still opened on him ("attack_start ... last_rule
@@ -574,6 +579,19 @@ bool BotIntentEmitter::move_already_emitted(float x, float y, float z) const
 
 bool BotIntentEmitter::move_to(float x, float y, float z, bool run, bool direct, bool drop, bool follow_drop)
 {
+    // A move to the far end of a committed nav-link crossing (DungeonNavLinkHop: a DB traversal link across a real navmesh split)
+    // IS that crossing, whichever rule emits it, so it goes as the straight no-pathfind spline. The hop hands its far end back to
+    // its caller as the next step, and the callers emit it as a plain move_to: State_InGroup's rejoin of the tank did, and the
+    // pathed move toward the far side of the split came back Incomplete 0.9 y on, the bot stopped, and DungeonHonorCross's direct
+    // re-assert of the same point 3 y away was then swallowed by the dedup below. WC wc_full af67 (24 Nov): the tank crossed
+    // Serpentis' cliff link 1, the four behind it hopped at (-292,-2,-57.7) and stood 8 y short of (-289.1,3.2,-64.0), walked
+    // back, the tank was relocated back to them and the group stalled under the ledge.
+    if (ai_ && !direct && !drop && ai_->dungeon_cross_direct() && ai_->dungeon_cross_active(GameTime::GetGameTimeMS()))
+    {
+        const float cdx = x - ai_->dungeon_cross_x(), cdy = y - ai_->dungeon_cross_y(), cdz = z - ai_->dungeon_cross_z();
+        if (cdx * cdx + cdy * cdy + cdz * cdz <= 1.0f)
+            direct = true;
+    }
     // Per-bot dedup: skip if the previous move_to went to ~the same XYZ
     // within the lockout window. See BotAI::kMoveToEmitLockoutMs / the long
     // comment on note_move_to_emitted for the rationale (spline thrash,

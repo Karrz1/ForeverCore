@@ -105,6 +105,11 @@ out of date AddOns"). The addon only sends ordinary chat, so it needs nothing el
   circle|arrow|line|none`, `/fb spacing tight|close|spread`, `/fb distance <1-20>`, `/fb maintank [name]`, `/fb tank
   <name> <marker>|clear`, `/fb assign <name> <marker> [role]`, `/fb assign list`.
 - Confirmation whispers from bots are hidden from your chat frame by the addon (they feed the status line).
+- **Lazy key** (Key Bindings > AddOns > "WoW Forever Bots"): one key that plays your own character, one spell per press, in
+  combat too: `.playerbot lazy` for every class on the role of your spec, "Lazy key: heal" (`.playerbot lazy heal`) and
+  "Lazy key: tank" (`.playerbot lazy tank`) for that role whatever the spec. The server picks the spell from what you know, what
+  is ready, your resources and what is on the target; heals go to the most hurt group member in 40 yards. The warlock keeps its
+  own rotation. The add-on's README lists what each role does.
 
 There is also an older `PlayerbotControl` addon (roster, stats, alts); this guide covers `ForeverBots`.
 
@@ -162,6 +167,7 @@ from the bot.
 | `gear` / `inventory` | yes | yes | `Raveni: 15 pieces worn, avg item level 66, best: Ironfoe, ...; 14 free bag slots; 12g 40s 5c`. `inv` lists bag items; `equipped` lists each worn slot. |
 | `money`, `level`, `xp`, `dur`, `skills`, `recipes`, `rep`, `spec` | yes | no | One-line introspection verbs. |
 | `change talents <link>` (also `set talents`, `talents <link>`) | yes | no | Learns your own build. Make it in the Wowhead Forever talent calculator (https://www.wowhead.com/forever/talent-calc), copy the page link (or just the code part, such as `--05003201`) and whisper it. The bot drops its talents, learns yours and plays the spec of ours closest to it (a deep Protection build tanks). Below 60 it fills the tree with most points first, row by row, and puts each new level's point down your build: `Talents: learning your build 0/31/20: 21 points now, the rest as I level.` A link for another class, a code from another calculator or a build the game would not allow is refused with the reason. Kept across relog for your companions. `talents link` answers with the bot's talents as a calculator link; `talents default` (or a `setspec`) gives it our builds back. |
+| `setspec <spec>` | yes | no | Plays that spec of its class from now on and re-learns its talents for it: `setspec elemental`, `setspec enh`, `setspec resto`, `setspec fire`, `setspec prot`, or `tank`, `heal`, `dps`. Its role follows the spec. Kept across relog for your companions. The ForeverBots add-on has the same as the Spec list in the bot's right-click menu and the spec buttons on the Spec page. |
 | `sell grey` / `sell junk` / `sell your junk` / `s *` | yes | yes | Sells everything a vendor visit sells (greys, trade goods for no profession of the bot's, gear it can't use, outgrown greens when the bags are tight) to the vendor you have selected, else the nearest friendly vendor within 200 yards. In reach: `Raveni: selling 7 thing(s) to Dolanaar Vendor`. Farther away it walks over and sells when it arrives (`at Dolanaar Vendor, selling 7 thing(s)`; after a minute without getting there it says so). Nothing to sell: `nothing to sell, my bags only hold things I keep (0 free slots)`. No vendor: `no vendor near here`. Plain `sell` (selected vendor) and `sell <bag> <slot> [n]` also exist. |
 | `repair` | yes | yes | Same pattern with a repair vendor: `Raveni: repairing at ...`. |
 | `loot` | yes | yes | Need before greed with the usual etiquette (human gets first claim). `Raveni: need before greed, the usual rules`. |
@@ -438,6 +444,7 @@ The module logs nothing unless `Logger.playerbot.v2=3` is set. Grep the server l
 | `[quest]` | A quest order the parser handed to `QuestOrders` (`[owner_order] [quest] ...`). |
 | `[InstanceCap]` | Group larger than the map holds. |
 | `[say_reply]` | A world bot's answer to a player's /say. |
+| `[lazykey]` | Every press of the lazy key (not the warlock's, that is `[lazy]`): the spell, the rule that chose it, the server's answer, role, tree and resources. |
 | `[world]` | Spawner status line every 60 s. |
 | `[death-recovery]`, `[raid_pull]`, `[raid_tank]`, `[solo_flee]`, `[bg_queue]`, `[cast_speed]`, `[GroupRelogin]` | Corpse runs, raid pulls and tanking, fleeing, battleground queues, cast pacing, bots re-joining after your login. |
 

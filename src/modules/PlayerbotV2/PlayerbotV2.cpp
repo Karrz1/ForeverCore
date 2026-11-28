@@ -919,6 +919,16 @@ void Module::Init()
         TC_LOG_ERROR("server.loading", "[PlayerbotV2] Schema migration failed; module disabled.");
         return;
     }
+    // The newest migration this build's queries need. run_all applies the files it finds in sql/playerbot_v2/ under the
+    // SourceDirectory; a deploy whose folder lacks a newer file would start with an old schema, and every bot login would fail on
+    // the missing column. Say so once, here, and stay off.
+    constexpr uint32 kRequiredCharactersMigration = 60;   // 0060_companion_owner_orders.sql: playerbot_v2_character.owner_orders
+    if (!migrations.applied_versions(MigrationTarget::Characters).contains(kRequiredCharactersMigration))
+    {
+        TC_LOG_ERROR("server.loading", "[PlayerbotV2] Bot migration {} is not applied: sql/playerbot_v2/ under SourceDirectory is older "
+            "than this worldserver. Copy the new sql/playerbot_v2/ folder and restart; module disabled.", kRequiredCharactersMigration);
+        return;
+    }
 
     // The bots' speech lines (shared DB, migration 0019). Loaded before any bot can tick; read-only
     // afterwards, so bot workers and the world thread read it without a lock.
@@ -3698,8 +3708,8 @@ void Module::OnPlayerLogin(Player* p)
         // archetype). Previously each ran its own SELECT of the same row -
         // three sync round trips per bot, ~120 when 40 companions log in
         // together. Stays synchronous: formation state has no not-loaded gate.
-        // Columns: [0..3] squad state (OwnerRegistry::kSquadStateColumns order),
-        // [4..8] leveling target, [9] archetype_id. No row -> the same defaults
+        // Columns: [0..4] squad state (OwnerRegistry::kSquadStateColumns order, kSquadStateFieldCount),
+        // then 5 leveling target columns, then archetype_id. No row -> the same defaults
         // each consumer used when its own read came back empty.
         SLOW_CALL("bot login row read (database)");
         QueryResult const row = CharacterDatabase.PQuery(
@@ -3716,6 +3726,13 @@ void Module::OnPlayerLogin(Player* p)
         ai->set_formation_slot(s.formation_slot);
         ai->set_follow_distance(s.follow_distance);
         ai->set_verbose_logging(s.owner_verbose);
+        // The standing orders are an owner's: a bot with none (a world bot that once was a companion) logs in without them.
+        uint8 const orders = Services::Owners().GetOwner(id).account_id != 0 ? s.owner_orders : uint8(0);
+        ai->set_loot_all((orders & OwnerRegistry::kOwnerOrderLootAll) != 0);
+        ai->set_gather_ordered((orders & OwnerRegistry::kOwnerOrderGather) != 0);
+        if (orders)
+            TC_LOG_INFO("playerbot.v2", "[owner_orders] {} back with its stored orders: loot all {}, gather {}", p->GetName(),
+                ai->loot_all() ? "on" : "off", ai->gather_ordered() ? "on" : "off");
 
         // The role the owner gave a companion lives in the bot logic and the Classic virtual spec, both memory only: pin it
         // again so a relog (or a restart) does not hand the bot's role back to a talent inference.
@@ -3732,7 +3749,7 @@ void Module::OnPlayerLogin(Player* p)
         // builder won't clobber a persisted choice. hub_id 0 = never picked.
         if (rf)
         {
-            Field const* const f = rf + 4;
+            Field const* const f = rf + OwnerRegistry::kSquadStateFieldCount;
             BotAI::LevelingZoneTarget t;
             t.hub_id     = f[0].GetUInt32();
             t.map_id     = f[1].GetUInt32();
@@ -3762,7 +3779,7 @@ void Module::OnPlayerLogin(Player* p)
             ai->set_archetype(rolled);
 
             bool need_write = true;
-            if (rf && rf[9].GetUInt8() == rolled.archetype_id)
+            if (rf && rf[OwnerRegistry::kSquadStateFieldCount + 5].GetUInt8() == rolled.archetype_id)
                 need_write = false;
             if (need_write)
                 CharacterDatabase.PExecute(
@@ -5066,8 +5083,13 @@ void Module::OnBGInvitationReceived(Player* player, uint32 bg_instance_id, uint3
     bool const is_bot = player->GetSession() && player->GetSession()->IsBot();
     if (!is_bot)
     {
-        std::lock_guard lk(pending_bg_ports_mtx_);
-        ++bg_invite_state_[bg_instance_id].expected_humans;
+        {
+            std::lock_guard lk(pending_bg_ports_mtx_);
+            // The ~20 s reminder fires this hook again for the same invite: count the human once.
+            std::vector<ObjectGuid>& humans = bg_invite_state_[bg_instance_id].invited_humans;
+            if (std::find(humans.begin(), humans.end(), player->GetGUID()) == humans.end())
+                humans.push_back(player->GetGUID());
+        }
         return;
     }
 
@@ -5131,8 +5153,25 @@ void Module::FireDueBgPorts()
             }
 
             auto state_it = bg_invite_state_.find(it->bg_instance_id);
+            // A human counts while the invite is open or the human is inside. One who declined, let the invite run out or logged
+            // off is dropped: before, the count never went down, so the bots waited for nobody and the instance sat in
+            // preparation with every place invited (Nick-A 11-24, bgfill-1124 on af69i).
+            if (state_it != bg_invite_state_.end() && !state_it->second.invited_humans.empty())
+            {
+                uint32 const inst = it->bg_instance_id;
+                auto& humans = state_it->second.invited_humans;
+                size_t const before = humans.size();
+                std::erase_if(humans, [inst](ObjectGuid const& g)
+                {
+                    Player const* h = ObjectAccessor::FindConnectedPlayer(g);
+                    return !h || !(h->IsInvitedForBattlegroundInstance(inst) || (h->InBattleground() && h->GetBattlegroundId() == inst));
+                });
+                if (humans.empty() && before)
+                    TC_LOG_INFO("playerbot.v2", "[bg_port] bg_inst={}: the invited player(s) did not come in (declined, invite ran out or "
+                        "logged off): the bots go in", inst);
+            }
             uint32 const expected_humans = (state_it != bg_invite_state_.end())
-                                               ? state_it->second.expected_humans : 0u;
+                                               ? uint32(state_it->second.invited_humans.size()) : 0u;
             bool         human_in_bg     = (state_it != bg_invite_state_.end())
                                                ? state_it->second.any_human_seen : false;
 

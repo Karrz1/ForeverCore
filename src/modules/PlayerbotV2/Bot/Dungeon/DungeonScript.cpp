@@ -98,6 +98,10 @@ inline void MergeAdvice(DungeonAdvice& dst, DungeonAdvice const& src)
     cat(dst.tank_swap_on_spells,        src.tank_swap_on_spells);
     cat(dst.soak_spells,                src.soak_spells);
     cat(dst.bosses,                     src.bosses);
+    dst.keep_clear_of_carriers.insert(dst.keep_clear_of_carriers.end(),
+        src.keep_clear_of_carriers.begin(), src.keep_clear_of_carriers.end());
+    dst.spread_from_bosses.insert(dst.spread_from_bosses.end(),
+        src.spread_from_bosses.begin(), src.spread_from_bosses.end());
     dst.progression_waypoints.insert(dst.progression_waypoints.end(),
         src.progression_waypoints.begin(), src.progression_waypoints.end());
 }

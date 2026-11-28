@@ -503,16 +503,13 @@ private:
 
     // Offline bot characters that could be logged back in, used for the
     // "prefer login of existing bot" path. The rows come back from the async
-    // query in last_seen_at order and are NOT faction-filtered (the query
-    // never was); FilterOfflineCandidates applies the faction and the cap the
-    // way the old synchronous call did.
+    // query as two halves, up to 2*cap of each side in last_seen_at order;
+    // FilterOfflineCandidates takes the side's rows and its cap.
     struct OfflineCandidate { uint64 char_guid; uint8 level; bool alliance; };
 
     // Issues the offline-candidate SELECT for one bucket. `cap` is the largest
-    // number of logins either faction could use this cycle; the row limit is
-    // 2*cap exactly as before, and FilterOfflineCandidates re-applies the
-    // smaller per-side cap as a prefix so the selection is identical to the
-    // per-side query it replaces.
+    // number of logins either faction could use this cycle; each side gets up
+    // to 2*cap rows (issue #386: one window over both sides starved one).
     void QueueOfflineCandidateFetch(size_t fill_index, uint8 lo, uint8 hi, uint32 cap);
 
     // Starts the async cold load of one bot's pipeline row into

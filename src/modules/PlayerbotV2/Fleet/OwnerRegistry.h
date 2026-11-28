@@ -171,20 +171,30 @@ public:
         uint8 formation_slot = 0;
         float follow_distance = 5.0f;
         bool  owner_verbose  = false;
+        // The owner's standing orders (kOwnerOrder* bits): read with the squad state, written by SaveOwnerOrders only, so a SaveSquadState
+        // from a freshly built SquadState never clears them.
+        uint8 owner_orders   = 0;
     };
+    // playerbot_v2_character.owner_orders bits (migration 0060).
+    static constexpr uint8 kOwnerOrderLootAll = 0x01;   // "loot all": rolls on everything, greys included
+    static constexpr uint8 kOwnerOrderGather  = 0x02;   // "gather on": picks herbs and ore, skins the group's kills
 
     // Pull the persisted squad state for a bot. Used at bot register
     // time so the in-memory BotAI starts with the owner's saved
     // preferences instead of defaulting every relog.
     SquadState LoadSquadState(BotId bot) const;
+    // The owner's standing orders ("loot all", "gather on"), kept across relog, `.bot call` and restart (Alex Black Cat, RU general
+    // 11-21: an alt's gather and loot all were gone after every relog). kOwnerOrder* bits.
+    void SaveOwnerOrders(BotId bot, uint8 orders) const;
 
     // Column list LoadSquadState selects, in the order SquadStateFromFields
     // reads them. A caller that already reads the bot's playerbot_v2_character
     // row (the bot-login path) selects these alongside its own columns and
     // parses them with SquadStateFromFields instead of a second round trip.
     static constexpr char const* kSquadStateColumns =
-        "formation_type, formation_slot, follow_distance_yd, owner_verbose";
-    // Parse the four kSquadStateColumns fields starting at `f`.
+        "formation_type, formation_slot, follow_distance_yd, owner_verbose, owner_orders";
+    static constexpr uint32 kSquadStateFieldCount = 5;
+    // Parse the kSquadStateFieldCount kSquadStateColumns fields starting at `f`.
     static SquadState SquadStateFromFields(Field const* f);
 
     // Persist the in-memory squad state back to the DB. Called from

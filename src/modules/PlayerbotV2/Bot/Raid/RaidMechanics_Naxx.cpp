@@ -183,9 +183,18 @@ std::vector<DoorPlane> HeiganDoors(Unit* heigan)
     return doors;
 }
 
-// True when (x, y) lies on his side of both doors, kDoorClear inside them.
+// His leash (classic_instance_naxxramas.cpp HandleEvadeOutOfHome): he evades the moment he stands east of x 2825 or south of y -3737, and
+// he walks to whoever he goes for. naxx_heigan r3af55-1: a druid healing from 2830.8,-3681.7 drew him there and he evaded at 32 s, 97%.
+// So a spot off the field stays inside those lines by a melee reach and a margin, wherever the doors stand.
+constexpr float kHeiganLeashX     = 2825.0f;
+constexpr float kHeiganLeashY     = -3737.0f;
+constexpr float kHeiganLeashClear = 6.0f;
+
+// True when (x, y) lies on his side of both doors, kDoorClear inside them, and inside his leash.
 bool InHeiganRoom(std::vector<DoorPlane> const& doors, float x, float y)
 {
+    if (x > kHeiganLeashX - kHeiganLeashClear || y < kHeiganLeashY + kHeiganLeashClear)
+        return false;
     for (DoorPlane const& d : doors)
         if (((x - d.x) * d.nx + (y - d.y) * d.ny) * d.side < kDoorClear)
             return false;
@@ -1036,6 +1045,12 @@ struct RazOpenSpot
     bool goingIn = false;                    // the priest was last sent to the cast spot (for the log)
 };
 std::unordered_map<uint32_t, RazOpenSpot> g_razOpenSpot;   // instance -> the opener's spots, kept while the priest and target stay
+// Cast spots the spell refused for line of sight with the priest standing on them: no search picks a spot this close to one again.
+// naxx_razuvious rbaf56-1: the spot (2735.4,-3111.5) passed the search's sight test (2 y above the ground, then the understudy's own height
+// again on top) and the cast check (the priest's eyes to the understudy, every model counted), and Mind Control failed LINE_OF_SIGHT on
+// each of seven goes in 2.5 min; the fallback pull at 170 s sent the main tank in on an understudy.
+constexpr float kRazBlockedNear = 2.0f;
+std::unordered_map<uint32_t, std::vector<std::pair<float, float>>> g_razCastBlocked;   // instance -> refused cast spots
 
 // The nearest his walk comes to (x, y): the legs of his waypoint path, closed into a loop, and where he stands (he is off the path while
 // he walks back to it). With no path, where he stands.
@@ -1374,7 +1389,8 @@ void NaxxPrePullRazuvious(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& o
         float const run = std::max(priest->GetSpeed(MOVE_RUN), 1.0f);
         struct Candidate { Creature* us; float sx, sy, sz, wx, wy, score, window, need; bool fits; };
         std::vector<Candidate> candidates;
-        int inReach = 0, noGround = 0, noWait = 0, walkFailed = 0;
+        int inReach = 0, noGround = 0, noWait = 0, walkFailed = 0, refused = 0;
+        std::vector<std::pair<float, float>> const& blocked = g_razCastBlocked[instance];
         for (Creature* c : understudies)
             for (int k = 0; k < 24; ++k)
             {
@@ -1389,9 +1405,18 @@ void NaxxPrePullRazuvious(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& o
                     continue;
                 }
                 float sz = 0.0f;
-                if (!RazFloor(priest, sx, sy, c->GetPositionZ(), sz) || !c->IsWithinLOS(sx, sy, sz + 2.0f))
+                // The sight test the spell makes (Spell::CheckCast, Spell::IsWithinLOS with the target as the source): from the understudy's
+                // hit sphere to the priest standing on the spot at the understudy's height above its feet, M2 models ignored.
+                if (!RazFloor(priest, sx, sy, c->GetPositionZ(), sz) ||
+                    !c->IsWithinLOS(sx, sy, sz, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
                 {
                     ++noGround;
+                    continue;
+                }
+                if (std::any_of(blocked.begin(), blocked.end(),
+                                [&](std::pair<float, float> const& b) { return Dist2D(b.first, b.second, sx, sy) < kRazBlockedNear; }))
+                {
+                    ++refused;
                     continue;
                 }
                 int j = 1;
@@ -1459,8 +1484,8 @@ void NaxxPrePullRazuvious(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& o
             spot.failedMs = std::max(now, 1u);
             if (g_razOpenLogged.insert(instance).second)
                 TC_LOG_WARN("playerbot.v2.raid", "[raid_razuvious] {} finds no Mind Control spot with a wait spot out of his sight ({:.0f} y) "
-                            "and a clear walk: {} spots inside an understudy's reach, {} without ground or sight, {} with no wait spot, "
-                            "{} walks refused", priest->GetName(), sight, inReach, noGround, noWait, walkFailed);
+                            "and a clear walk: {} spots inside an understudy's reach, {} without ground or sight, {} refused the cast before, "
+                            "{} with no wait spot, {} walks refused", priest->GetName(), sight, inReach, noGround, refused, noWait, walkFailed);
             return;
         }
         us = best->us;
@@ -1530,7 +1555,21 @@ void NaxxPrePullRazuvious(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& o
                     "{:.0f} y needed ({:.0f} y to walk, a {:.1f} s cast), him at ({:.1f},{:.1f}) walking {:.1f} y/s", priest->GetName(), closest,
                     seconds, sight, left, castS, raz->GetPositionX(), raz->GetPositionY(), speed);
     spot.goingIn = true;
-    if (left <= 1.5f && priest->GetExactDist(us) <= mcReach(us) - 0.5f && priest->IsWithinLOSInMap(us) && !priest->isMoving())
+    if (left <= 1.5f && priest->GetExactDist(us) <= mcReach(us) - 0.5f && !priest->isMoving() &&
+        !us->IsWithinLOSInMap(priest, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
+    {
+        // On the spot and the spell's own sight test fails: the spot is dropped for good and the next pass looks for another.
+        g_razCastBlocked[instance].emplace_back(spot.sx, spot.sy);
+        TC_LOG_INFO("playerbot.v2.raid", "[raid_razuvious] {} stands on its cast spot ({:.1f},{:.1f},{:.1f}) {:.1f} y from the understudy and "
+                    "the understudy cannot see it as Mind Control checks it: the spot is dropped, another is looked for",
+                    priest->GetName(), priest->GetPositionX(), priest->GetPositionY(), priest->GetPositionZ(), priest->GetExactDist(us));
+        float const wx = spot.wx, wy = spot.wy, wz = spot.wz;
+        spot = RazOpenSpot{};
+        SetMove(o, wx, wy, wz, "razuvious: wait out of his sight");
+        o.prepull_wait = true;
+        return;
+    }
+    if (left <= 1.5f && priest->GetExactDist(us) <= mcReach(us) - 0.5f && Ready(priest, rank, us, true) && !priest->isMoving())
     {
         o.move = false;
         o.cast_kind = RaidOrder::CastKind::CrowdControl;
@@ -4385,6 +4424,8 @@ void NaxxPrePull(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders, st
         g_razOpener.clear();
     if (g_razOpenLogged.size() > 64)
         g_razOpenLogged.clear();
+    if (g_razCastBlocked.size() > 64)
+        g_razCastBlocked.clear();
     if (g_gothDraw.size() > 64)
         g_gothDraw.clear();
     if (g_gothSplitSince.size() > 64)

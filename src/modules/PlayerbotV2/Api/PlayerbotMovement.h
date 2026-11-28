@@ -109,6 +109,16 @@ bool ProbeGround(Player* p, float x, float y, float zHint, float& out);
 bool NearestNavPoint(Player* p, float tx, float ty, float tz,
                      float hxy, float hz, Position& out);
 
+// A bot standing on a scrap of navmesh that no path leaves: a few polygons of a rocky slope that Recast kept apart from the floor
+// around them (fewer than kMeshIslandPolys polygons reached by links of any kind). A player walks on and off such a scrap, the
+// bot got there on foot in a fight, but every path from it ends on its own edge. blackmaw_full af61 (22 Nov): the tank stood
+// 120 s on 6 polygons of the slope at (3589.1,3348.0,274.2); the floor the group stood on was 5.9 y away and 4.5 y up, with four
+// more scraps of 2 to 19 polygons in between. Finds the nearest point of a region of at least kMeshIslandPolys polygons, at most
+// maxYd away on the level and 6 y up or down, with a clear line and ground under every yard of the step. Writes it to `out` and returns true; false when the bot is
+// not on such a scrap or no walkable step off it exists. World thread (or a bot logic thread with its own navmesh queries).
+constexpr int kMeshIslandPolys = 64;
+bool MeshIslandExit(Player* p, float maxYd, Position& out, int* islandPolys = nullptr);
+
 // Snapshot builds that run beside other builds of the SAME map must not load grids: a grid load adds creatures and navmesh
 // tiles while the other threads are reading them. While a ScopedDeferGridLoads is alive on a thread, EnsureGridForQuery
 // hands a grid that is not loaded yet to the world thread (LoadDeferredGrids, after the build barrier) and returns false, so

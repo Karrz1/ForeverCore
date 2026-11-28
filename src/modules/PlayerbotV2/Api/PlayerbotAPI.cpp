@@ -13,6 +13,7 @@
 #include "PlayerbotAPI.h"
 #include "BotLanguage.h"
 #include "Bot/QuestLoot.h"
+#include "Bot/Quest/CompanionQuest.h"
 #include "Bot/BotBridge.h"
 #include "ClassicBotSkills.h"
 #include "Travel/ReachMemory.h"
@@ -1836,7 +1837,11 @@ Result API::move_to(float x, float y, float z, bool run, bool direct, bool drop,
         float const sx = p_->GetPositionX(), sy = p_->GetPositionY(), sz = p_->GetPositionZ();
         float const dxy = std::sqrt((x - sx) * (x - sx) + (y - sy) * (y - sy));
         float const fall = sz - z;
-        if (dxy > 40.0f || fall < 4.0f || fall > 40.0f || p_->IsFlying() || p_->IsInFlight() || p_->GetVehicle() || p_->IsInWater())
+        // 220 y down, 45 y out: The Shaper's Terrace's landing ledge stands 54 y over the pool players jump into, 35-41 y out from
+        // where a bot on the ledge leaves it (live capture 25 Nov 2026); in Blackmaw Hold the way to Varrox is a 200 y fall from the
+        // Behemoth's hall into a pool, 35 y out (live capture 26 Nov 2026). At these sizes the jump below stays under MoveJump's
+        // 50 y/s, so it lands when flight_ms says.
+        if (dxy > 45.0f || fall < 4.0f || fall > 220.0f || p_->IsFlying() || p_->IsInFlight() || p_->GetVehicle() || p_->IsInWater())
             return Result::Locked;
         // A free fall: the jump spline's parabola (height = g*T^2/8, MotionMaster::MoveJump) is exactly gravity over the drop
         // when T = sqrt(2*fall/g), so the leap takes that long. A fixed 8 y/s along the whole path took 3 s for a 15 y drop and
@@ -1857,6 +1862,10 @@ Result API::move_to(float x, float y, float z, bool run, bool direct, bool drop,
         dp->m_Events.AddEventAtOffset([dp, dx, dy, dz]()
         {
             if (!dp->IsInWorld() || !dp->IsAlive())
+                return;
+            // A fall into water does no harm: the client ends it swimming and sends no fall landing (live, The Shaper's Terrace
+            // 25 Nov 2026: a 54 y jump into the pool, START_SWIM, no environmental damage).
+            if (dp->GetMap() && dp->GetMap()->IsInWater(dp->GetPhaseShift(), dx, dy, dz))
                 return;
             dp->m_movementInfo.pos.Relocate(dx, dy, dz);
             dp->HandleFall();
@@ -2645,7 +2654,11 @@ Result API::move_to(float x, float y, float z, bool run, bool direct, bool drop,
         // one, so the goal was picked again and again (Burning Steppes, Simer: 53 path_fail Magma for one quest goal in 3 minutes).
         // Left unsnapped, the goal ends as FarFromPolyEnd, which suppresses it for long and lets goal selection move on.
         bool const end_in_hazard = BotMovement::ClassifyDestinationLiquid(p_, ae.x, ae.y, ae.z) == BotMovement::LiquidVerdict::Hazard;
-        if (off_end <= 12.0f && std::fabs(dz_end) < max_dz && !snaps_under && !end_in_hazard && !::Playerbot::V2::Fleet::PathHasCliff(path.GetPath())
+        // Nor is the water's surface over a goal under the water (BotMovement::Swim::IsUnderwaterGoal): it is swum to (TrySwimLeg below).
+        float goal_swim_z = 0.f;
+        bool const underwater_goal = BotMovement::SwimLevel(p_, x, y, z, goal_swim_z) && BotMovement::Swim::IsUnderwaterGoal(z, goal_swim_z);
+        if (off_end <= 12.0f && std::fabs(dz_end) < max_dz && !snaps_under && !end_in_hazard && !underwater_goal &&
+            !::Playerbot::V2::Fleet::PathHasCliff(path.GetPath())
             && !rise_onto_model(ae.x, ae.y, ae.z))
         {
             if (SehSafeCalculatePath(path, ae.x, ae.y, ae.z) && !(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_FARFROMPOLY_END)))
@@ -3636,13 +3649,13 @@ bool API::TrySwimLeg(float x, float y, float z, bool run)
     if (BotMovement::g_LiquidPathPolicy && BotMovement::g_LiquidPathPolicy(p_) != BotMovement::LiquidPolicy::None)
         return false;
 
-    // Longer than a pool or a flooded hall: that is a trip for the router, not one straight swim.
-    constexpr float kMaxLeg = 40.0f;
+    // Across more than a pool or a flooded hall: that is a trip for the router, not one straight swim. A dive goes as deep as the water
+    // (BotMovement::Swim::SwimLegFits).
     constexpr float kSampleStep = 2.0f;
     float const sx = p_->GetPositionX(), sy = p_->GetPositionY(), sz = p_->GetPositionZ();
     float const dx = x - sx, dy = y - sy, dz = z - sz;
     float const len = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (len < 1.0f || len > kMaxLeg)
+    if (!BotMovement::Swim::SwimLegFits(std::sqrt(dx * dx + dy * dy), len))
         return false;
 
     // In water at a point: water or ocean only (magma and slime are never swum), below the surface or on it. A bot that crossed the
@@ -4094,7 +4107,13 @@ Result API::start_attack(ObjectGuid target, uint8 avoid_school_mask)
         // A hunter engaged from range stands at its shooting spot (chase to 28 y). When the mob then comes inside Auto Shot's dead zone the
         // fight turns to melee, but this path never chased again: the hunter stood a few yards off, unable to shoot or swing (Isane, 2026-10-20).
         // Close in once it stands still; a hunter already walking keeps its chase.
-        if (p_->GetClass() == CLASS_HUNTER && hunter_dead_zone && melee_swing && p_->movespline->Finalized() && !p_->IsWithinMeleeRange(tu))
+        // Not for a grouped hunter with shots whose mob someone else holds: that hunter steps back out of the dead zone (the classic hunter
+        // rotation's dead-zone step), and closing in here walked it back in front of the mob each time (alcaz_full af70c: Blazeroar's Flame
+        // Breath). A hunter with nothing to shoot still closes in.
+        bool const held_by_other = p_->GetGroup() && tu->GetVictim() && tu->GetVictim() != p_ &&
+            p_->GetWeaponForAttack(RANGED_ATTACK, true) != nullptr && (!p_->NeedsAmmo() || (p_->GetAmmoId() != 0 && p_->HasItemCount(p_->GetAmmoId())));
+        if (p_->GetClass() == CLASS_HUNTER && hunter_dead_zone && melee_swing && !held_by_other && p_->movespline->Finalized() &&
+            !p_->IsWithinMeleeRange(tu))
             { p_->GetMotionMaster()->MoveChase(tu); logHunterChase("dead_zone_close_in"); }
         // The opening engage chases once; another layer's move (formation slot, follow) replaces that chase and this path never issued it
         // again, so a hunter ordered at a mob beyond its shooting range stood in the aim pose for good (PC 20 Oct, whelp ~30+ y away).
@@ -4266,7 +4285,9 @@ Result API::stop_attack(bool clear_ghost_combat)
     // Attack off ends Auto Shot as well (a player's attack toggle does); left running it keeps the hunter in the aim pose with no target.
     if (p_->GetClass() == CLASS_HUNTER)
         p_->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, false);
-    if (!p_->IsInCombat())
+    // A station show's sheath hold keeps the tool out — an OOC stop_attack is no
+    // reason to stow it mid-visit (the hold itself drops the moment combat starts).
+    if (!p_->IsInCombat() && !p_->BotSheathHold())
         p_->SetSheath(SHEATH_STATE_UNARMED);
     // Mirror a real client deselecting on disengage Ã¢Â€Â” keeps the published
     // UNIT_FIELD_TARGET truthful for other players' target-of-target frames.
@@ -4976,7 +4997,22 @@ Result API::face_target(ObjectGuid target, bool combat)
     if (!p_) return Result::Other;
     if (target.IsEmpty()) return Result::InvalidTarget;
     Unit* u = ObjectAccessor::GetUnit(*p_, target);
-    if (!u) return Result::InvalidTarget;
+    if (!u)
+    {
+        // A station (anvil, cooking fire, loom): the bot at work faces the gameobject. SetFacingToObject
+        // takes any WorldObject; the same already-facing guard as the unit path skips a no-op turn.
+        if (combat) return Result::InvalidTarget;
+        GameObject* go = p_->GetMap() ? p_->GetMap()->GetGameObject(target) : nullptr;
+        if (!go) return Result::InvalidTarget;
+        if (!p_->isMoving())
+        {
+            ClearStaleMoveFlags(p_);
+            float const off = Position::NormalizeOrientation(p_->GetOrientation() - p_->GetAbsoluteAngle(go));
+            if (off > 0.1f && off < 2.0f * float(M_PI) - 0.1f)
+                p_->SetFacingToObject(go, /*force*/ true);
+        }
+        return Result::Ok;
+    }
     if (combat)
     {
         // Combat re-face. The melee swing needs the victim within +-60 degrees
@@ -6077,6 +6113,27 @@ Result API::set_stand_state(uint8 state)
     return Result::Ok;
 }
 
+Result API::set_sheath(uint8 sheath, int8_t hold)
+{
+    if (!p_) return Result::Other;
+    SheathState const state = sheath > SHEATH_STATE_RANGED ? SHEATH_STATE_UNARMED : static_cast<SheathState>(sheath);
+    p_->SetSheath(state);
+    // Drawn bots get auto-resheathed after 3 idle seconds (Player::Update) — a show
+    // drawing weapons on purpose holds that off until it's resheathed or fights.
+    // hold < 0 keeps that default; a passing call (skill-up cast) draws without it
+    // so the resheath timer cleans the pose up itself when the casts stop.
+    p_->SetBotSheathHold(hold < 0 ? state != SHEATH_STATE_UNARMED : hold != 0);
+    TC_LOG_INFO("playerbot.v2", "[sheath] {} -> state={} now={}", p_->GetName(), uint32(sheath), uint32(p_->GetSheath()));
+    return Result::Ok;
+}
+
+Result API::play_sound(uint32 sound_kit)
+{
+    if (!p_ || !sound_kit) return Result::Other;
+    p_->PlayDistanceSound(sound_kit);
+    return Result::Ok;
+}
+
 Result API::dismiss_pet()
 {
     if (!p_) return Result::Other;
@@ -6779,11 +6836,40 @@ Result API::sell_trash(ObjectGuid npc)
     constexpr uint32 kTightBagThreshold = 3;
     bool const bags_tight = CountFreeBagSlots(p_) <= kTightBagThreshold;
 
+    // Craft surplus: products of recipes the bot knows that aren't also an
+    // input to a known recipe — the smith hawks his sharpening stones, the
+    // cook her baked eggs. Bars / bolts / powders that feed a known recipe
+    // stay as working stock. Conjured outputs (healthstones, mage water)
+    // vendor for nothing — skip them; gear stays under IsBagRot's rules, and
+    // uncommon-or-better products are worth more than the vendor pays.
+    std::unordered_set<uint32> craft_in;
+    std::unordered_set<uint32> craft_out;
+    for (auto const& [sid, ps] : p_->GetSpellMap())
+    {
+        if (ps.state == PLAYERSPELL_REMOVED || !ps.active || ps.disabled) continue;
+        SpellInfo const* si = sSpellMgr->GetSpellInfo(sid, DIFFICULTY_NONE);
+        if (!si) continue;
+        for (SpellEffectInfo const& eff : si->GetEffects())
+            if (eff.Effect == SPELL_EFFECT_CREATE_ITEM && eff.ItemType)
+                craft_out.insert(uint32(eff.ItemType));
+        for (size_t r = 0; r < si->Reagent.size(); ++r)
+            if (si->Reagent[r] > 0)
+                craft_in.insert(uint32(si->Reagent[r]));
+    }
+    for (uint32 const e : craft_in) craft_out.erase(e);
+
     std::vector<Item*> to_sell;
-    p_->ForEachItem(ItemSearchLocation::Inventory, [this, &to_sell, bags_tight](Item* it)
+    p_->ForEachItem(ItemSearchLocation::Inventory, [this, &to_sell, bags_tight, &craft_out](Item* it)
     {
         ItemTemplate const* tmpl = it ? it->GetTemplate() : nullptr;
-        if (IsBagRot(p_, it, tmpl, bags_tight)) to_sell.push_back(it);
+        uint32 const cls = tmpl ? tmpl->GetClass() : 0;
+        if (tmpl && !it->IsNotEmptyBag() && !tmpl->HasFlag(ITEM_FLAG_CONJURED)
+            && tmpl->GetQuality() < ITEM_QUALITY_UNCOMMON
+            && cls != ITEM_CLASS_WEAPON && cls != ITEM_CLASS_ARMOR
+            && craft_out.count(it->GetEntry()))
+            to_sell.push_back(it);
+        else if (IsBagRot(p_, it, tmpl, bags_tight))
+            to_sell.push_back(it);
         return ItemSearchCallbackResult::Continue;
     });
 
@@ -7114,17 +7200,29 @@ Result API::loot_corpse(ObjectGuid corpse, bool quest_items_only)
     if (quest_items_only)
     {
         ObjectGuid const owner = loot->GetOwnerGUID();
-        uint32 taken = 0;
+        uint32 taken = 0, left = 0;
         for (uint8 slot = 0; slot < loot->items.size(); ++slot)
         {
-            if (!IsPendingQuestLoot(p_, loot, slot)) continue;
+            if (!IsPendingQuestLoot(p_, loot, slot))
+            {
+                // One for the whole group that a player of the group still needs: left for him (QuestLootIsAPlayers).
+                LootItem const& li = loot->items[slot];
+                if (li.needs_quest && !li.is_looted && li.HasAllowedLooter(p_->GetGUID()) && QuestLootIsAPlayers(p_, loot, li))
+                {
+                    ++left;
+                    TC_LOG_INFO("playerbot.v2", "[loot_quest] {} corpse={} leaves item {} for the player (one for the group, he needs it)",
+                                p_->GetName(), corpse.GetCounter(), li.itemid);
+                }
+                continue;
+            }
             LootItem const& qi = loot->items[slot];
             ItemPosCountVec dest;
             if (p_->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, qi.itemid, qi.count) != EQUIP_ERR_OK) continue;
             p_->StoreLootItem(owner, slot, loot);
             ++taken;
         }
-        TC_LOG_INFO("playerbot.v2", "[loot_quest] {} corpse={} took {} quest item(s)", p_->GetName(), corpse.GetCounter(), taken);
+        TC_LOG_INFO("playerbot.v2", "[loot_quest] {} corpse={} took {} quest item(s), left {} for the player", p_->GetName(), corpse.GetCounter(),
+                    taken, left);
         if (WorldSession* sess = p_->GetSession())
             sess->DoLootRelease(loot);
         return Result::Ok;
@@ -7388,6 +7486,26 @@ void TakeGameObjectLoot(Player* p, GameObject* obj, ObjectGuid go_guid)
         sess->DoLootRelease(loot);
     else
         p->SendLootRelease(go_guid);
+}
+
+// A door whose lock has a Lockpicking case (Pick Lock opens it) and no case a plain click opens.
+bool DoorTakesLockpicking(GameObjectTemplate const* info)
+{
+    LockEntry const* lock = info ? sLockStore.LookupEntry(info->GetLockId()) : nullptr;
+    if (!lock)
+        return false;
+    bool pick = false;
+    for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+    {
+        if (lock->Type[i] != LOCK_KEY_SKILL)
+            continue;
+        SkillType const skill = SkillByLockType(LockType(lock->Index[i]));
+        if (skill == SKILL_LOCKPICKING)
+            pick = true;
+        else if (skill == SKILL_NONE)
+            return false;   // a hand door (Open, Quick Open): clicked, not picked
+    }
+    return pick;
 }
 
 // The bot's spell that opens a lock of this kind (Herbalism 2366 for LOCKTYPE_HERBALISM, Mining 2575 for LOCKTYPE_MINING): the
@@ -7687,6 +7805,10 @@ Result API::use_game_object(ObjectGuid go_guid)
     // found none (Discord 2026-11-09). A bot never opens one of these by a plain click.
     if (obj->GetGoType() == GAMEOBJECT_TYPE_CHEST && Playerbot::ChestNeedsSkill(obj->GetGOInfo()))
         return gather_node(obj);
+    // A shut door whose lock takes Lockpicking (Alcaz Prison's Maximum Security Door 649547): a rogue casts Pick Lock on it, as on a
+    // locked box. A plain click on such a door does nothing for a player (the client asks for the key).
+    if (obj->GetGoType() == GAMEOBJECT_TYPE_DOOR && obj->GetGoState() == GO_STATE_READY && DoorTakesLockpicking(obj->GetGOInfo()))
+        return gather_node(obj);
     // Mounted-restriction check from HandleGameObjectUseOpcode: most GOs
     // refuse interaction while mounted unless flagged UsableMounted.
     if (p_->IsMounted() && !obj->GetGOInfo()->IsUsableMounted())
@@ -7841,7 +7963,9 @@ Result API::gather_node(GameObject* obj)
         if (lock->Type[i] != LOCK_KEY_SKILL)
             continue;
         SkillType const skill = SkillByLockType(LockType(lock->Index[i]));
-        if (skill != SKILL_HERBALISM && skill != SKILL_MINING)
+        // A door takes only Pick Lock (use_game_object sends no other door here); a chest, Herb Gathering or Mining.
+        bool const door = obj->GetGoType() == GAMEOBJECT_TYPE_DOOR;
+        if (door ? skill != SKILL_LOCKPICKING : (skill != SKILL_HERBALISM && skill != SKILL_MINING))
             continue;
         if (p_->GetSkillValue(skill) == 0 || p_->GetSkillValue(skill) < lock->Skill[i])
             continue;
@@ -7859,6 +7983,25 @@ Result API::gather_node(GameObject* obj)
         ClearStaleMoveFlags(p_);
         if (!p_->HasInArc(static_cast<float>(M_PI), obj))
             p_->SetFacingToObject(obj, true);
+        // The tool the spell asks for in the bags (SpellInfo Totem): Pick Lock (1804) wants Thieves' Tools (5060), which a rogue buys
+        // from a trade vendor for 15 silver. A bot does not shop. Without it every cast fails SPELL_FAILED_TOTEMS (153): alcaz_full in the
+        // alcaz-1127-r3 run (27 Nov) cast Pick Lock on the Maximum Security Door all run long, 153 each time, and the grant at levelling
+        // (BotSetupPipeline LearnLevelKit) never showed on the scenario rogue. So the bot takes it here, where the spell is cast.
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell, DIFFICULTY_NONE))
+        {
+            for (int32 const tool : info->Totem)
+            {
+                if (tool <= 0 || p_->HasItemCount(uint32(tool), 1, true))
+                    continue;
+                ItemPosCountVec dest;
+                InventoryResult const ir = p_->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, uint32(tool), 1);
+                if (ir == EQUIP_ERR_OK && p_->StoreNewItem(dest, uint32(tool), true))
+                    TC_LOG_INFO("playerbot.v2", "[gather] {} takes tool item {} for spell {}", p_->GetName(), tool, spell);
+                else
+                    TC_LOG_INFO("playerbot.v2", "[gather] {} cannot take tool item {} for spell {}: bag result {}", p_->GetName(), tool,
+                        spell, uint32(ir));
+            }
+        }
         SpellCastResult const r = p_->CastSpell(obj, spell, false);
         TC_LOG_INFO("playerbot.v2", "[gather] {} cast {} on entry={} skill {} {}/{} result={}", p_->GetName(), spell, obj->GetEntry(),
             uint32(skill), uint32(p_->GetSkillValue(skill)), uint32(lock->Skill[i]), uint32(r));
@@ -7932,9 +8075,28 @@ Result API::accept_quest(ObjectGuid quest_giver, uint32 quest_id)
                     TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT | TYPEMASK_ITEM);
     }
     if (!object)                                        { log_reject("giver_not_found", QuestRefusal::NoGiver);     return Result::InvalidTarget; }
-    if (quest_giver.IsPlayer())                         { log_reject("player_giver_unsupp", QuestRefusal::Other);   return Result::Other; }
-    if (!object->hasQuest(quest_id))                    { log_reject("giver_lost_relation", QuestRefusal::NoGiver); return Result::InvalidTarget; }
-    if (!p_->CanInteractWithQuestGiver(object))         { log_reject("out_of_range", QuestRefusal::OutOfRange);     return Result::OutOfRange; }
+    if (quest_giver.IsPlayer())
+    {
+        // A group mate passes on a quest that an item started (a dropped crest, a note): no creature or object hands it out and the
+        // one item went to him, so the bot takes it from him like a shared quest (the owner's "accept", row 240). Nothing else
+        // comes from a player here.
+        Player* mate = object->ToPlayer();
+        if (!mate || mate == p_ || !p_->IsInSameGroupWith(mate))
+                                                        { log_reject("player_giver_not_group", QuestRefusal::NoGiver); return Result::InvalidTarget; }
+        QuestStatus const ms = mate->GetQuestStatus(quest_id);
+        if ((ms != QUEST_STATUS_INCOMPLETE && ms != QUEST_STATUS_COMPLETE) || !CompanionQuest::QuestStartedByItemOnly(quest_id))
+                                                        { log_reject("player_giver_unsupp", QuestRefusal::Other);   return Result::Other; }
+        if (!p_->IsWithinDistInMap(mate, INTERACTION_DISTANCE))
+                                                        { log_reject("out_of_range", QuestRefusal::OutOfRange);     return Result::OutOfRange; }
+        // The mate stays the giver, as for a quest he shares (WorldSession::HandleQuestgiverAcceptQuestOpcode passes the sharer):
+        // AddQuest reads a timed quest's time left from him, and AddQuestAndCheckCompletion runs no giver script for a player.
+        // Every later use of `object` is null-safe as well; it is never an item here, so no quest item is taken from anyone.
+    }
+    else
+    {
+        if (!object->hasQuest(quest_id))                { log_reject("giver_lost_relation", QuestRefusal::NoGiver); return Result::InvalidTarget; }
+        if (!p_->CanInteractWithQuestGiver(object))     { log_reject("out_of_range", QuestRefusal::OutOfRange);     return Result::OutOfRange; }
+    }
     // Junk-quest accept-gate (R2, defense-in-depth). A quest with ZERO
     // objectives AND no creature/GO turn-in NPC is structurally unfinishable
     // and unturnable Ã¢Â€Â” accepting it parks the bot forever (current_quest_id=0
@@ -8523,6 +8685,26 @@ Result API::equip_item(uint8 from_bag, uint8 from_slot, uint8 to_slot)
     const uint16 dst = (uint16(INVENTORY_SLOT_BAG_0) << 8) | to_slot;
     p_->SwapItem(src, dst);
     return Result::Ok;
+}
+
+Result API::give_item(uint32 entry, uint16 count)
+{
+    if (!p_) return Result::Other;
+    if (!entry || !count) return Result::InvalidTarget;
+    if (!sObjectMgr->GetItemTemplate(entry)) return Result::InvalidTarget;
+    ItemPosCountVec dest;
+    if (p_->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, entry, count) != EQUIP_ERR_OK)
+        return Result::ServerRefused;
+    return p_->StoreNewItem(dest, entry, true) ? Result::Ok : Result::ServerRefused;
+}
+
+Result API::learn_spell(uint32 spell_id)
+{
+    if (!p_) return Result::Other;
+    if (!spell_id || !sSpellMgr->GetSpellInfo(spell_id, DIFFICULTY_NONE)) return Result::InvalidTarget;
+    if (p_->HasSpell(spell_id)) return Result::Ok;
+    p_->LearnSpell(spell_id, /*dependent=*/false);
+    return p_->HasSpell(spell_id) ? Result::Ok : Result::ServerRefused;
 }
 
 Result API::accept_shared_quest()
@@ -11433,6 +11615,10 @@ static uint32 LearnHigherRanksOfKnownSpells(Player* p)
     for (SkillLineAbilityEntry const* entry : sSkillLineAbilityStore)
     {
         if (!entry || entry->Spell >= 100000 || !seen.insert(entry->Spell).second || p->HasSpell(entry->Spell))
+            continue;
+        // A spell no player can learn (all its skill line abilities NeverLearned, e.g. the 1-point Holy Light copy 19981) is no rank
+        // to teach a bot
+        if (SpellFamily::IsNeverLearned(entry->Spell))
             continue;
         SpellInfo const* si = sSpellMgr->GetSpellInfo(entry->Spell, DIFFICULTY_NONE);
         if (!si || si->IsPassive() || si->SpellLevel == 0 || si->SpellLevel > p->GetLevel() || si->SpellFamilyName != classEntry->SpellClassSet)

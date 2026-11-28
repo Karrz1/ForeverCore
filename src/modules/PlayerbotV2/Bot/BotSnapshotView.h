@@ -100,12 +100,15 @@ public:
     { return slot < s_->archetype.role_affinity.size() ? s_->archetype.role_affinity[slot] : 0.f; }
     bool   lfg_in_queue()              const { return s_->lfg.in_queue; }
     bool   lfg_in_dungeon()            const { return s_->lfg.in_dungeon; }
+    bool   lfg_finished_dungeon()      const { return s_->lfg.finished_dungeon; }
     uint16 completed_quest_count()     const { return s_->quest_log.completed_quest_count; }
     std::string const& owner_name() const { return s_->owner_name; }
     bool   has_owner_character()   const { return !s_->owner_name.empty(); }
     bool   is_companion_with_owner() const { return s_->owner_in_group; }
     // In a group with a player who commands it: a companion, or a world bot a player invited. Neither runs world errands.
     bool   is_led_by_player() const { return s_->owner_in_group || s_->led_by_player; }
+    // The player who leads it is in the water near it (BotSnapshot::leader_in_water).
+    bool   leader_in_water() const { return s_->leader_in_water; }
     // A bot of the world: no owner, not in any group, not led by a player.
     bool   is_free_world_bot() const { return s_->owner_guid.IsEmpty() && s_->owner_name.empty() && s_->group.group_guid.IsEmpty() && !s_->led_by_player; }
     bool   no_tag_stance() const { return s_->no_tag_stance; }
@@ -197,6 +200,7 @@ public:
     bool   transport_is_ship() const { return s_->environment.transport_is_ship; }
     bool   is_underwater() const { return s_->environment.is_underwater; }
     float  water_surface_z() const { return s_->environment.water_surface_z; }
+    int32  breath_left_ms() const { return s_->environment.breath_left_ms; }
     bool   is_in_damaging_liquid() const { return s_->environment.is_in_damaging_liquid; }
     // Open-world water-escape focus (FIX #12): nearest DRY footing the builder
     // resolved while the bot is in swim-water; idle:water_escape drives to it.

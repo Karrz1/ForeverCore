@@ -24,6 +24,7 @@
 #include "BotPersonality.h"
 #include "BotArchetype.h"
 #include "BotRng.h"
+#include "Api/BotSwim.h"   // Swim::BreathGoesUp (needs_air)
 #include "ObjectGuid.h"
 #include <algorithm>
 #include <array>
@@ -78,6 +79,12 @@ public:
     // the rotation's static rule table). nullptr if no rotation ticked yet.
     char const* last_rule_fired() const { return last_rule_fired_; }
     void        set_last_rule_fired(char const* name);
+
+    // Skill-up station prop: a craft_skillup cast at a focus puts the trade tool in the hand and
+    // keeps the upgrade rule off the mainhand while the cast run is live. Timestamped — a run that
+    // just stops (moves off, quest, fight) expires on its own, no cleanup emit needed.
+    bool station_prop_out(uint32 now_ms) const { return int32(station_prop_until_ms_ - now_ms) > 0; }
+    void station_prop_extend(uint32 now_ms, uint32 span_ms = 12000) { station_prop_until_ms_ = now_ms + span_ms; }
 
     // BG outcome dedup — the post-match leave rule fires multiple times
     // (bg_status=4 persists ~2min until TC kicks); we only want to record
@@ -529,6 +536,12 @@ public:
     // when SPECIAL ends so the NEXT phase transition re-fires.
     bool saw_special_phase() const { return saw_special_phase_; }
     void set_saw_special_phase(bool v) { saw_special_phase_ = v; }
+
+    // A finder run's goodbye (State_Idle, idle:finder_goodbye_*): once the dungeon is done with a player in the group, each bot
+    // in turn says goodbye, hearths and leaves the group. `map` and `instance` name the run it was planned for, `at_ms` when the
+    // next step is due, `stage` 0 = waiting its turn, 1 = said goodbye, 2 = gone.
+    struct FinderGoodbye { uint32 map = 0; uint32 instance = 0; uint32 at_ms = 0; uint8 stage = 0; };
+    FinderGoodbye& finder_goodbye() { return finder_goodbye_; }
 
     // Owner-set follow distance preference. The /follow whisper picks this
     // up so owners can customize how tightly the bot tails. 0.f means
@@ -1527,8 +1540,19 @@ public:
     // reset on clear_dungeon_cross (landing / relocate).
     bool       dungeon_cross_direct() const { return dungeon_cross_direct_; }
     void       set_dungeon_cross_direct(bool d) { dungeon_cross_direct_ = d; }
+    // A DIRECT crossing down a one-way link whose far end lies far below its mouth (a jump off a ledge into the pool below, as
+    // The Shaper's Terrace's landing): DungeonHonorCross drives it as a fall (API::move_to drop, a jump spline under gravity)
+    // instead of a straight walk through the air. Set ONLY by the nav-link hop; reset on clear_dungeon_cross.
+    bool       dungeon_cross_drop() const { return dungeon_cross_drop_; }
+    void       set_dungeon_cross_drop(bool d) { dungeon_cross_drop_ = d; }
+    // How long (3D, yards) the nav link the bot is crossing is, mouth to far end; 0 when the crossing is not a nav-link hop. Set ONLY
+    // by the nav-link hop; reset on clear_dungeon_cross. DungeonHonorCross gives up an exit further off than a hop is long, and a
+    // link can be longer than the usual give-up distance (The Shaper's Terrace's ledge: 66 y down to the pool).
+    float      dungeon_cross_link_len() const { return dungeon_cross_link_len_; }
+    void       set_dungeon_cross_link_len(float l) { dungeon_cross_link_len_ = l; }
     void       clear_dungeon_cross() { dungeon_cross_until_ms_ = 0; cross_episode_since_ms_ = 0;
-                                       dungeon_cross_direct_ = false; cross_fight_yield_ = false; }
+                                       dungeon_cross_direct_ = false; dungeon_cross_drop_ = false; dungeon_cross_link_len_ = 0.f;
+                                       cross_fight_yield_ = false; }
     // A crossing that stalled while mobs hit the bot gives way to the fight until combat ends (DungeonHonorCross); the
     // commitment itself is kept, so the hop resumes (or its out-of-combat recovery fires) after the fight.
     bool       cross_fight_yield() const { return cross_fight_yield_; }
@@ -1733,7 +1757,12 @@ public:
     // into a pit at (-13610.7,2775.3,-37.0); the tank ran down and back up the slope beside it every 7 s for 29 minutes
     // (1,700 s, z -29 to -37) and the group stood idle below. This tracks the bot's best distance to the step it strides
     // at; no headway for kStrideStallMs means the step is a dead end.
-    static constexpr float  kStrideSameStepY = 5.0f;    // two steps this close are the same step (the start point moves)
+    // The step is measured against the first step of the watch (the anchor), not the last one: the dead end's step moves with the
+    // bot. scan66 drowned_full (af66): the stride toward Captain Dreadrise picked (-13607.6,2777.9), (-13604.6,2780.6) and
+    // (-13601.6,2783.2) by turns as the tank ran up and down the slope, the outer two 8 y apart, so each pick restarted the watch at
+    // 5 y; the tank ran that slope for 53 minutes and the run timed out. A step that really moves on (the bot gets somewhere) leaves
+    // this radius within a couple of seconds of walking and starts a fresh watch.
+    static constexpr float  kStrideSameStepY = 12.0f;   // a step this close to the anchor is the same step
     static constexpr float  kStrideHeadwayY  = 1.5f;    // the best distance must shrink by this much to count
     static constexpr uint32 kStrideStallMs   = 8000;
     static constexpr uint32 kStrideGapMs     = 2000;    // not striding for this long starts the watch afresh
@@ -1741,7 +1770,6 @@ public:
     uint32 stride_note(uint32 map_id, float sx, float sy, float sz, float bx, float by, float bz, uint32 now_ms)
     {
         float const ddx = sx - stride_x_, ddy = sy - stride_y_, ddz = sz - stride_z_;
-        float const d = std::sqrt((bx - sx) * (bx - sx) + (by - sy) * (by - sy) + (bz - sz) * (bz - sz));
         bool const same = stride_map_ == map_id && stride_seen_ms_ && now_ms - stride_seen_ms_ < kStrideGapMs &&
                           ddx * ddx + ddy * ddy + ddz * ddz <= kStrideSameStepY * kStrideSameStepY;
         stride_seen_ms_ = now_ms ? now_ms : 1u;
@@ -1749,6 +1777,12 @@ public:
         {
             stride_map_ = map_id;
             stride_x_ = sx; stride_y_ = sy; stride_z_ = sz;
+        }
+        // Headway is toward the anchor.
+        float const d = std::sqrt((bx - stride_x_) * (bx - stride_x_) + (by - stride_y_) * (by - stride_y_) +
+                                  (bz - stride_z_) * (bz - stride_z_));
+        if (!same)
+        {
             stride_best_ = d;
             stride_best_ms_ = stride_seen_ms_;
             return 0;
@@ -1761,6 +1795,38 @@ public:
         return now_ms - stride_best_ms_;
     }
     float stride_best() const { return stride_best_; }
+
+    // The same watch one level up: the bot's best distance to the BOSS over all its strides toward it. A dead end the bot runs into
+    // and back out of takes turns with a step out of it, and the two are far enough apart that each one restarts the step watch
+    // above, so it never trips. drowned_full af68 (24 Nov, with the 12 y anchor): the stride toward Captain Dreadrise picked
+    // (-13607.6,2777.9,-36.9) into the pit and the tank came back up to (-13588,2784,-27) between picks, 15 y apart, for 56
+    // minutes; the run timed out at 2 of 6. A stride that gets nowhere near its boss for kStrideBossStallMs is a dead end too.
+    // Strides toward a boss through a winding cave that do get somewhere close the distance well inside that time; where they do
+    // not, the route the dungeon was given takes over, which is the authored way there anyway.
+    static constexpr float  kStrideBossHeadwayY = 5.0f;     // the best distance to the boss must shrink by this much to count
+    static constexpr uint32 kStrideBossStallMs  = 60000;
+    static constexpr uint32 kStrideBossGapMs    = 30000;    // no stride toward this boss for this long starts the watch afresh
+    // Returns how long the bot has strode toward this boss without getting kStrideBossHeadwayY closer to it. Only time spent
+    // striding counts (ticks less than kStrideGapMs apart), so a tank held between strides (the group's mana, a pull) does not run
+    // the clock down.
+    uint32 stride_boss_note(uint32 map_id, uint32 boss_entry, float bx, float by, float bz, float tx, float ty, float tz, uint32 now_ms)
+    {
+        float const d = std::sqrt((tx - bx) * (tx - bx) + (ty - by) * (ty - by) + (tz - bz) * (tz - bz));
+        bool const same = stride_boss_map_ == map_id && stride_boss_entry_ == boss_entry && stride_boss_seen_ms_ &&
+                          now_ms - stride_boss_seen_ms_ < kStrideBossGapMs;
+        if (same && now_ms - stride_boss_seen_ms_ < kStrideGapMs)
+            stride_boss_stall_ms_ += now_ms - stride_boss_seen_ms_;
+        stride_boss_seen_ms_ = now_ms ? now_ms : 1u;
+        if (!same || stride_boss_best_ - d > kStrideBossHeadwayY)
+        {
+            stride_boss_map_ = map_id;
+            stride_boss_entry_ = boss_entry;
+            stride_boss_best_ = d;
+            stride_boss_stall_ms_ = 0;
+        }
+        return stride_boss_stall_ms_;
+    }
+    float stride_boss_best() const { return stride_boss_best_; }
 
     // ---- refused-destination memory (refusal-aware target selection,
     // 2026-07-20) ----
@@ -3467,6 +3533,7 @@ private:
     // Bumped by every set_last_rule_fired(): lets a tick tell "a rule fired
     // this tick" from a last_rule_fired_ left over from an earlier tick.
     uint32         rule_fire_seq_ = 0;
+    uint32         station_prop_until_ms_ = 0;
 public:
     uint32         rule_fire_seq() const { return rule_fire_seq_; }
     // [attack_rule]: the target of an [attack_start] line logged during this tick's dispatch, and the rule count then. The line names
@@ -3608,8 +3675,7 @@ private:
     bool           corpse_recovery_emitted_ = false;
     uint32         ghost_since_ms_   = 0;
     uint32         swimming_since_ms_ = 0;
-    uint32         underwater_since_ms_ = 0;
-    uint32         underwater_seen_ms_ = 0;
+    bool           breath_refill_ = false;
     ObjectGuid     stuck_chase_victim_;
     uint16         stuck_chase_ticks_ = 0;
     ObjectGuid     last_taxi_discover_fm_;
@@ -3725,6 +3791,7 @@ private:
     uint32         pending_mail_open_at_ms_ = 0;
     uint32         chat_pause_until_ms_ = 0;
     bool           saw_special_phase_   = false;
+    FinderGoodbye  finder_goodbye_{};
     ObjectGuid     last_seen_group_;
     bool           group_greet_primed_ = false;
     float          follow_distance_   = 0.f;
@@ -4194,6 +4261,11 @@ private:
     float          stride_best_             = 0.f;
     uint32         stride_best_ms_          = 0;
     uint32         stride_seen_ms_          = 0;
+    uint32         stride_boss_map_         = 0;      // boss-stride headway toward the boss (stride_boss_note)
+    uint32         stride_boss_entry_       = 0;
+    float          stride_boss_best_        = 0.f;
+    uint32         stride_boss_stall_ms_    = 0;      // striding time since the best distance last improved
+    uint32         stride_boss_seen_ms_     = 0;
     uint32         move_commit_progress_ms_ = 0;
     // Refused-destination ring (see move_refused_recently() above).
     struct RefusedDst { float x = 0.f, y = 0.f, z = 0.f; uint32 ms = 0; };
@@ -4204,6 +4276,8 @@ private:
     float          dungeon_cross_z_ = 0.f;
     uint32         dungeon_cross_until_ms_ = 0;
     bool           dungeon_cross_direct_ = false;   // DB nav-link crossing (see accessor)
+    bool           dungeon_cross_drop_ = false;     // ... down a one-way link with a long fall (see accessor)
+    float          dungeon_cross_link_len_ = 0.f;   // ... and how long that link is (see accessor)
     // Cross EPISODE wall-clock — survives set_dungeon_cross re-commits; reset only
     // when the crossing is genuinely cleared (landed / relocated). See cross_episode_ms.
     uint32         cross_episode_since_ms_ = 0;
@@ -5373,20 +5447,10 @@ public:
         return swimming_since_ms_ != 0
             && (now_ms - swimming_since_ms_) > kSwimStuckTimeoutMs;
     }
-    // How long the bot's head has been under water (idle:surface_to_breathe), on the snapshot clock (published_at_ms) as
-    // update_swim_state is. A sighting more than 5 s after the last one starts a new dive. Returns the time under so far, 0 when not.
-    uint32 note_underwater(bool under, uint32 now_ms)
-    {
-        if (!under)
-        {
-            underwater_since_ms_ = 0;
-            return 0;
-        }
-        if (underwater_since_ms_ == 0 || now_ms - underwater_seen_ms_ > 5000u)
-            underwater_since_ms_ = now_ms ? now_ms : 1u;
-        underwater_seen_ms_ = now_ms;
-        return now_ms - underwater_since_ms_;
-    }
+    // Up for air (Swim::BreathGoesUp, on the server's breath timer): true from the moment the breath runs short until it is full again.
+    // Every state asks it (idle:surface_to_breathe, the dungeon preempt, the fight), so time under water counts however it was spent.
+    bool breath_refilling() const { return breath_refill_; }
+    bool needs_air(int32 breath_left_ms) { return BotMovement::Swim::BreathGoesUp(breath_left_ms, breath_refill_); }
 
     // Per-target start_attack lockout. When idle:quest_batch:kill (or any
     // rule that emits StartAttackIntent) picks a target the server keeps
@@ -5430,7 +5494,8 @@ public:
     }
     RaidSchoolState&       raid_school()       { return raid_school_; }
     RaidSchoolState const& raid_school() const { return raid_school_; }
-    // The dungeon pack stop's per-pack walk verdicts (PackPullGate.h). Bot worker only: the tank's own idle tick.
+    // The dungeon pack stop's per-pack walk verdicts (PackPullGate.h). Bot worker only: the tank's own idle tick, and a crowd-control
+    // caster's (idle:dungeon_auto_cc_script), which measures the tank's walk to an idle mob before it sheeps it.
     PackPullGate&       pack_pull_gate()       { return pack_pull_gate_; }
     PackPullGate const& pack_pull_gate() const { return pack_pull_gate_; }
     void prune_start_attack_cache(uint32 now_ms)

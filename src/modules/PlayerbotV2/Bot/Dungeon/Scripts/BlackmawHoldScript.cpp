@@ -1,8 +1,10 @@
 // BlackmawHoldScript - per-dungeon advice for Blackmaw Hold (map 2974, Classic 1.60 Forever, levels 55-60).
-// The creatures and the boss fights are in classic_instance_blackmaw_hold.cpp and 2026_11_19_70/71_world_forever_blackmaw_hold;
-// the route (playerbot_dungeon_routes, 0044_blackmaw_hold_route.sql) and this file follow the same boss order: Withermaw,
-// Bonesnout the Unbroken, Impaan the Imprisoner, the Unbound Spirit, the Blackmaw Behemoth, Elder Shaman Bloodmane, Varrox
-// Bleakhoof (the shortest walk from the landing that ends at Varrox; every leg was path-checked on the 2974 navmesh).
+// The boss fights are in classic_instance_blackmaw_hold.cpp, the creatures where live has them in 2026_11_26_41 (a live capture of
+// 25-26 Nov 2026); the route (playerbot_dungeon_routes, 0069_blackmaw_hold_route_from_the_live_landing.sql) and this file follow
+// the same boss order: Withermaw, Bonesnout the Unbroken, Impaan the Imprisoner, the Unbound Spirit, Elder Shaman Bloodmane, the
+// Blackmaw Behemoth, Varrox Bleakhoof (the shortest walk from live's landing that ends with the Behemoth; every leg was path-checked
+// on the 2974 navmesh). Varrox waits in a chamber 200 y below the Behemoth's hall: the way down is a one-way fall into a pool
+// (0069's nav link) with no way back up, so he is last.
 // The Unbound Spirit cannot be hit until Elder Bramblesnap's ritual has run; it starts when the group comes near him, so
 // walking to the Spirit's spot is enough.
 
@@ -48,19 +50,19 @@ public:
             247198,   // Bonesnout the Unbroken
             247206,   // Impaan the Imprisoner
             247231,   // Unbound Spirit
-            247207,   // Blackmaw Behemoth
             247209,   // Elder Shaman Bloodmane
+            247207,   // Blackmaw Behemoth
             247234,   // Varrox Bleakhoof
         };
-        // 1:1 with `bosses`: their spawn spots (2026_11_19_70_world_forever_blackmaw_hold.sql).
+        // 1:1 with `bosses`: live's spawn spots (2026_11_26_41_world_forever_blackmaw_hold_live_spawns.sql).
         a.progression_waypoints = {
-            { 3694.7f, 3428.0f, 302.4f },      // Withermaw
-            { 3386.7f, 3370.7f, 249.98f },     // Bonesnout the Unbroken
-            { 3320.0f, 3578.7f, 343.74f },     // Impaan the Imprisoner
-            { 3265.0f, 2920.0f, 205.09f },     // Unbound Spirit (Elder Bramblesnap stands 14 y away)
-            { 3665.0f, 2905.0f, 172.26f },     // Blackmaw Behemoth
-            { 3484.98f, 2968.62f, 138.75f },   // Elder Shaman Bloodmane
-            { 3556.27f, 2819.47f, 175.98f },   // Varrox Bleakhoof
+            { 3734.3f, 3369.2f, 284.2f },      // Withermaw (by her grotto; the Tunnelweb Matriarch stands 98 y north-west)
+            { 3297.8f, 3409.8f, 250.0f },      // Bonesnout the Unbroken
+            { 3348.1f, 3641.9f, 342.9f },      // Impaan the Imprisoner
+            { 3249.1f, 2911.5f, 204.9f },      // Unbound Spirit (Elder Bramblesnap stands 45 y away)
+            { 3681.3f, 2868.8f, 172.2f },      // Elder Shaman Bloodmane (the east cave)
+            { 3479.6f, 2962.0f, 136.6f },      // Blackmaw Behemoth (low in the west hall, Clawbert with him)
+            { 3482.4f, 3001.0f, -62.5f },      // Varrox Bleakhoof (the chamber below the hall, by the Instance Portal)
         };
         return a;
     }

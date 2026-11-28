@@ -135,6 +135,42 @@ TEST_CASE("ScenarioMonitor: a group that all waits is stalled, not idle, and end
     CHECK_FALSE(Has(m, ScenarioFailKind::Idle));
 }
 
+TEST_CASE("ScenarioMonitor: a squad that waited together is not idle when the tank sets off again", "[scenariomonitor]")
+{
+    // sfk_full af59: all five stood 60 s at the Courtyard Door while the prisoner walked to it; the tank left first.
+    ScenarioMonitor m(Limits());
+    for (std::uint32_t t = 0; t <= 60000; t += 1000)
+        m.Feed(t, Squad(-100.f, -500.f), true);
+    for (std::uint32_t t = 61000; t <= 64000; t += 1000)
+    {
+        auto squad = Squad(-100.f, -500.f);
+        squad[0].x = -100.f - float(t - 60000) / 1000.f * 5.f;   // only the tank walks on, the others follow a few seconds later
+        m.Feed(t, squad, true);
+    }
+    for (std::uint32_t t = 65000; t <= 90000; t += 1000)
+        m.Feed(t, Squad(-120.f - float(t - 65000) / 1000.f, -500.f), true);
+    CHECK_FALSE(Has(m, ScenarioFailKind::Idle));
+}
+
+TEST_CASE("ScenarioMonitor: a bot that stays behind after a shared wait is idle 45 seconds after the others set off", "[scenariomonitor]")
+{
+    ScenarioMonitor m(Limits());
+    for (std::uint32_t t = 0; t <= 60000; t += 1000)
+        m.Feed(t, Squad(-100.f, -500.f), true);
+    std::uint32_t idle_at = 0;
+    for (std::uint32_t t = 61000; t <= 130000; t += 1000)
+    {
+        auto squad = Squad(-100.f - float(t - 60000) / 1000.f, -500.f);
+        squad[2].x = -108.f; squad[2].y = -497.f;       // the mage never moves
+        m.Feed(t, squad, true);
+        for (ScenarioFailure const& f : m.failures())
+            if (f.kind == ScenarioFailKind::Idle && !idle_at)
+                idle_at = f.at_ms;
+    }
+    CHECK(idle_at >= 105000);
+    CHECK(idle_at <= 108000);
+}
+
 TEST_CASE("ScenarioMonitor: a fight keeps a standing group from counting as stalled", "[scenariomonitor]")
 {
     ScenarioMonitor m(Limits());
@@ -1143,5 +1179,45 @@ TEST_CASE("ScenarioMonitor: water checks find a bot under the water, one that bo
             m.Feed(t, squad, true);
         }
         REQUIRE_FALSE(Has(m, ScenarioFailKind::Water));
+    }
+}
+
+TEST_CASE("ScenarioMonitor: a leading tank that holds a trash pull for mana fails mana_hold, once", "[scenariomonitor]")
+{
+    ScenarioLimits l = Limits();
+    l.no_mana_hold = true;
+
+    SECTION("no hold passes")
+    {
+        ScenarioMonitor m(l);
+        for (std::uint32_t t = 0; t <= 20000; t += 1000)
+            m.Feed(t, Squad(-100.f + float(t) * 0.001f, -500.f), true);
+        REQUIRE_FALSE(Has(m, ScenarioFailKind::ManaHold));
+    }
+    SECTION("\"waiting for mana\" fails, once")
+    {
+        ScenarioMonitor m(l);
+        for (std::uint32_t t = 0; t <= 20000; t += 1000)
+        {
+            auto squad = Squad(-100.f + float(t) * 0.001f, -500.f);
+            squad[0].mana_hold = t >= 5000;
+            m.Feed(t, squad, true);
+        }
+        REQUIRE(Has(m, ScenarioFailKind::ManaHold, "Tank"));
+        std::size_t n = 0;
+        for (auto const& f : m.failures())
+            if (f.kind == ScenarioFailKind::ManaHold) ++n;
+        REQUIRE(n == 1);
+    }
+    SECTION("off unless the scenario asks")
+    {
+        ScenarioMonitor m(Limits());
+        for (std::uint32_t t = 0; t <= 20000; t += 1000)
+        {
+            auto squad = Squad(-100.f + float(t) * 0.001f, -500.f);
+            squad[0].mana_hold = true;
+            m.Feed(t, squad, true);
+        }
+        REQUIRE_FALSE(Has(m, ScenarioFailKind::ManaHold));
     }
 }

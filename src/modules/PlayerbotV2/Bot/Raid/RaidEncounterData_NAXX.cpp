@@ -215,12 +215,17 @@ namespace Playerbot::Raid {
         // cloud's 9 y), 36% of his health in 90 s, and the tanks died at 88-104 s. His tank leads him out of them.
         // A cloud's reach grows from 2 y to 20 y over its aura 28158 (classic_spell_grobbulus_cloud_poison); his tank leads him by that.
         r.dragOut.push_back({ 15931, 16363, 11.0f, 28158, 2.0f, 20.0f });
-        r.avoidFrontal.push_back({ 15931, 20.0f, 50.0f, Who::NonTank });
+        // Slime Spray reaches 45 y (bot_death spell_data radius=45), not 20, and his tank turns him every few seconds while it leads him out
+        // of the clouds (dragOut): the cone is kept to its full reach and 15 degrees wider on each side. naxx_grobbulus r3af55-2: the first
+        // spray (25 s) caught Mchealsd and Mcshadb, 7-15 y from him and still on a "leave cone" step from his last turn; their two Fallout
+        // Slimes killed eight healers by 57 s and the raid wiped at 54%.
+        constexpr float kGrobSprayReach = 45.0f, kGrobSprayHalfDeg = 50.0f, kGrobSprayMarginDeg = 15.0f;
+        r.avoidFrontal.push_back({ 15931, kGrobSprayReach, kGrobSprayHalfDeg, Who::NonTank, 0.0f, 100.0f, 0.0f, true, kGrobSprayMarginDeg });
         // Every player the spray hits leaves a Fallout Slime where it stands (classic_boss_grobbulus.cpp SpellHitTarget, one each), so
         // the main tank is the only one in front of him: the off tanks keep the Fallout Slimes from his flank. naxx_grobbulus 1115a: all
         // four tanks stood on him in front from 69 s, one spray at 160 s put six slimes on them at once, the four tanks died to the slimes
         // in 11 s and the slimes then killed 30 of the raid.
-        r.avoidFrontal.push_back({ 15931, 20.0f, 50.0f, Who::OffTank });
+        r.avoidFrontal.push_back({ 15931, kGrobSprayReach, kGrobSprayHalfDeg, Who::OffTank, 0.0f, 100.0f, 0.0f, true, kGrobSprayMarginDeg });
         r.priority.push_back({ 16290, 3 });     // Fallout Slime
 
         // ---------------------------------------------------------------------------------------------------------------
@@ -299,16 +304,88 @@ namespace Playerbot::Raid {
         r.spread.push_back({ 15990, 10.0f, Who::Ranged });
         r.spread.push_back({ 15990, 10.0f, Who::Healer });
         // Phase 1 adds (naxx/classic_naxxramas.h:123-126). Guardians of Icecrown (phase 3) are shackled.
-        r.priority.push_back({ 16429, 4 });     // Soul Weaver
-        // Soldiers explode (Dark Blast 28457) when they reach somebody, so the ranged shoot them down on the way in; the melee keep
-        // the Soul Weavers and the Abominations (first matching row per bot wins, so the ranged row comes first).
+        // Kill order (first matching row per bot wins, so the ranged and melee rows come first). Soldiers explode (Dark Blast 28457) when
+        // they reach somebody, so the ranged shoot them down on the way in, then the Soul Weavers (Wail of Souls), then the Abominations.
+        // The melee take the Abominations first: the tanks hold them, and an Abomination left alive stacks Mortal Wound 28467 on its tank
+        // until the tank dies and it walks into the raid. naxx_kelthuzad af55 (1121), 4 of 4 wipes with the Abominations last (2): kt2af55
+        // run 1 lost 13 of 40 to Mortal Wound (200% weapon damage, 8,224-11,015 a hit on cloth), all three warrior tanks dead by 151 s with
+        // the Abominations at 89-98%, then 11 to Wail of Souls from the Weavers they had held.
         r.priority.push_back({ 16427, 6, Who::Ranged });
+        r.priority.push_back({ 16429, 5, Who::Ranged });
+        r.priority.push_back({ 16428, 4, Who::Ranged });
+        r.priority.push_back({ 16428, 5, Who::Melee });
+        // The unconditional rows are the tanks' order: an Abomination before a Soul Weaver, so a tank holding one never drops it for a loose
+        // Weaver (af600/af601: "priority 4 over 3", and the loose Abominations killed 37-38 of the 40-43 dead).
+        r.priority.push_back({ 16428, 5 });     // Unstoppable Abomination (the highest unconditional row: the synchronized kill focus)
+        r.priority.push_back({ 16429, 4 });     // Soul Weaver
         r.priority.push_back({ 16427, 3 });     // Soldier of the Frozen Wastes
         // No tank holds a Soldier: each one is sent at a random raider and blows up on arrival (classic_kt_p1AddAI, Dark Blast 28457), so
         // the raid shoots them on the way in and the tanks keep the Abominations (naxx-kt-1114e: the tanks chased Soldiers 26-59 y out and
         // the DPS held their damage waiting for them, 0 damage a second for 18 s).
         r.noTank.push_back(16427);
-        r.priority.push_back({ 16428, 2 });     // Unstoppable Abomination
+        // A Soul Weaver is tanked, and turned away from the raid: Wail of Souls 28459 (4,250 shadow and a knockback in front of it) goes
+        // wherever it faces, and an untanked one faces its victim, in the middle of the raid. It has 70,000 health (classic_boss_kelthuzad.cpp
+        // Reset), too much for the ranged to burn on the way in. r1 (1122) had left it to the DPS because its tank could not reach it at an alcove's
+        // keep-out rim; r3 (1123) lets a tank fight a target there from outside the circle. naxx_kelthuzad kt67a / kt67b (1124), untanked:
+        // 16 and 25 dead to Wail of Souls, four melee at once 1-1.4 y from one Weaver, and 768-792 of the 1,028-1,132 forced moves a bot
+        // switching between "leave cone" and "leave hazard" (the cone's way out in an alcove circle, the circle's way out in the cone).
+        // Its tank may stand up to 80 degrees off the line from the camp through it (FaceAway::maxTurnDeg): the cone is 60 degrees each
+        // side, so the camp stays 100 degrees and more off its middle. At the alcove rim the far side lies in the keep-out.
+        // AzerothCore-style variant (kt-af61 script17ac, after mod-playerbots NaxxActions_Kelthuzad.cpp, GPL-2.0-or-later): the Weavers
+        // are not tanked at all. The ranged burn them inside 30 y of the camp, the tanks and melee keep to the Abominations, and nobody
+        // steps out of a Weaver's cone: the raid stays stacked at the camp (no faceAway row, no avoidFrontal row, noTank below).
+        // Tried against script16 (tanked and turned, 1124): kt69k-r had a Weaver on a raider in 70-75% of the samples anyway.
+        r.noTank.push_back(16429);
+        r.noTankWholeFight = true;   // phase 2 too, after the row ends (RaidBrain PublishTargets, kt76b)
+        // Phase 1 is fought from one camp in the middle of the room, under Kel'Thuzad's dais, where the Nefarian fight's camp is the model
+        // (RaidEncounterData_BWL_Movement.cpp): the ranged DPS and the healers hold 7 y round it, the tanks hold the Abominations and Weavers
+        // on an arc 14 y round it, 12 y apart (out of one another's Weaver cones), and the DPS take one focus (the Kel'Thuzad fight script,
+        // RaidFightScript.h). A Weaver's tank stands on its far side from the camp (FaceAway), so Wail of Souls goes out toward the empty
+        // ground between the arc and the alcove keep-outs (32 y from the centre), never into the camp; its knockback has 10 y and more there.
+        // The arc opens west (168 degrees), away from the gap in the alcove ring at the room's east side (alcoves at 33-304 degrees round
+        // him, every 45). The layout ends when Kel'Thuzad can be hit (phase 2: endEnemy, EnemyInFight leaves an immune enemy out).
+        // naxx_kelthuzad kt67a / kt67b (1124), without it: the raid stood over the whole floor between the keep-outs and the cones, and
+        // 768-792 of each run's 1,028-1,132 forced moves were a bot sent from one to the other and back.
+        // The row and the posts hold while any phase 1 add is in the raid's combat (each sent add is put in it as it is sent): Kel'Thuzad
+        // himself is immune all of phase 1, and one Soldier lives a few seconds. The healers' first post names the Soldier, the row's
+        // anchor: the arc's slots are laid on ground that post sees (SeenArcAngle).
+        constexpr float kKtCampX = 3716.0f, kKtCampY = -5106.0f, kKtFloorZ = 142.0f;
+        // A tank goes after a loose add only within 22 y of the camp (fetchMax): its far side then lies 25-26 y out, well inside the alcove
+        // keep-outs (32 y), and the face-away step finds it. The adds walk in to the raider they were sent at, past the arc.
+        // The row holds the Abominations only (AzerothCore-style variant: the Weavers are not tanked, see the faceAway note above). A tank
+        // holding two of them hands one to an empty-handed tank (handOffFrom 2): Mortal Wound on two Abominations at once kills a tank in
+        // seconds.
+        // The bear takes no Abomination while a warrior has a hand free (skipClassMask: druid; RowSkips), and a tank holding one stays
+        // within 6 y of its slot (holdSlack).
+        // When Kel'Thuzad comes down (on a timer, 5:35 into the pull, whatever is still alive) the row holds the last Abominations: the tank
+        // that takes him leaves the row, the others keep their slots, and the row ends with the last Abomination (endAfterAdds).
+        r.tankSpot.push_back({ 16427, 16428, 14.0f, 12.0f, true, kKtCampX, kKtCampY, 168.0f, {}, 15990, 22.0f, 0.0f, 2,
+                               1u << (11 - 1) /* druid */, 6.0f, true });
+        // An Abomination's Mortal Wound takes a full tank to a quarter: its tank's healers keep a heal going on it (burstTank).
+        r.burstTank.push_back(16428);
+        for (uint32_t add : { 16427u, 16428u, 16429u })
+        {
+            // The posts hold into phase 2 while adds of their entry are left (endAfterEnemy): a raid spread round Kel'Thuzad stood in the
+            // way of the last Soul Weavers walking in (kt74b, see StandEnded). There they hold within 20 y of the camp (fightTolerance),
+            // where the ranged and healers spread 10 y apart against Frost Blast: kt79a (1125), kept within 7 y, one Frost Blast stunned
+            // 21 of the camp at 412 s and killed 18 in 5 s.
+            r.stand.push_back({ add, Who::Healer, kKtCampX, kKtCampY, kKtFloorZ, 7.0f, false, 0, 100.0f, 0.0f, 0, 15990, 0.0f, true, 20.0f });
+            r.stand.push_back({ add, Who::Ranged, kKtCampX, kKtCampY, kKtFloorZ, 7.0f, false, 0, 100.0f, 0.0f, 0, 15990, 0.0f, true, 20.0f });
+        }
+        // The adds walk in from seven alcoves at once and the ranged priority (Soldiers) is most often a fresh one at the far wall: the ranged
+        // take what is inside their spell range first (RaidRules::rangedNearFirst), while any phase 1 add or Kel'Thuzad is up.
+        r.rangedNearFirst.push_back(15990);
+        r.rangedNearFirst.push_back(16427);
+        r.rangedNearFirst.push_back(16428);
+        r.rangedNearFirst.push_back(16429);
+        // Mortal Wound 28467 stacks on the Abomination's tank (-10% healing a stack, 200% weapon damage a hit): another tank takes it at 5,
+        // the taker may carry 2 itself (with several Abominations up no tank stays clean). Each tanked Abomination also counts a taker
+        // for the tank roster (PveGroupCoordinator), so the fourth tank (Mctankda) is on it from the second Abomination, not off it.
+        r.tankSwap.push_back({ 16428, 28467, 5, 2 });
+        // Abominations come the whole of phase 1 (44 s, then every 17-30 s: ktAbominationSpawnMs), each needing a tank and a taker:
+        // all four tanks are on the roster from the first sent Soldier (RaidRules::allTanks), not from the second engaged Abomination.
+        r.allTanks.push_back(15990);
+        r.allTanks.push_back(16427);
         // The seven alcoves are out of bounds (naxx-kt-1114d: the tanks met the first Soldier at the south alcove, 3704,-5170, pulled its
         // 3 Abominations and its Soul Weaver and the raid died in 18 s). Each alcove keeps 10 Soldiers wandering within 14 y of its
         // centre, 3 Abominations and a Soul Weaver (classic_boss_kelthuzad.cpp:518-556); they wake for anyone within their own aggro
@@ -325,7 +402,19 @@ namespace Playerbot::Raid {
         // Soul Weaver: Wail of Souls 28459, damage and a knockback in front of it. This build's spell data gives it a 32 y radius
         // ([bot_death] spell_data radius=32), not the vanilla 30: naxx_kelthuzad af52 sweep 1 killed a healer standing 30.7 y from the
         // Weaver. 34 y and a 10 degree margin: a Weaver loose on the raid turns from one victim to the next and casts as it turns.
-        r.avoidFrontal.push_back({ 16429, 34.0f, 60.0f, Who::NonTank, 0.0f, 100.0f, 0.0f, true, 10.0f });
+        // AzerothCore-style variant: no cone row for the Weaver (see the faceAway note above). With it, the healers made 74 "leave cone"
+        // moves in kt69r (1124) and ended north of the camp by the alcoves, where the Soldiers and Abominations picked them off.
+        // The melee DPS keep 8 y from a Weaver that is not on them, out of its melee reach: one whose victim steps out of that reach takes
+        // the nearest raider in it (classic_soul_weaver_ai), and the melee beside it took it from its tank (kt69p, 1124: on a raider in 73
+        // of 94 samples). They do not attack it either (Fight::meleeOff, RaidFightScript.h).
+        r.avoidEnemy.push_back({ 16429, 8.0f, Who::Melee });
+        // The raider a Weaver is on leads it (RaidRules::leadAway): it walks to where the Weaver, coming up to it, faces out of the camp
+        // with nobody else in the cone, and the 26 y knockback (kt70a) lands short of the alcove keep-outs. naxx_kelthuzad kt70e (1125):
+        // one Weaver on a healer in the camp killed 13 with one Wail of Souls. Only within 40 y: a Weaver walks in slowly from its alcove, and
+        // a victim 40-49 y from it moved every 2 s for nothing (kt73b: the healers Mchealse and Mchealsc led Weavers 39-49 y off for 25 s);
+        // but it casts from the cone's range, not from melee (kt76a: from 23 y), so the lead starts before that (25 y in script25ac was
+        // too late).
+        r.leadAway.push_back({ 16429, 32.0f, 60.0f, 25.9f, 40.0f });
         // Shackle at most 3 Guardians: a 4th frees them all (classic_boss_kelthuzad.cpp:1027-1100).
         r.crowdControl.push_back({ 16441, CcKind::Shackle, 0, 3 });
         // A Guardian that is tanked stacks Blood Tap 28470 on its tank (+damage, +size per stack, classic_boss_kelthuzad.cpp:104):

@@ -23,6 +23,10 @@ constexpr float   kHealTankTroubleCover = 1.25f;
 // him to it, and he went on dropping while it cast.
 constexpr float kDamageRateTauMs = 3000.0f;
 
+// How far ahead the damage of a member's own periodic auras is counted (GroupMemberSummary::aura_damage_due): one Greater Heal / Holy
+// Light, the slowest heal that still has to land in time.
+constexpr int32_t kAuraDueHorizonMs = 2500;
+
 struct DamageRate
 {
     float    per_s = 0.0f;   // damage per second as of at_ms

@@ -138,3 +138,62 @@ TEST_CASE("BotSwim: a follower at the end of a lowered route stays in follow ran
         REQUIRE(d < reach + follow + 1.0f);
     }
 }
+
+TEST_CASE("BotSwim: a goal under the water is not snapped to the surface polygon over it", "[botswim]")
+{
+    float const swim = SwimZ(0.0f, kHuman);
+    // the rogue's melee spot by the Saltscale on the Vile Reef floor, 57 y under the surface
+    REQUIRE(IsUnderwaterGoal(-56.8f, swim));
+    // at the swim z, or within the dive margin of it: a goal on the water, snapping is fine
+    REQUIRE_FALSE(IsUnderwaterGoal(swim, swim));
+    REQUIRE_FALSE(IsUnderwaterGoal(swim - kDiveMargin, swim));
+    REQUIRE_FALSE(IsUnderwaterGoal(0.0f, swim));
+}
+
+TEST_CASE("BotSwim: one straight swim goes as deep as the water, but no farther across than a pool", "[botswim]")
+{
+    // straight down from the surface to the reef: 57 y deep, 4 y across
+    REQUIRE(SwimLegFits(4.0f, std::sqrt(4.0f * 4.0f + 57.0f * 57.0f)));
+    // a pool across, as before
+    REQUIRE(SwimLegFits(38.0f, 38.0f));
+    // across a lake: the router's trip
+    REQUIRE_FALSE(SwimLegFits(41.0f, 41.0f));
+    REQUIRE_FALSE(SwimLegFits(30.0f, 95.0f));
+    // nothing to swim
+    REQUIRE_FALSE(SwimLegFits(0.2f, 0.5f));
+}
+
+TEST_CASE("BotSwim: a bot down by its fight or its leader under the water stays down, one alone settles up", "[botswim]")
+{
+    float const swim = SwimZ(0.0f, kHuman);
+    // set down beside the leader on the reef floor
+    REQUIRE(HoldsDepth(-60.0f, swim, 9.0f, -60.0f));
+    // the leader on the surface, or far off: it settles up as before
+    REQUIRE_FALSE(HoldsDepth(-60.0f, swim, 9.0f, swim));
+    REQUIRE_FALSE(HoldsDepth(-60.0f, swim, kHoldDepthYards + 1.0f, -60.0f));
+    // on top of the water: the settle down is never held
+    REQUIRE_FALSE(HoldsDepth(0.5f, swim, 3.0f, -60.0f));
+}
+
+TEST_CASE("BotSwim: up for air on the server's breath timer, and up there until the bar is full", "[botswim]")
+{
+    bool refilling = false;
+    // the timer is not running (full, water breathing): nothing to do
+    REQUIRE_FALSE(BreathGoesUp(-1, refilling));
+    // under water with plenty left, whatever it is doing (a fight counts as much as a swim)
+    REQUIRE_FALSE(BreathGoesUp(60000, refilling));
+    REQUIRE_FALSE(BreathGoesUp(BreathUpAtLeftMs + 1, refilling));
+    // short: up
+    REQUIRE(BreathGoesUp(BreathUpAtLeftMs, refilling));
+    REQUIRE(refilling);
+    // at the surface the bar fills again: it stays up, not straight back down at 26 s
+    REQUIRE(BreathGoesUp(BreathUpAtLeftMs + 10000, refilling));
+    REQUIRE(BreathGoesUp(59000, refilling));
+    // full (the server stops the timer): free to dive again
+    REQUIRE_FALSE(BreathGoesUp(-1, refilling));
+    REQUIRE_FALSE(refilling);
+    REQUIRE_FALSE(BreathGoesUp(50000, refilling));
+    // an undead's 4 minutes: no trip up after 35 s, only when 25 s are left
+    REQUIRE_FALSE(BreathGoesUp(240000 - 35000, refilling));
+    REQUIRE(BreathGoesUp(24000, refilling));
+}

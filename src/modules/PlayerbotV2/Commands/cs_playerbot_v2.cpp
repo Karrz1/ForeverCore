@@ -104,6 +104,7 @@
 #include "Bot/BotSnapshot.h"
 #include "Bot/BotSnapshotView.h"
 #include "Session/AddonControl.h"
+#include "Session/LazyKey.h"
 #include "Session/LazyLock.h"
 #include "World/WorldMetadata.h"
 #include "ObjectMgr.h"
@@ -269,6 +270,7 @@ uint8 ParseClass(std::string const& token)
 //   2. Every boss creature_template entry resolves via sObjectMgr.
 //   3. Every mandatory_interrupt_spells id resolves via sSpellMgr.
 //   4. Every dangerous_auras id resolves via sSpellMgr.
+//   0. A script whose map is not in this client's Map.db2 is not checked; the scripts are named on one "Not on this client" line.
 //   5. progression_waypoints[i] is the spot of bosses[i]: the owed-boss navigator steers to waypoints[i] for bosses[i], so a list
 //      with an entrance spot first, or a boss with no waypoint in the middle, sends the tank to the wrong boss's room. Each pair is
 //      checked against the boss's spawns on the map (wp_far: more than 40 y from every spawn; no_spawn: a boss with no spawn that
@@ -296,6 +298,9 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
     uint32 fail_count    = 0;
     std::vector<std::string> fail_lines;
     std::vector<std::string> warn_lines;
+    // Scripts for maps this client's Map.db2 does not have (the later expansions' dungeons a Classic realm never ships): they
+    // cannot run here, so they are named on one line and not checked. A Classic map that shows up there is a typo in its script.
+    std::vector<std::string> skipped;
 
     // Boss spawns by (map, entry), one pass over the creature store.
     std::map<std::pair<uint32, uint32>, std::vector<Position>> spawns;
@@ -309,6 +314,11 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
     mgr.for_each_script([&](Playerbot::DungeonScript const& script)
     {
         if (only_map != 0 && script.map_id() != only_map) return;
+        if (!sMapStore.LookupEntry(script.map_id()))
+        {
+            skipped.push_back(fmt::format("{} ({})", script.name(), script.map_id()));
+            return;
+        }
         ++total_scripts;
 
         // We don't have a real snapshot to pass, but most scripts don't
@@ -327,13 +337,6 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
             ++local_warn;
             detail += "no_bosses ";
         }
-        // Map_id sanity â catches typos (LostCityOfTolvir 754â755 bug
-        // class). Map.db2 lookup is cheap.
-        if (!sMapStore.LookupEntry(script.map_id()))
-        {
-            ++local_fail;
-            detail += fmt::format("bad_map_id={} ", script.map_id());
-        }
         for (uint32 e : a.bosses)
         {
             if (!sObjectMgr->GetCreatureTemplate(e))
@@ -344,7 +347,9 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
         }
         // 5. waypoints[i] belongs to bosses[i].
         {
-            std::vector<uint32_t> const summoned = script.event_summoned_bosses();
+            std::vector<uint32_t> summoned = script.event_summoned_bosses();
+            for (uint32_t e : script.scripted_spawn_bosses())
+                summoned.push_back(e);
             constexpr float kWpFar = 40.0f;
             for (size_t i = 0; i < a.bosses.size(); ++i)
             {
@@ -364,12 +369,21 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
                         if (nearest < 0.0f || d < nearest)
                             nearest = d;
                     }
+                // A boss beyond a portal (portal_hops) has the portal as its waypoint: no navmesh joins his room to the rest.
+                bool portal_wp = false;
+                if (has_wp)
+                    for (auto const& h : a.portal_hops)
+                    {
+                        auto const& w = a.progression_waypoints[i];
+                        if (h.boss_entry == e && (h.x - w.x) * (h.x - w.x) + (h.y - w.y) * (h.y - w.y) + (h.z - w.z) * (h.z - w.z) <= 5.0f * 5.0f)
+                            portal_wp = true;
+                    }
                 if (sp.empty() && !is_summoned)
                 {
                     ++local_warn;
                     detail += fmt::format("no_spawn[{}]={} ", i, e);
                 }
-                else if (has_wp && nearest > kWpFar)
+                else if (has_wp && nearest > kWpFar && !portal_wp)
                 {
                     ++local_warn;
                     detail += fmt::format("wp_far[{}]={}:{:.0f}y ", i, e, nearest);
@@ -435,6 +449,11 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
         }
     });
 
+    if (total_scripts == 0 && !skipped.empty())
+    {
+        handler->PSendSysMessage("Map %u is not in this client's Map.db2: its script %s is not checked.", only_map, skipped.front().c_str());
+        return true;
+    }
     if (total_scripts == 0)
     {
         handler->PSendSysMessage(
@@ -446,6 +465,13 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
     handler->PSendSysMessage(
         "==== Dungeon validation: %u scripts | PASS=%u WARN=%u FAIL=%u ====",
         total_scripts, pass_count, warn_count, fail_count);
+    if (!skipped.empty())
+    {
+        std::string line = fmt::format("Not on this client ({} scripts, map not in Map.db2, not checked):", skipped.size());
+        for (std::string const& n : skipped)
+            line += " " + n;
+        handler->SendSysMessage(line);
+    }
     for (auto const& l : fail_lines) handler->SendSysMessage(l);
     for (auto const& l : warn_lines) handler->SendSysMessage(l);
     if (fail_count == 0 && warn_count == 0)
@@ -453,7 +479,9 @@ bool RunDungeonValidation(ChatHandler* handler, uint32 only_map)
     if (tsv)
         handler->PSendSysMessage("Boss waypoints and spawns written to %s", tsv_path.c_str());
 
-    return fail_count == 0;
+    // The check ran and printed its result: a FAIL is in the output, not a misuse of the command (returning false printed
+    // the command's usage text under every run that had a FAIL).
+    return true;
 }
 
 // Static-validation pass for `.playerbot smoketest bg`. Walks each
@@ -941,14 +969,14 @@ public:
         }
     }
 
-    // The caller's own race when it can be this class, else a random race of the caller's faction that can.
+    // A random race of the caller's faction that can be this class, his own among them. It used to be his own race whenever it could
+    // be the class: a Tauren player's hunters were all Tauren, each with the Tauren's Plainstrider (Discord 2026-11-24, Gabriel,
+    // "hunter is pets"). A party of other players is of mixed races.
     static uint8 PickCompanionRace(Player const* owner, uint8 cls)
     {
         // Legal on this realm, not merely present in the retail-derived PlayerInfo: a Gnome/Undead owner has
         // PlayerInfo for a hunter but no Forever hunter, and BotComposition::Roll refuses it.
         using Playerbot::V2::BotComposition;
-        if (BotComposition::IsLegalRaceClass(owner->GetRace(), cls))
-            return owner->GetRace();
         std::vector<uint8> races;
         for (uint8 race : { RACE_HUMAN, RACE_ORC, RACE_DWARF, RACE_NIGHTELF, RACE_UNDEAD_PLAYER, RACE_TAUREN, RACE_GNOME, RACE_TROLL })
             if (Player::TeamForRace(race) == owner->GetTeam() && BotComposition::IsLegalRaceClass(race, cls))
@@ -1615,6 +1643,12 @@ public:
         if (ids.empty())
         { handler->PSendSysMessage("No companion of yours called '%s'. `.bot list` shows them.", who.c_str()); return false; }
         uint32 regeared = 0;
+        // BiS and the tier sets only exist at the level cap (Gear::Owned::EffectiveMode): below it a companion gears like "match", so
+        // the regear line says so instead of leaving the old weapon unexplained (AveenZero, playerbots #12 11-24: "gear t3" and
+        // Regear all, the priest kept its level 39 weapon).
+        using Playerbot::V2::Gear::Owned::GearMode;
+        GearMode const owner_mode = GearMode(Playerbot::Services::Owners().OwnerGearMode(sess->GetAccountId()));
+        bool const cap_mode = Playerbot::V2::Gear::Owned::IsCapMode(owner_mode);
         for (Playerbot::BotId id : ids)
         {
             std::string const name = CompanionName(id);
@@ -1631,7 +1665,11 @@ public:
                 case Reroll::Done:
                     Playerbot::Services::Owners().MarkGearVaried(id);
                     ++regeared;
-                    handler->PSendSysMessage("%s: %u slot(s) regeared.", name.c_str(), changed);
+                    if (cap_mode && bot->GetLevel() < Playerbot::MaxPlayerLevel())
+                        handler->PSendSysMessage("%s: %u slot(s) regeared. Gear %s starts at level %u; below that it wears gear for its level (match).",
+                            name.c_str(), changed, Playerbot::V2::Gear::Owned::ModeName(owner_mode), uint32(Playerbot::MaxPlayerLevel()));
+                    else
+                        handler->PSendSysMessage("%s: %u slot(s) regeared.", name.c_str(), changed);
                     break;
                 case Reroll::NotNow:
                     handler->PSendSysMessage("%s is in combat or dead, try again later.", name.c_str());
@@ -8491,8 +8529,18 @@ public:
     // logger "playerbot.v2.smoketest". The command returns immediately;
     // re-run with the "result" sub-command to print the final report once
     // the worker logs PASS/FAIL.
-    static bool HandleSmoketest(ChatHandler* handler, Optional<std::string> arg)
+    // The whole rest of the line: "dungeon all", "dungeon 36" and "bglive 10" are two words, and a one-word argument made the
+    // command parser refuse every one of them with the usage line (af59 bossspawns: ".playerbot smoketest dungeon all" printed
+    // only the usage).
+    static bool HandleSmoketest(ChatHandler* handler, Tail tail)
     {
+        Optional<std::string> arg;
+        {
+            std::string_view t = tail;
+            while (!t.empty() && t.front() == ' ') t.remove_prefix(1);
+            while (!t.empty() && t.back() == ' ') t.remove_suffix(1);
+            if (!t.empty()) arg = std::string(t);
+        }
         if (!Playerbot::Services::Initialized())
         { handler->SendSysMessage("PlayerbotV2 not initialized."); return false; }
 
@@ -8865,9 +8913,10 @@ public:
     //
     // Status sub-form prints whether bot logic is currently attached to self
     // without changing anything, useful for verifying the toggle.
-    // `.playerbot lazy`: one press casts the next spell of the warlock rotation on the target (the add-on's "Lazy lock" key runs this
-    // line as a secure macro, so it works in combat).
-    static bool HandleLazy(ChatHandler* handler)
+    // `.playerbot lazy [dps|tank|heal]`: one press casts the next spell of the player's rotation on the target (the add-on's "Lazy key"
+    // runs this line as a secure macro, so it works in combat). The warlock has its own rotation (Session/LazyLock.h), every other class
+    // the one in Session/LazyKey.h; the role word overrides the role of the player's spec for that press.
+    static bool HandleLazy(ChatHandler* handler, Optional<std::string> role)
     {
         Playerbot::BotLanguage::LocalizedHandler localized(handler); handler = localized.Get();   // replies in the player's language
         WorldSession* sess = handler->GetSession();
@@ -8876,7 +8925,15 @@ public:
             handler->SendSysMessage("`.playerbot lazy` is in-game only (needs your character).");
             return false;
         }
-        std::string const msg = Playerbot::LazyLockPress(sess->GetPlayer());
+        Player* me = sess->GetPlayer();
+        std::string word = role ? *role : std::string();
+        for (char& c : word) if (c >= 'A' && c <= 'Z') c = char(c + 32);
+        if (!word.empty() && word != "dps" && word != "damage" && word != "tank" && word != "heal" && word != "healer")
+        {
+            handler->SendSysMessage("Usage: .playerbot lazy [dps|tank|heal]");
+            return false;
+        }
+        std::string const msg = me->GetClass() == CLASS_WARLOCK ? Playerbot::LazyLockPress(me) : Playerbot::LazyKeyPress(me, word);
         if (!msg.empty())
             handler->SendSysMessage(msg.c_str());
         return true;

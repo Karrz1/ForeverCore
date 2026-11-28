@@ -1,7 +1,10 @@
 ﻿#include "BotSnapshotBuilder.h"
 #include "BotRegistry.h"
+#include "CreatureGroups.h"   // FormationMgr: a mob's formation and its assist flags
 #include "GroupControl.h"
 #include "Bot/SpellFamily.h"
+#include "Bot/MeleeReach.h"   // LiquidVictimBankSpot: the server's melee reach
+#include "PathGenerator.h"     // LiquidVictimBankSpot: a dry path to the bank
 #include "ClassicSpec.h"
 #include "BotAI.h"
 #include "BagSizeTable.h"
@@ -26,6 +29,7 @@
 #include "Dungeon/PveGroupCoordinator.h"
 #include "Raid/RaidBrain.h"
 #include "Dungeon/DungeonScript.h"      // DungeonScriptMgr::GetScriptFor + event_summoned_bosses()
+#include "BotSnapshotView.h"            // BuildDungeonScan: the advice for the snapshot being built
 #include "Player.h"
 #include "TemporarySummon.h"
 #include "PlayerbotAPI.h"         // IsItemRenderableInSlot (auto-equip candidate gate)
@@ -101,6 +105,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <limits>
 #include <shared_mutex>
@@ -1512,6 +1517,87 @@ uint8 DeepWaterBearings(Player const* p, Map* m, uint32 now_ms)
     return mask;
 }
 
+// A dry spot inside the bot's melee reach of a victim standing in a liquid that burns a player (lava, tar): the bank a player swings from.
+// A melee bot never walked in after such a victim, and it never walked to the bank either: it waited for the mob to come out. Ragnaros
+// never comes out (he stands in the lava of his lair for the whole fight), so every rogue and warrior stood 37-40 y away for the whole
+// fight and hit him 0 times (mc_ragnaros af53 1120, 1103 [liquid_hold] / combat:melee_hold_liquid lines; DoctorSun, BUGS-ALL 312).
+// The spot is on a ring round the victim inside the server's melee reach (MeleeReach::Of, 3D centre distance), on ground that is not
+// in the liquid, in sight of the victim, and reached by a path whose every 2 y is out of the burning liquid too (the player path filter
+// takes magma polys). Bearings nearest the bot's own come first. Kept per bot until the victim has moved 2 y or 1.5 s have passed:
+// up to 6 path probes per look. thread_local like the LoS memo: each map's bots build on one worker.
+bool LiquidVictimBankSpot(Player* p, Map* m, ObjectGuid victim, float vx, float vy, float vz, float victim_reach, uint32 now_ms,
+                          float& outX, float& outY, float& outZ)
+{
+    struct Entry { uint32 at_ms; ObjectGuid victim; float vx, vy; bool ok; float x, y, z; };
+    thread_local std::unordered_map<uint64, Entry> s_cache;
+    if (s_cache.size() > 16384)
+        s_cache.clear();
+    uint64 const key = p->GetGUID().GetCounter();
+    auto it = s_cache.find(key);
+    if (it != s_cache.end() && it->second.victim == victim && now_ms - it->second.at_ms < 1500u
+        && (it->second.vx - vx) * (it->second.vx - vx) + (it->second.vy - vy) * (it->second.vy - vy) < 2.0f * 2.0f)
+    {
+        outX = it->second.x; outY = it->second.y; outZ = it->second.z;
+        return it->second.ok;
+    }
+    Entry e{ now_ms, victim, vx, vy, false, 0.0f, 0.0f, 0.0f };
+    auto hazard_at = [&](float x, float y, float z)
+    {
+        return BotMovement::ClassifyDestinationLiquid(p, x, y, z) == BotMovement::LiquidVerdict::Hazard;
+    };
+    float const reach = MeleeReach::Of(victim_reach);
+    float const bx = p->GetPositionX(), by = p->GetPositionY();
+    float const base = std::atan2(by - vy, bx - vx);
+    float const zTop = std::max(p->GetPositionZ(), vz) + 4.0f;
+    int probes = 0;
+    constexpr int kMaxPathProbes = 6;
+    constexpr int kBearings = 24;   // 15 degrees apart
+    for (float ring = reach - 0.5f; ring >= 2.0f && !e.ok && probes < kMaxPathProbes; ring -= 1.5f)
+        for (int i = 0; i < kBearings && !e.ok && probes < kMaxPathProbes; ++i)
+        {
+            // 0, +15, -15, +30, -30 ... degrees from the bot's own bearing
+            int const step = (i + 1) / 2;
+            float const turn = float((i % 2) ? step : -step) * (2.0f * float(M_PI) / float(kBearings));
+            float const x = vx + ring * std::cos(base + turn);
+            float const y = vy + ring * std::sin(base + turn);
+            float const z = m->GetHeight(p->GetPhaseShift(), x, y, zTop, true, 16.0f);
+            if (z <= INVALID_HEIGHT + 1.0f)
+                continue;
+            float const dz = z - vz;
+            if (ring * ring + dz * dz > reach * reach)
+                continue;
+            if (hazard_at(x, y, z))
+                continue;
+            if (!m->isInLineOfSight(p->GetPhaseShift(), x, y, z + p->GetCollisionHeight(), vx, vy, vz + 2.0f,
+                                    LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+                continue;
+            ++probes;
+            PathGenerator path(p);
+            if (!BotMovement::SehSafeCalculatePath(path, x, y, z) || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+                continue;
+            auto const& pts = path.GetPath();
+            bool dry = true;
+            for (size_t k = 1; k < pts.size() && dry; ++k)
+            {
+                float const sx = pts[k - 1].x, sy = pts[k - 1].y, sz = pts[k - 1].z;
+                float const ex = pts[k].x, ey = pts[k].y, ez = pts[k].z;
+                float const len = std::sqrt((ex - sx) * (ex - sx) + (ey - sy) * (ey - sy));
+                int const n = std::max(1, int(len / 2.0f));
+                for (int s = 1; s <= n && dry; ++s)
+                {
+                    float const f = float(s) / float(n);
+                    dry = !hazard_at(sx + (ex - sx) * f, sy + (ey - sy) * f, sz + (ez - sz) * f);
+                }
+            }
+            if (!dry)
+                continue;
+            e.ok = true; e.x = x; e.y = y; e.z = z;
+        }
+    s_cache[key] = e;
+    outX = e.x; outY = e.y; outZ = e.z;
+    return e.ok;
+}
+
 // ---- Ground-hazard classifiers (raid / dungeon generic avoidance) ----
 // A ground effect is worth leaving when the spell HURTS whoever stands in
 // it: a direct damage effect, an aura dealing periodic damage, or a periodic
@@ -1772,6 +1858,41 @@ static uint32 KeyForShutDoor(Player const* p, GameObject const* go)
     return 0;
 }
 
+// A shut door whose lock `p` opens with a skill it has: a lock case that asks for a skill (Lockpicking, opened by Pick Lock) at or below
+// the bot's value. A player with the skill casts the spell on the door (API::use_game_object casts it for the bot). Alcaz Prison's
+// Maximum Security Door 649547 (lock 4295: Lockpicking 250, or the Overseer's Keyring 263992) stands between Overseer Wrex and the rest
+// of the prison; on live a rogue picked it (Karrz's capture, 26 Nov: Pick Lock 1804, 5 s, and it stayed open). Same state and flag
+// tests as KeyForShutDoor: GO_FLAG_LOCKED is what such a door carries.
+static bool PickLockForShutDoor(Player const* p, GameObject const* go)
+{
+    if (go->GetGoType() != GAMEOBJECT_TYPE_DOOR || !go->isSpawned() || go->GetGoState() != GO_STATE_READY)
+        return false;
+    if (go->HasFlag(GameObjectFlags(GO_FLAG_IN_USE | GO_FLAG_INTERACT_COND | GO_FLAG_NOT_SELECTABLE)))
+        return false;
+    LockEntry const* lock = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId());
+    if (!lock)
+        return false;
+    for (uint8 li = 0; li < MAX_LOCK_CASE; ++li)
+    {
+        if (lock->Type[li] != LOCK_KEY_SKILL)
+            continue;
+        SkillType const skill = SkillByLockType(LockType(lock->Index[li]));
+        if (skill != SKILL_LOCKPICKING)
+            continue;
+        uint16 const value = p->GetSkillValue(skill);
+        if (value != 0 && value >= lock->Skill[li])
+            return true;
+        // A rogue short of the lock: said once a minute (the builder runs every tick), so a party held at such a door shows why.
+        static std::atomic<uint32> s_shortAt{ 0 };
+        uint32 const now = getMSTime();
+        uint32 was = s_shortAt.load(std::memory_order_relaxed);
+        if (p->HasSpell(1804) && getMSTimeDiff(was, now) > 60000 && s_shortAt.compare_exchange_strong(was, now))
+            TC_LOG_INFO("playerbot.v2", "[pick_lock] {} cannot pick entry={}: Lockpicking {} of {}", p->GetName(), go->GetEntry(),
+                        uint32(value), uint32(lock->Skill[li]));
+    }
+    return false;
+}
+
 // A chest the bot's dungeon lists as holding a door key (DungeonScript::key_chests: Fengus's Chest in Dire Maul North), spawned and
 // not yet opened.
 static bool IsListedKeyChest(Player const* p, GameObject const* go)
@@ -1898,6 +2019,119 @@ SnapRecyclePool& RecyclePool()
 }
 
 } // anonymous
+
+// A boss that stands immune to players until one comes near: its SmartAI script makes it attackable on an out-of-combat
+// line-of-sight event (event 10, action 144 with 0). Ruins of Lordaeron's Rath'mael 250657 stands at his ritual like that and wakes
+// at 20 y; rol_full af61 (22 Nov) walked past him to The Baron and Bjork (boss_skipped), because every boss scan took him for
+// not fightable. Cached per entry: the scripts are load-time data.
+static bool BossWakesOnApproach(Creature const* c)
+{
+    static std::mutex s_mutex;
+    static std::unordered_map<uint32, bool> s_cache;
+    uint32 const entry = c->GetEntry();
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (auto it = s_cache.find(entry); it != s_cache.end())
+            return it->second;
+    }
+    bool wakes = false;
+    for (SmartScriptHolder const& h : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+        if (h.event.type == SMART_EVENT_OOC_LOS && h.action.type == SMART_ACTION_SET_IMMUNE_PC && !h.action.setImmunePC.immunePC)
+            wakes = true;
+    std::lock_guard<std::mutex> lock(s_mutex);
+    s_cache.emplace(entry, wakes);
+    return wakes;
+}
+
+// A listed boss the bot can fight now: alive, and a valid attack target for it, or hostile and asleep until a player comes near
+// (BossWakesOnApproach). A boss that stands immune or unselectable until an event the bots do not run is not the next pull: with
+// it in the boss scans the tank walked up to it and "pulled" it every 30 s while the attack never took. eea74327b3
+// uldaman_revelosh: Baelog (6906, the Lost Dwarves) at 23 y in sight, 120 s group_stalled; b3ca0b4b67 st_mijan: Weaver (5720).
+static bool BossFightable(Player const* origin, Creature const* c)
+{
+    if (!c || !c->IsAlive())
+        return false;
+    if (origin->IsValidAttackTarget(c))
+        return true;
+    return c->IsImmuneToPC() && c->IsHostileTo(origin) && !c->IsInCombat() &&
+        !c->HasUnitFlag(UnitFlags(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_UNINTERACTIBLE)) && BossWakesOnApproach(c);
+}
+
+// DungeonExecState::scan_bosses / scan_hostiles: the creatures the dungeon rules used to find with grid walks of their own on the
+// bot workers (the boss scans, the lever and portal checks, the tank's next-pack scan). Here, during the snapshot build, no map is
+// updating. Instances only; the advice is the one the rules will read for this snapshot.
+static void BuildDungeonScan(Player* p, BotAI* bot_ai, BotSnapshot& snap)
+{
+    using DE = DungeonExecState;
+    DE& de = snap.dungeon_exec;
+    de.scan_bosses.clear();
+    de.scan_hostiles.clear();
+    Map* map = p->GetMap();
+    if (!map || !map->IsDungeon() || map->IsBattlegroundOrArena() || !p->IsAlive())
+        return;
+    // The tank runs the boss and pack scans; every member uses the lever and portal checks. The others' builds skip the walks.
+    Role const role = (bot_ai && bot_ai->role_override() != Role::Unknown) ? bot_ai->role_override() : snap.group.my_role;
+    bool const tank = role == Role::Tank;
+    DungeonAdvice const advice = Services::Dungeons().GetAdvice(BotSnapshotView(snap));
+    if (!tank && advice.use_go_entries.empty() && advice.portal_hops.empty())
+        return;
+    std::vector<uint32_t> entries = advice.bosses;
+    for (DungeonAdvice::PortalHop const& hop : advice.portal_hops)
+    {
+        entries.push_back(hop.boss_entry);
+        entries.insert(entries.end(), hop.opened_by.begin(), hop.opened_by.end());
+    }
+    if (!entries.empty())
+    {
+        struct ScanBossCheck
+        {
+            std::vector<uint32_t> const& entries;
+            bool operator()(Creature* c) const
+            {
+                if (!c || !c->IsAlive()) return false;
+                return std::find(entries.begin(), entries.end(), c->GetEntry()) != entries.end();
+            }
+        };
+        std::list<Creature*> found;
+        ScanBossCheck chk{ entries };
+        Trinity::CreatureListSearcher<ScanBossCheck> searcher(p, found, chk);
+        Cell::VisitAllObjects(p, searcher, DE::kScanBossYd);
+        uint32 const now = GameTime::GetGameTimeMS();
+        for (Creature* c : found)
+        {
+            if (!p->IsWithinDistInMap(c, DE::kScanBossYd))
+                continue;
+            DE::ScanUnit u;
+            u.guid = c->GetGUID();
+            u.entry = c->GetEntry();
+            u.x = c->GetPositionX(); u.y = c->GetPositionY(); u.z = c->GetPositionZ();
+            u.fightable = BossFightable(p, c);
+            u.in_los = p->IsWithinDistInMap(c, DE::kScanLosYd) && CachedLosCheck(p, c, now);
+            u.in_combat = c->IsInCombat();
+            de.scan_bosses.push_back(u);
+        }
+    }
+    if (!tank)
+        return;
+    std::list<Unit*> hostiles;
+    Trinity::AnyUnfriendlyUnitInObjectRangeCheck hchk(p, p, DE::kScanHostileYd);
+    Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> hsearch(p, hostiles, hchk);
+    Cell::VisitAllObjects(p, hsearch, DE::kScanHostileYd);
+    for (Unit* u : hostiles)
+    {
+        Creature const* c = u ? u->ToCreature() : nullptr;
+        if (!c || !c->IsAlive() || c->IsCritter() || c->IsTotem() || c->GetCreatureType() == CREATURE_TYPE_NON_COMBAT_PET)
+            continue;
+        if (!p->IsValidAttackTarget(c))
+            continue;
+        DE::ScanUnit su;
+        su.guid = c->GetGUID();
+        su.entry = c->GetEntry();
+        su.x = c->GetPositionX(); su.y = c->GetPositionY(); su.z = c->GetPositionZ();
+        su.fightable = true;
+        de.scan_hostiles.push_back(su);
+    }
+}
 
 std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* bot_ai, SnapshotVer next_version, TickId tick)
 {
@@ -2145,6 +2379,8 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
                 p->GetPhaseShift(), p->GetPositionX(), p->GetPositionY());
         else
             snap->environment.water_surface_z = 0.0f;
+        // The breath the server counts, whatever state the bot was in: a fight under water used it up as much as a swim does.
+        snap->environment.breath_left_ms = p->GetMirrorTimerLeft(BREATH_TIMER);
 
         // Open-world water-escape FOCUS target (FIX #12). When the bot is in real
         // swim-water (a liquid that does not hurt), resolve the nearest DRY navmesh footing
@@ -2662,6 +2898,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
     {
         if (WorldSession const* sess = p->GetSession())
             snap->players_own_character = !Services::Accounts().is_pool_account(sess->GetAccountId());
+        snap->plays_as_human = Scenario::PlaysAsHuman(p);
         if (uint64 const owner_low = Services::Owners().OwnerCharacter(snap->bot_id))
         {
             ObjectGuid owner_guid = ObjectGuid::Create<HighGuid::Player>(owner_low);
@@ -2779,7 +3016,11 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
     // solo fleet that motivated the isLFGGroup() gate above). GetState is a
     // read-only, non-mutating getter (LFGMgr operator[]-insert bug fixed).
     if (p->GetGroup() && snap->instance_ctx.is_in_dungeon)
-        snap->lfg.in_dungeon = (sLFGMgr->GetState(p->GetGUID()) == lfg::LFG_STATE_DUNGEON);
+    {
+        lfg::LfgState const lfg_state = sLFGMgr->GetState(p->GetGUID());
+        snap->lfg.in_dungeon = (lfg_state == lfg::LFG_STATE_DUNGEON);
+        snap->lfg.finished_dungeon = (lfg_state == lfg::LFG_STATE_FINISHED_DUNGEON);
+    }
 
     // Owned auctions across all four houses (Neutral=1, Alliance=2, Horde=6,
     // Goblin=7). Bots typically only post in their faction's house but might
@@ -3688,6 +3929,17 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
         if (snap->owner_in_group)
             if (Player const* owner = ObjectAccessor::FindConnectedPlayer(snap->owner_guid); owner && owner->GetMapId() == p->GetMapId())
                 snap->owner_dist = p->GetExactDist2d(owner);
+        // The leading player in the water near the bot: it follows him there (vile_reef_fight af60: the party swam down with the rogue
+        // who led it, idle:water_escape took each bot back to the bank between fights, the follow took it down again, and three bots
+        // went under and back up six times in a minute while the hunter drowned on the way out).
+        {
+            constexpr float kLeaderWaterYd = 100.0f;
+            ObjectGuid const lead = snap->owner_in_group ? snap->owner_guid : snap->led_by_player ? snap->controller_guid : ObjectGuid::Empty;
+            if (!lead.IsEmpty() && lead != p->GetGUID())
+                if (Player const* l = ObjectAccessor::FindConnectedPlayer(lead);
+                    l && l->IsAlive() && l->GetMapId() == p->GetMapId() && l->IsInWater() && p->GetExactDist2d(l) <= kLeaderWaterYd)
+                    snap->leader_in_water = true;
+        }
         if (bot_ai)
         {
             snap->holding_position = bot_ai->holding_position(snap->published_at_ms);
@@ -4351,6 +4603,18 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             ZLiquidStatus const vst = vmap->GetLiquidStatus(p->GetPhaseShift(), snap->combat.victim_x, snap->combat.victim_y,
                                                             snap->combat.victim_z, {}, &vld);
             snap->combat.victim_in_damaging_liquid = (vst & MAP_LIQUID_STATUS_IN_CONTACT) != 0 && BotMovement::LiquidHurts(vld, vst);
+            // The bank a melee bot swings from (LiquidVictimBankSpot): only for a class that can fight in melee, out of reach now.
+            uint8 const bank_cls = p->GetClass();
+            if (snap->combat.victim_in_damaging_liquid && p->IsAlive() && !snap->combat.victim_group_target &&
+                bank_cls != CLASS_MAGE && bank_cls != CLASS_PRIEST && bank_cls != CLASS_WARLOCK && bank_cls != CLASS_HUNTER)
+            {
+                float const bdx = snap->combat.victim_x - p->GetPositionX(), bdy = snap->combat.victim_y - p->GetPositionY();
+                float const bdz = snap->combat.victim_z - p->GetPositionZ();
+                if (!MeleeReach::InReach(bdx * bdx + bdy * bdy + bdz * bdz, snap->combat.victim_reach))
+                    snap->combat.victim_bank_known = LiquidVictimBankSpot(p, vmap, snap->combat.victim, snap->combat.victim_x,
+                        snap->combat.victim_y, snap->combat.victim_z, snap->combat.victim_reach, snap->published_at_ms,
+                        snap->combat.victim_bank_x, snap->combat.victim_bank_y, snap->combat.victim_bank_z);
+            }
         }
     Pet const* threat_pet = p->GetPet();
     auto fill_threat = [&](NearbyUnit& u, Unit* t)
@@ -4573,6 +4837,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             boss_pause = bc->IsDungeonBoss() || bc->isWorldBoss() || bc->GetCreatureClassification() == CreatureClassifications::Obsolete;
         if (!u.untargetable && (!u.is_pacified || boss_pause) && u.hp > 0)
             ++snap->combat.fightable_attackers;
+        u.valid_attack_target = p->IsValidAttackTarget(a);
         fill_threat(u, a);
         snap->combat.attackers.push_back(u);
     }
@@ -4604,6 +4869,7 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
         if (Unit const* v = a->GetVictim())
             u.victim = v->GetGUID();
         u.is_player = a->GetTypeId() == TYPEID_PLAYER;
+        u.valid_attack_target = p->IsValidAttackTarget(a);
         if (u.hp > 0)
             ++snap->combat.fightable_attackers;
         snap->combat.attackers.push_back(u);
@@ -5156,6 +5422,15 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
                     u.is_fleeing = mt == FLEEING_MOTION_TYPE || mt == TIMED_FLEEING_MOTION_TYPE || mt == ASSISTANCE_MOTION_TYPE;
                     u.seeks_help = mt == ASSISTANCE_MOTION_TYPE;
                 }
+                // The formation from the static table, not the live CreatureGroup: the load-time data is read-only here.
+                if (c->GetSpawnId())
+                    if (FormationInfo const* fi = sFormationMgr->GetFormationInfo(c->GetSpawnId()))
+                    {
+                        u.formation_leader = fi->LeaderSpawnId;
+                        u.engage_calls_formation = fi->LeaderSpawnId == c->GetSpawnId()
+                            ? (fi->GroupAI & FLAG_MEMBERS_ASSIST_LEADER) != 0
+                            : (fi->GroupAI & FLAG_LEADER_ASSISTS_MEMBER) != 0;
+                    }
                 // Uninteractible (NOT_SELECTABLE): unkillable, unacquirable hazard
                 // stalkers. Engage/pull rules skip these; the in-combat advance
                 // walks the tank through them. See NearbyUnit + the harbor note.
@@ -7439,6 +7714,919 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
         }
     }
 
+    // ---- Nearby GameObjects (30yd, capped, filtered by useful types) ----
+    // Before the quest sections below: the actionable index, quest tools, turn-ins, offers, world quests and the companion
+    // quest help all read nearby_objects. Built after them, a quest object, ender or giver was never in the snapshot they saw
+    // (a summoned alt never handed in at an object, never used one and never took a quest from one: rows 240 and 250).
+    {
+        constexpr float SCAN_RADIUS = 30.0f;
+        constexpr size_t MAX_OBJECTS = 16;
+        thread_local std::vector<GameObject*> scratch_gos;
+        scratch_gos.clear();
+        scratch_gos.reserve(64);
+        Trinity::AllGameObjectsWithEntryInRange go_check(p, /*entry*/ 0, SCAN_RADIUS);
+        Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> searcher(p, scratch_gos, go_check);
+        Cell::VisitGridObjects(p, searcher, SCAN_RADIUS);
+
+        // thread_local scratch reused across builds — mirrors the
+        // enemy/friend by_dist pattern. clear()+reserve() retains capacity
+        // so the per-build heap alloc is paid once per worker thread.
+        thread_local std::vector<std::pair<float, GameObject*>> by_dist;
+        by_dist.clear();
+        by_dist.reserve(scratch_gos.size());
+        for (GameObject* go : scratch_gos)
+        {
+            if (!go) continue;
+            // Filter to types bot logic actually drives. Skip everything else to
+            // keep the vector bounded — chairs, transports, etc would
+            // dominate the cap in major cities. GATHERING_NODE (50) is the
+            // modern herbalism/mining node type — without it in the
+            // snapshot, the `idle:gather` rule's `obj.go_type != 50`
+            // continue-skip would never find a candidate and the rule
+            // would never fire.
+            const uint8 t = go->GetGoType();
+            const bool useful =
+                t == GAMEOBJECT_TYPE_MAILBOX        ||
+                t == GAMEOBJECT_TYPE_CHEST          ||
+                t == GAMEOBJECT_TYPE_GATHERING_NODE ||
+                t == GAMEOBJECT_TYPE_FISHINGHOLE    ||
+                t == GAMEOBJECT_TYPE_QUESTGIVER     ||
+                t == GAMEOBJECT_TYPE_BINDER         ||
+                t == GAMEOBJECT_TYPE_GOOBER         ||
+                t == GAMEOBJECT_TYPE_MEETINGSTONE   ||
+                t == GAMEOBJECT_TYPE_GUILD_BANK     ||
+                // Quest-interaction GO types — needed by idle:quest_use_go
+                // (B4) so QUEST_OBJECTIVE_GAMEOBJECT (type 2) targets are
+                // visible. GENERIC covers most static quest props (banners,
+                // crates, books). BUTTON covers levers / switches. SPELL_FOCUS
+                // covers altars / runes that gate quest casts.
+                t == GAMEOBJECT_TYPE_GENERIC        ||
+                t == GAMEOBJECT_TYPE_BUTTON         ||
+                t == GAMEOBJECT_TYPE_SPELL_FOCUS    ||
+                // Cross-continent travel (Phase C). SPELLCASTER (22) is
+                // the static portal GO; TRANSPORT (11) is mooring rooms /
+                // elevators / etc; MO_TRANSPORT (15) is the seafaring
+                // ships and zeppelins that move between continents. The
+                // builder pre-resolves their destinations so the bot logic can
+                // walk to them and use/board.
+                t == GAMEOBJECT_TYPE_SPELLCASTER    ||
+                t == GAMEOBJECT_TYPE_TRANSPORT      ||
+                t == GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT ||
+                // Battleground objectives. FLAGSTAND (24) covers AB/EotS/
+                // BfG capturable nodes + AV banners + WSG/TP/BfG flag
+                // pedestals + IoC/SoTA/SS objective markers. FLAGDROP (26)
+                // covers dropped CTF flags. CAPTURE_POINT (42) is the
+                // modern WG/AV-style capture object — auto_use_go_types
+                // doesn't read it directly but BG node-state population
+                // walks it from a separate path; including here lets
+                // future scripts opt in via auto_use_go_types. Without
+                // these, idle:bg_use_objective_go silently no-ops for
+                // every BG that opts in, making node captures impossible.
+                t == GAMEOBJECT_TYPE_FLAGSTAND      ||
+                t == GAMEOBJECT_TYPE_FLAGDROP       ||
+                t == GAMEOBJECT_TYPE_CAPTURE_POINT  ||
+                // Modern BG mechanic GOs (BG audit N12/N25/N32/N67): the
+                // Cata+ CTF flags are NEW_FLAG (36) on the pedestal and
+                // NEW_FLAG_DROP (37) on the ground; EotS towers and the
+                // Silvershard cart zones are CONTROL_ZONE (29). These were
+                // missing from this filter, so idle:bg_use_objective_go
+                // could never SEE the very GOs the WSG/TP/EotS/Kotmogu
+                // scripts opt into via auto_use_go_types — flag and orb
+                // pickup was structurally impossible fleet-wide.
+                t == GAMEOBJECT_TYPE_NEW_FLAG       ||
+                t == GAMEOBJECT_TYPE_NEW_FLAG_DROP  ||
+                t == GAMEOBJECT_TYPE_CONTROL_ZONE   ||
+                // DESTRUCTIBLE_BUILDING (33): IoC keep gates + SoTA defense-
+                // line gates. The BG siege-vehicle fire rule scans these and
+                // casts the vehicle's gate-damage spell at the standing ones
+                // (is_destroyed below); without them in the snapshot a siege
+                // engine could never break a gate and the General was never
+                // reached (BG audit IoC / SoTA siege blockers).
+                t == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING ||
+                // TRAP (6): includes environmental hazards like bonfires
+                // and pyres. Builder classifies as hazard below if the
+                // trap's spell is hostile, so idle:flee_hazard can step
+                // the bot out of damage range. We DO want non-hostile
+                // traps in nearby_objects too (some quest scripts trigger
+                // off them), so the type passes the filter unconditionally.
+                t == GAMEOBJECT_TYPE_TRAP           ||
+                // RITUAL (18): an altar that needs several users (Uldaman's two altars, the UBRS Blackrock Altar). The group's
+                // bots fill the places a person in the group leaves open (ritual_join below).
+                t == GAMEOBJECT_TYPE_RITUAL ||
+                // DOOR (0): only a shut one a player opens by hand (IsShutHandDoor, or named by the dungeon: IsListedShutHandDoor),
+                // or one that opens to a key this bot carries (KeyForShutDoor) or to its Lockpicking (PickLockForShutDoor), for
+                // idle:dungeon_open_hand_door.
+                (t == GAMEOBJECT_TYPE_DOOR && (IsShutHandDoor(go) || IsListedShutHandDoor(go) || KeyForShutDoor(p, go) != 0 ||
+                                               PickLockForShutDoor(p, go)));
+            if (!useful) continue;
+            const float dx = go->GetPositionX() - p->GetPositionX();
+            const float dy = go->GetPositionY() - p->GetPositionY();
+            const float dz = go->GetPositionZ() - p->GetPositionZ();
+            by_dist.emplace_back(dx*dx + dy*dy + dz*dz, go);
+        }
+        std::sort(by_dist.begin(), by_dist.end(),
+                  [](auto const& a, auto const& b) { return a.first < b.first; });
+        if (by_dist.size() > MAX_OBJECTS) by_dist.resize(MAX_OBJECTS);
+
+        // An object's loot the bot has open (an herb or vein its gathering spell opened): the gather rule takes it.
+        snap->world_objects.loot_open = p->GetLootGUID().IsGameObject() ? p->GetLootGUID() : ObjectGuid::Empty;
+        snap->world_objects.nearby_objects.reserve(by_dist.size());
+        for (auto const& [_, go] : by_dist)
+        {
+            BotSnapshot::NearbyObject n{};
+            n.guid    = go->GetGUID();
+            n.entry   = go->GetEntry();
+            n.go_type = go->GetGoType();
+            // [bgflag_diag] TEMP — confirm CTF flag GO (type 36) is in-snapshot on
+            // EotS(566)/TP(726), and which bot sees it (incl. distance via pos).
+            if ((p->GetMapId() == 726 || p->GetMapId() == 566) && go->GetGoType() == 36)
+            {
+                static thread_local uint32 s_bfAt = 0;
+                uint32 const bfn = getMSTime();
+                if (bfn - s_bfAt > 5000)
+                {
+                    s_bfAt = bfn;
+                    TC_LOG_INFO("playerbot.v2",
+                        "[bgflag_diag] map={} flagGO entry={} at ({:.0f},{:.0f},{:.0f}) "
+                        "seen_by={} bot_pos=({:.0f},{:.0f},{:.0f})",
+                        p->GetMapId(), go->GetEntry(), go->GetPositionX(),
+                        go->GetPositionY(), go->GetPositionZ(), p->GetName(),
+                        p->GetPositionX(), p->GetPositionY(), p->GetPositionZ());
+                }
+            }
+            n.x = go->GetPositionX();
+            n.y = go->GetPositionY();
+            n.z = go->GetPositionZ();
+            if (n.go_type == GAMEOBJECT_TYPE_RITUAL)
+                n.ritual_join = RitualNeedsBot(p, go);
+            n.hand_door = n.go_type == GAMEOBJECT_TYPE_DOOR;   // the filter above lets in only a shut hand door
+            if (n.hand_door && !IsShutHandDoor(go) && !IsListedShutHandDoor(go))
+            {
+                n.key_item = KeyForShutDoor(p, go);   // a door only a key opens: the bot uses its key on it
+                n.pick_lock = n.key_item == 0 && PickLockForShutDoor(p, go);   // or its Pick Lock
+            }
+            if (n.hand_door)
+            {
+                n.o = go->GetOrientation();
+                n.auto_close = go->GetGOInfo()->GetAutoCloseTime() != 0;
+            }
+            if (n.go_type == GAMEOBJECT_TYPE_CHEST)
+                n.key_chest = IsListedKeyChest(p, go);
+            // Destructible gate breach state (IoC / SoTA) so the siege-fire
+            // rule skips already-down gates and advances to the next line.
+            if (n.go_type == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING)
+                n.is_destroyed =
+                    go->GetDestructibleState() == GO_DESTRUCTIBLE_DESTROYED;
+            // Herb / ore vein: a chest whose lock asks for Herbalism or Mining (the gathering rules, GatheringRules.cpp).
+            if (n.go_type == GAMEOBJECT_TYPE_CHEST)
+                if (LockEntry const* lock = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId()))
+                    for (uint8 li = 0; li < MAX_LOCK_CASE; ++li)
+                    {
+                        if (lock->Type[li] != LOCK_KEY_SKILL)
+                            continue;
+                        SkillType const sk = SkillByLockType(LockType(lock->Index[li]));
+                        if (sk != SKILL_HERBALISM && sk != SKILL_MINING)
+                            continue;
+                        n.gather_skill = uint16(sk);
+                        n.gather_req   = lock->Skill[li];
+                        n.gather_ready = go->isSpawned() && go->getLootState() == GO_READY;
+                        break;
+                    }
+            // Pre-resolve teleport destination for SPELLCASTER GOs.
+            // Type 22 stores its triggered spell in spellCaster.spell.
+            // The spell's destination is in the spell_target_position
+            // table (loaded once at server start, read-only thereafter
+            // — safe to query from this snapshot path). Most type-22
+            // GOs are altars / event triggers without a teleport effect;
+            // for those, GetSpellTargetPosition returns null and the
+            // teleport_dest_* fields stay zero.
+            if (n.go_type == GAMEOBJECT_TYPE_SPELLCASTER)
+            {
+                if (GameObjectTemplate const* tmpl = go->GetGOInfo())
+                {
+                    const uint32 spell_id = tmpl->spellCaster.spell;
+                    if (spell_id != 0)
+                    {
+                        // Resolve the teleport destination through the SHARED
+                        // PortalIndex resolver, which scans all effect indices
+                        // AND follows the FORCE_CAST/TRIGGER_SPELL indirection
+                        // modern portals use. The GO's own spell often carries
+                        // no spell_target_position: either the teleport sits on
+                        // a non-zero effect index (~156 portals server-wide), or
+                        // the spell merely FORCE_CASTs the real teleport (e.g.
+                        // Org's Undercity portal 293684 -> 17611 -> 121862 ->
+                        // map 0). Either way the old direct scan left
+                        // teleport_dest_map=0, so the in-range use_portal gate
+                        // (dest must match the goal map) skipped the portal and
+                        // the bot walked to it but never used it. Using the same
+                        // resolver as PortalIndex keeps the snapshot and the
+                        // travel graph in lockstep.
+                        uint32 dmap = 0;
+                        float dtx = 0.f, dty = 0.f, dtz = 0.f;
+                        if (Playerbot::V2::Travel::ResolvePortalSpellDest(spell_id, dmap, dtx, dty, dtz))
+                        {
+                            n.teleport_dest_map = dmap;
+                            n.teleport_dest_x   = dtx;
+                            n.teleport_dest_y   = dty;
+                            n.teleport_dest_z   = dtz;
+                        }
+                    }
+                }
+            }
+            // Hazard classification for TRAP-type GOs (bonfires, pyres,
+            // lava grates). We mark a trap as a hazard when its trap
+            // spell is hostile (SpellInfo::IsPositive() == false). The
+            // hazard_radius is the radius the core fires the trap at (see
+            // below). idle:flee_hazard
+            // uses both fields to step the bot 5y past the radius so it
+            // stops standing inside a bonfire and dying.
+            else if (n.go_type == GAMEOBJECT_TYPE_TRAP)
+            {
+                if (GameObjectTemplate const* tmpl = go->GetGOInfo())
+                {
+                    const uint32 trap_spell = tmpl->trap.spell;
+                    if (trap_spell != 0)
+                    {
+                        if (SpellInfo const* si = sSpellMgr->GetSpellInfo(trap_spell, DIFFICULTY_NONE))
+                        {
+                            if (!si->IsPositive())
+                            {
+                                // The core halves the radius only for an owned trap (GameObject::Update, since 2026-10-16); a
+                                // world trap fires at the full radius. Halving every trap left bots 6-11 y from Majordomo's
+                                // Intense Heat pit (20533, radius 10) thinking they stood clear: 17 of the 43 deaths in
+                                // release-0130 mc_majordomo were that pit.
+                                n.is_hazard     = true;
+                                n.hazard_radius = go->GetOwnerGUID().IsEmpty() ? float(tmpl->trap.radius)
+                                                                               : tmpl->trap.radius / 2.0f;
+                            }
+                        }
+                    }
+                }
+            }
+            // Continental transport (ship / zeppelin). Same teleport_dest
+            // semantics: bot logic walks to the transport, server auto-attaches
+            // the bot as a passenger when the bounding box overlaps, the
+            // transport carries them across maps, and the bot's same-map
+            // rules pick up at the destination dock. We populate the
+            // FIRST destination map that isn't the bot's current map —
+            // most transports cycle between exactly two continents, so
+            // there's no ambiguity. (Multi-stop tours like the Pandaria
+            // cruise are rare and not worth special-casing.)
+            // ONLY type-15 MAP_OBJ_TRANSPORT (cross-map ships/zeppelins) get a
+            // cross-map destination. Type-11 GAMEOBJECT_TYPE_TRANSPORT here is a
+            // local animated LIFT (Orgrimmar zeppelin-tower elevators, city
+            // lifts) — same-map, no TransportTemplate. It is still pushed to
+            // nearby_objects (the elevator rules find it), but with NO
+            // teleport_dest_map (stays kInvalidMapId), so the cross-map board
+            // rule never targets it. Old code accepted type-11 too; an elevator
+            // with no template kept the default dest, and when that default was
+            // 0 (== Eastern Kingdoms, a real map) the bot boarded the lift as if
+            // it were the EK zeppelin and rode it up and down forever.
+            else if (n.go_type == GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT)
+            {
+                if (TransportTemplate const* tt =
+                        sTransportMgr->GetTransportTemplate(go->GetEntry()))
+                {
+                    for (uint32 map_id : tt->MapIds)
+                    {
+                        if (map_id != p->GetMapId())
+                        {
+                            n.teleport_dest_map = map_id;
+                            // No exact dest coords — the transport drops
+                            // the passenger at its dock spawn, which the
+                            // Bot logic doesn't strictly need to plan; we just
+                            // need to know "this transport reaches the
+                            // goal map".
+                            break;
+                        }
+                    }
+                }
+            }
+            // Type-11 local lift (Orgrimmar zeppelin-tower elevators, city /
+            // raid lifts). We're on the WORLD THREAD here with the live navmesh
+            // and the bot is physically near this elevator (it's in range of the
+            // grid scan), so this is the right place to lazily derive the stop's
+            // walkable board/disembark LEDGES (nearest navmesh poly beside each
+            // platform-centre). Cheap after the first encounter — every stop's
+            // result is cached in ElevatorIndex. The elevator rules then read the
+            // ledge via ElevatorIndex::LedgeFor on the bot worker.
+            else if (n.go_type == GAMEOBJECT_TYPE_TRANSPORT)
+            {
+                // Derive ledges for the WHOLE nearby lift cluster (not just this
+                // GO), so the boardable-lift preference can compare sibling lifts
+                // immediately (e.g. the two Org zeppelin lifts ~150y apart — one
+                // boardable, one a pit). Cheap + cached after the first pass.
+                V2::Travel::ElevatorIndex::Instance().EnsureLedgesNear(p, /*range*/ 200.0f);
+            }
+            snap->world_objects.nearby_objects.push_back(n);
+        }
+
+        // ---- MO-transport scan (ships / zeppelins) ----
+        // Continental transports (GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT 15 = boats,
+        // and the cross-map TRANSPORT 11 = zeppelins) live in Map::_transports,
+        // NOT the grid, so the Cell::VisitGridObjects scan above NEVER returns
+        // them. That left every cross-map boarding rule blind: 0 bots boarded a
+        // ship fleet-wide despite 98K+ walk_to_known_dock fires — the dominant
+        // cause of the leveling stall (bots can't reach off-continent quests).
+        // Scan the map's transport set directly and add any nearby continental
+        // transport (one with a destination map != current) so a bot waiting at
+        // a dock can SEE its docked ship and board it. Generous radius — the bot
+        // waits on the pier, tens of yards from the ship's moving pivot. Few
+        // transports exist per map, so this is cheap; we bypass the 16-object
+        // cap above because transports are rare and always travel-relevant.
+        if (Map* tmap = p->GetMap())
+        {
+            constexpr float kTransportScanSq = 200.0f * 200.0f;
+            for (Transport* tr : tmap->GetTransports())
+            {
+                if (!tr) continue;
+                const uint8 tt = tr->GetGoType();
+                if (tt != GAMEOBJECT_TYPE_TRANSPORT &&
+                    tt != GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT) continue;
+                const float tdx = tr->GetPositionX() - p->GetPositionX();
+                const float tdy = tr->GetPositionY() - p->GetPositionY();
+                const float tdz = tr->GetPositionZ() - p->GetPositionZ();
+                if (tdx*tdx + tdy*tdy + tdz*tdz > kTransportScanSq) continue;
+                BotSnapshot::NearbyObject n{};
+                n.guid    = tr->GetGUID();
+                n.entry   = tr->GetEntry();
+                n.go_type = tt;
+                n.x = tr->GetPositionX();
+                n.y = tr->GetPositionY();
+                n.z = tr->GetPositionZ();
+                // Resolve the transport's destination continent (first MapId
+                // that isn't the bot's current map) — mirrors the grid-GO
+                // transport handling so the boarding rule's dest match works.
+                if (TransportTemplate const* ttpl =
+                        sTransportMgr->GetTransportTemplate(tr->GetEntry()))
+                {
+                    for (uint32 map_id : ttpl->MapIds)
+                    {
+                        if (map_id != p->GetMapId())
+                        {
+                            n.teleport_dest_map = map_id;
+                            break;
+                        }
+                    }
+                }
+                snap->world_objects.nearby_objects.push_back(n);
+            }
+
+            // Tram cars (type-11 GOs that run between two stations on one map, the Deeprun Tram): they sit in the grid, so the
+            // MO-transport set above never holds them, and the 30 y object scan only sees one standing right beside the bot. A
+            // bot waiting on the platform for a ride looked at "transports in sight 0" for 300 s, then gave the route up. The
+            // cars are few and known (PortalIndex), so look them up by spawn id within the same 200 y.
+            if (Services::Initialized() && Services::Portals().IsInitialized())
+            {
+                auto const& car_ids = Services::Portals().ShuttleSpawnIds(p->GetMapId());
+                if (!car_ids.empty())
+                {
+                    static std::atomic<uint32> s_carLogAt{0};
+                    uint32 const cnow = GameTime::GetGameTimeMS();
+                    uint32 last = s_carLogAt.load(std::memory_order_relaxed);
+                    if (cnow - last >= 120000u && s_carLogAt.compare_exchange_strong(last, cnow ? cnow : 1u))
+                    {
+                        size_t in_world = 0;
+                        for (uint64 const id : car_ids)
+                            if (GameObject* c = tmap->GetGameObjectBySpawnId(id); c && c->IsInWorld()) ++in_world;
+                        TC_LOG_INFO("playerbot.v2", "[xport_cars] map {}: {} tram cars known, {} in the world; {} sees {:.0f},{:.0f},{:.0f}",
+                            p->GetMapId(), car_ids.size(), in_world, p->GetName(), p->GetPositionX(), p->GetPositionY(), p->GetPositionZ());
+                    }
+                }
+                for (uint64 const spawn_id : car_ids)
+                {
+                    GameObject* car = tmap->GetGameObjectBySpawnId(spawn_id);
+                    if (!car || !car->IsInWorld()) continue;
+                    const float cdx = car->GetPositionX() - p->GetPositionX();
+                    const float cdy = car->GetPositionY() - p->GetPositionY();
+                    const float cdz = car->GetPositionZ() - p->GetPositionZ();
+                    if (cdx*cdx + cdy*cdy + cdz*cdz > kTransportScanSq) continue;
+                    bool const have = std::any_of(snap->world_objects.nearby_objects.begin(), snap->world_objects.nearby_objects.end(),
+                        [&](BotSnapshot::NearbyObject const& o) { return o.guid == car->GetGUID(); });
+                    if (have) continue;
+                    BotSnapshot::NearbyObject n{};
+                    n.guid    = car->GetGUID();
+                    n.entry   = car->GetEntry();
+                    n.go_type = car->GetGoType();
+                    n.x = car->GetPositionX();
+                    n.y = car->GetPositionY();
+                    n.z = car->GetPositionZ();
+                    snap->world_objects.nearby_objects.push_back(n);
+                }
+            }
+        }
+
+        // ---- Extended gathering-node scan (200y) ----
+        // The 30y nearby_objects scan above covers vendor / quest-giver
+        // / chest interactions where the bot is typically at the giver.
+        // For gathering nodes we want a much wider horizon so the bot can
+        // SEE a node from across a clearing and walk toward it. Per the
+        // user's design: 40y attract in Questing mode (opportunistic),
+        // 150-200y attract in Professioning mode (active seeking).
+        // Snapshot exposes nodes up to 200y; the rule picks attract radius
+        // based on the bot's activity_mode.
+        //
+        // Cost: O(creatures+GOs within 200y) extra cell visit, gated to
+        // bots that have at least one gathering skill — non-gatherers see
+        // no overhead. The append is filtered to GATHERING_NODE / FISHINGHOLE
+        // / CHEST(gather variant) so it doesn't pollute nearby_objects with
+        // unrelated GOs.
+        constexpr uint16 kHerbalismSk = 182;
+        constexpr uint16 kMiningSk    = 186;
+        constexpr uint16 kSkinningSk  = 393;
+        constexpr uint16 kFishingSk   = 356;
+        const bool has_any_gather =
+            p->HasSkill(kHerbalismSk) || p->HasSkill(kMiningSk) ||
+            p->HasSkill(kSkinningSk)  || p->HasSkill(kFishingSk);
+        // Per-bot 1Hz throttle on the 200y gather-node Cell::VisitGridObjects.
+        // Same rationale as the hub scan above: nodes are static; the
+        // 30y nearby_objects scan still gives near-bot coverage every tick.
+        BotAI* gs_ai = bot_ai;
+        const uint32 gather_now_ms = GameTime::GetGameTimeMS();
+        constexpr uint32 kGatherScanIntervalMs = 1000u;
+        const bool gather_throttled = gs_ai &&
+            gs_ai->last_gather_scan_ms() != 0 &&
+            (gather_now_ms - gs_ai->last_gather_scan_ms()) < kGatherScanIntervalMs;
+        if (has_any_gather && !gather_throttled)
+        {
+            if (gs_ai) gs_ai->set_last_gather_scan_ms(gather_now_ms);
+            constexpr float EXT_GATHER_RADIUS = 200.0f;
+            constexpr size_t EXT_GATHER_MAX = 32;
+            // Same thread_local + reserve(64) pattern as the 30y scan
+            // above. Distinct buffer (`ext_gos`) because both scans can
+            // appear in the same Build pass; reusing the same buffer
+            // would corrupt the 30y result.
+            thread_local std::vector<GameObject*> scratch_ext_gos;
+            scratch_ext_gos.clear();
+            scratch_ext_gos.reserve(128);
+            Trinity::AllGameObjectsWithEntryInRange ext_check(p, /*entry*/ 0, EXT_GATHER_RADIUS);
+            Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> ext_searcher(p, scratch_ext_gos, ext_check);
+            Cell::VisitGridObjects(p, ext_searcher, EXT_GATHER_RADIUS);
+
+            std::unordered_set<ObjectGuid> ext_seen;
+            ext_seen.reserve(snap->world_objects.nearby_objects.size() + 16);
+            for (auto const& nb : snap->world_objects.nearby_objects)
+                ext_seen.insert(nb.guid);
+
+            std::vector<std::pair<float, GameObject*>> ext_by_dist;
+            ext_by_dist.reserve(scratch_ext_gos.size());
+            for (GameObject* go : scratch_ext_gos)
+            {
+                if (!go) continue;
+                const uint8 t = uint8(go->GetGoType());
+                if (t != GAMEOBJECT_TYPE_GATHERING_NODE &&
+                    t != GAMEOBJECT_TYPE_FISHINGHOLE) continue;
+                if (ext_seen.count(go->GetGUID())) continue;
+                const float dx = go->GetPositionX() - p->GetPositionX();
+                const float dy = go->GetPositionY() - p->GetPositionY();
+                const float dz = go->GetPositionZ() - p->GetPositionZ();
+                ext_by_dist.emplace_back(dx*dx + dy*dy + dz*dz, go);
+            }
+            std::sort(ext_by_dist.begin(), ext_by_dist.end(),
+                      [](auto const& a, auto const& b) { return a.first < b.first; });
+            if (ext_by_dist.size() > EXT_GATHER_MAX) ext_by_dist.resize(EXT_GATHER_MAX);
+            for (auto const& [_, go] : ext_by_dist)
+            {
+                BotSnapshot::NearbyObject n{};
+                n.guid    = go->GetGUID();
+                n.entry   = go->GetEntry();
+                n.go_type = go->GetGoType();
+                n.x = go->GetPositionX();
+                n.y = go->GetPositionY();
+                n.z = go->GetPositionZ();
+                snap->world_objects.nearby_objects.push_back(n);
+            }
+        }
+
+        // ---- Spell-based ground-hazard scan (G-P1c) ----
+        // Modern boss "stand in fire" mechanics are NOT GameObject traps
+        // (handled above). They are DynamicObject area-spell entities
+        // (classic voidzones / Consecration-like ground effects) and
+        // AreaTrigger entities (the modern shape-based ground effects used
+        // by virtually every retail boss). Neither is reachable through the
+        // GameObject scan, so without this pass the bot has no snapshot
+        // signal that it is standing in a damage patch — idle:flee_hazard
+        // and the in-combat dungeon-positioning path (G-P0a) both consume
+        // is_hazard / hazard_radius NearbyObject entries and step the bot
+        // out, so feeding these two entity classes into nearby_objects is
+        // all that is required to make bots dodge fire.
+        //
+        // PERF: this is the hottest path (200-2000 bots, ~20K Builds/s
+        // post-throttle). Hazards only matter while the bot is fighting, so
+        // the ENTIRE scan is gated behind p->IsInCombat() — the ~95% idle
+        // fleet pays nothing (not even the cell visit). When it does run we
+        // restrict the grid map-type mask to DYNAMICOBJECT | AREATRIGGER so
+        // VisitAllObjects skips creatures, players, and GameObjects
+        // entirely, and we cap the appended hazards to the closest few.
+        // Instance extension (raid / dungeon ground-hazard avoidance): inside a
+        // dungeon or raid map the scan also runs out of combat - a healer
+        // walking up to the fight, or a bot whose combat flag dropped between
+        // pulls, must still see the Rain of Fire it is standing in - and it
+        // additionally feeds snap->combat.ground_hazards (spell / caster /
+        // radius, damage-classified) for the [raid_hazard] step-out. The
+        // nearby_objects is_hazard feed below keeps its original in-combat
+        // gate. Battlegrounds stay excluded (instance maps, not dungeons).
+        Map const* haz_map = p->GetMap();
+        const bool haz_instance = haz_map && haz_map->IsDungeon() && !haz_map->IsBattlegroundOrArena();
+        const bool haz_combat = p->IsInCombat();
+        if (haz_combat || haz_instance)
+        {
+            constexpr float HAZ_SCAN_RADIUS = 40.0f;
+            constexpr size_t HAZ_MAX = 12;
+            // Reuse the WorldObjectListSearcher + AllWorldObjectsInRange
+            // pattern (same as the TC core scripts), but constrain the
+            // visited grid containers to the two hazard-bearing types via
+            // the searcher's mapTypeMask so the visit never touches the
+            // (far larger) creature / player / GO maps.
+            thread_local std::vector<WorldObject*> scratch_haz;
+            scratch_haz.clear();
+            scratch_haz.reserve(32);
+            Trinity::AllWorldObjectsInRange haz_check(p, HAZ_SCAN_RADIUS);
+            Trinity::WorldObjectListSearcher<Trinity::AllWorldObjectsInRange> haz_searcher(
+                p, scratch_haz, haz_check,
+                GRID_MAP_TYPE_MASK_DYNAMICOBJECT | GRID_MAP_TYPE_MASK_AREATRIGGER);
+            Cell::VisitAllObjects(p, haz_searcher, HAZ_SCAN_RADIUS);
+
+            // Each candidate carries (dist^2, position, radius). We resolve
+            // the spell + caster, apply the hostile-and-non-positive gate,
+            // then sort by distance and keep the closest HAZ_MAX so a
+            // densely-stacked AoE encounter can't blow past the cap.
+            struct HazCand
+            {
+                float d2; float x, y, z, radius; ObjectGuid guid;
+                uint32 spell; ObjectGuid caster; bool hurts; GroundHazardSource src;
+            };
+            std::vector<HazCand> haz_by_dist;
+            haz_by_dist.reserve(scratch_haz.size());
+
+            // Shared classifier: a ground effect is a hazard when its
+            // creating spell is hostile (SpellInfo::IsPositive() == false)
+            // AND its caster is NOT friendly to the bot. A friendly
+            // Consecration / Healing Rain / Death and Decay cast by the bot
+            // or a party member must never be flagged. When the caster is
+            // absent (despawned / environmental), we treat a non-positive
+            // spell as an environmental hazard (e.g. lingering fire). When
+            // the spell is positive, we never flag — that is the safe
+            // default for indeterminate hostility.
+            auto isHostileGround = [&](SpellInfo const* si, Unit* caster) -> bool
+            {
+                if (!si || si->IsPositive())
+                    return false;                       // positive => never a hazard
+                if (!caster)
+                    return true;                        // no caster => environmental hazard
+                return !caster->IsFriendlyTo(p);        // hostile / neutral non-friendly only
+            };
+
+            for (WorldObject* wo : scratch_haz)
+            {
+                if (!wo) continue;
+
+                if (DynamicObject const* dyn = wo->ToDynObject())
+                {
+                    SpellInfo const* si = dyn->GetSpellInfo();
+                    if (!isHostileGround(si, dyn->GetCaster()))
+                        continue;
+                    const float dx = dyn->GetPositionX() - p->GetPositionX();
+                    const float dy = dyn->GetPositionY() - p->GetPositionY();
+                    const float dz = dyn->GetPositionZ() - p->GetPositionZ();
+                    haz_by_dist.push_back({ dx*dx + dy*dy + dz*dz,
+                        dyn->GetPositionX(), dyn->GetPositionY(), dyn->GetPositionZ(),
+                        dyn->GetRadius(), dyn->GetGUID(),
+                        dyn->GetSpellId(), dyn->GetCasterGUID(), SpellHurtsInArea(si),
+                        GroundHazardSource::DynObject });
+                }
+                else if (AreaTrigger const* at = wo->ToAreaTrigger())
+                {
+                    // AreaTrigger exposes only the spell id; resolve the
+                    // SpellInfo through SpellMgr (DIFFICULTY_NONE matches the
+                    // GO-trap classifier above). GetMaxSearchRadius() returns
+                    // the largest extent of the trigger's current shape
+                    // (sphere / box / polygon bounding radius incl. scale),
+                    // which is the conservative radius we want the bot to
+                    // clear.
+                    SpellInfo const* si = sSpellMgr->GetSpellInfo(at->GetSpellId(), DIFFICULTY_NONE);
+                    if (!isHostileGround(si, at->GetCaster()))
+                        continue;
+                    const float dx = at->GetPositionX() - p->GetPositionX();
+                    const float dy = at->GetPositionY() - p->GetPositionY();
+                    const float dz = at->GetPositionZ() - p->GetPositionZ();
+                    // Damage test: the creating spell itself, else the
+                    // template's CAST / ADDAURA actions aimed at enemies
+                    // (the data-driven AT shape). A scripted AT (no
+                    // actions - AreaTriggerAI applies the effect) is taken
+                    // on the hostile-non-positive verdict above.
+                    bool at_hurts = SpellHurtsInArea(si);
+                    if (!at_hurts)
+                    {
+                        AreaTriggerTemplate const* att = at->GetTemplate();
+                        if (!att || att->Actions.empty())
+                            at_hurts = true;
+                        else
+                            for (AreaTriggerAction const& act : att->Actions)
+                            {
+                                if (act.ActionType != AREATRIGGER_ACTION_CAST &&
+                                    act.ActionType != AREATRIGGER_ACTION_ADDAURA)
+                                    continue;
+                                if (act.TargetType != AREATRIGGER_ACTION_USER_ANY &&
+                                    act.TargetType != AREATRIGGER_ACTION_USER_ENEMY)
+                                    continue;
+                                if (SpellHurtsInArea(sSpellMgr->GetSpellInfo(act.Param, DIFFICULTY_NONE)))
+                                { at_hurts = true; break; }
+                            }
+                    }
+                    haz_by_dist.push_back({ dx*dx + dy*dy + dz*dz,
+                        at->GetPositionX(), at->GetPositionY(), at->GetPositionZ(),
+                        at->GetMaxSearchRadius(), at->GetGUID(),
+                        at->GetSpellId(), at->GetCasterGuid(), at_hurts,
+                        GroundHazardSource::AreaTrigger });
+                }
+            }
+
+            std::sort(haz_by_dist.begin(), haz_by_dist.end(),
+                      [](HazCand const& a, HazCand const& b) { return a.d2 < b.d2; });
+
+            // ---- combat.ground_hazards (raid / dungeon step-out feed) ----
+            // Instances only (the consumer is the dungeon / raid cascade).
+            // Three sources, merged closest-first and capped at
+            // kMaxGroundHazards: the damaging DynamicObject / AreaTrigger
+            // zones above (centre within 30y), trigger creatures pulsing a
+            // damage aura (void zone, poison cloud - from this Build's 40y
+            // unfriendly-unit scratch, filled by the merged enemy+friend
+            // scan), and hostile damaging trap GameObjects already in
+            // nearby_objects.
+            if (haz_instance)
+            {
+                constexpr float kGroundHazRange = 30.0f;
+                auto& gh = snap->combat.ground_hazards;
+                thread_local std::vector<std::pair<float, GroundHazard>> gh_by_dist;
+                gh_by_dist.clear();
+                for (HazCand const& h : haz_by_dist)
+                {
+                    if (!h.hurts || h.radius <= 0.0f) continue;
+                    if (h.d2 > kGroundHazRange * kGroundHazRange) continue;
+                    gh_by_dist.push_back({ h.d2, GroundHazard{ h.x, h.y, h.z, h.radius,
+                                                              h.spell, h.caster, h.src } });
+                }
+                for (Unit* t : scratch_enemies_tl())
+                {
+                    Creature const* c = t ? t->ToCreature() : nullptr;
+                    if (!c || !c->IsAlive() || c->IsFriendlyTo(p)) continue;
+                    const float dx = c->GetPositionX() - p->GetPositionX();
+                    const float dy = c->GetPositionY() - p->GetPositionY();
+                    const float dz = c->GetPositionZ() - p->GetPositionZ();
+                    const float d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 > kGroundHazRange * kGroundHazRange) continue;
+                    uint32 zone_spell = 0;
+                    const float r = TriggerCreatureZone(c, zone_spell);
+                    if (r <= 0.0f) continue;
+                    ObjectGuid const owner = !c->GetCreatorGUID().IsEmpty() ? c->GetCreatorGUID()
+                                                                            : c->GetGUID();
+                    gh_by_dist.push_back({ d2, GroundHazard{ c->GetPositionX(), c->GetPositionY(),
+                                                            c->GetPositionZ(), r, zone_spell, owner,
+                                                            GroundHazardSource::TriggerCreature } });
+                }
+                for (auto const& o : snap->world_objects.nearby_objects)
+                {
+                    if (!o.is_hazard || o.entry == 0 || o.hazard_radius <= 0.0f) continue;
+                    GameObject const* go = ObjectAccessor::GetGameObject(*p, o.guid);
+                    if (!go) continue;
+                    GameObjectTemplate const* tmpl = go->GetGOInfo();
+                    if (!tmpl || tmpl->type != GAMEOBJECT_TYPE_TRAP) continue;
+                    SpellInfo const* tsi = sSpellMgr->GetSpellInfo(tmpl->trap.spell, DIFFICULTY_NONE);
+                    if (!SpellHurtsInArea(tsi)) continue;
+                    if (Unit const* owner = go->GetOwner())
+                        if (owner->IsFriendlyTo(p)) continue;   // a friendly hunter's trap
+                    const float dx = o.x - p->GetPositionX();
+                    const float dy = o.y - p->GetPositionY();
+                    const float dz = o.z - p->GetPositionZ();
+                    const float d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 > kGroundHazRange * kGroundHazRange) continue;
+                    gh_by_dist.push_back({ d2, GroundHazard{ o.x, o.y, o.z, o.hazard_radius,
+                                                            tmpl->trap.spell, go->GetOwnerGUID(),
+                                                            GroundHazardSource::GoTrap } });
+                }
+                std::sort(gh_by_dist.begin(), gh_by_dist.end(),
+                          [](auto const& a, auto const& b) { return a.first < b.first; });
+                if (gh_by_dist.size() > kMaxGroundHazards) gh_by_dist.resize(kMaxGroundHazards);
+                gh.reserve(gh_by_dist.size());
+                for (auto const& [_, h] : gh_by_dist)
+                    gh.push_back(h);
+            }
+
+            if (haz_by_dist.size() > HAZ_MAX) haz_by_dist.resize(HAZ_MAX);
+
+            for (auto const& h : haz_by_dist)
+            {
+                if (!haz_combat) break;   // nearby_objects feed: original in-combat gate
+                BotSnapshot::NearbyObject n{};
+                n.guid          = h.guid;
+                // entry / go_type stay 0 — these are not GameObjects. The
+                // consumer keys off is_hazard / hazard_radius, not go_type.
+                n.x             = h.x;
+                n.y             = h.y;
+                n.z             = h.z;
+                n.is_hazard     = true;
+                n.hazard_radius = h.radius;
+                snap->world_objects.nearby_objects.push_back(n);
+            }
+        }
+
+        // ---- combat.tank_los (raid / dungeon LoS step feed) ----
+        // LoS from the bot to every live same-map group tank (threat_tanks,
+        // built with group_tank above), through the TTL-cached raycast the
+        // nearby scans use. In combat inside an instance only: the
+        // [raid_los] step (State_InCombat) is its sole consumer, and a raid
+        // has at most a handful of tanks.
+        if (haz_combat && haz_instance)
+        {
+            const uint32 los_now = GameTime::GetGameTimeMS();
+            for (Unit const* tk : threat_tanks)
+            {
+                if (!tk || tk == p) continue;
+                if (snap->combat.tank_los.size() >= 8) break;
+                snap->combat.tank_los.push_back({ tk->GetGUID(), CachedLosCheck(p, tk, los_now) });
+            }
+        }
+
+        // ---- Quest-relevant GameObject expansion (POI-aware) ----
+        // Mirrors the "quest-target neutral creature" expansion above: the
+        // baseline 30y nearby_objects scan misses GameObjects that are
+        // 50-150y from the bot. Many ITEM-objective quests source their
+        // item from a *lootable GO* (Quest 29401/29412 "Blown Away" loots
+        // item 71034 from balloons scattered around Razor Hill). The bot
+        // arrives at the POI center but the balloons cluster 100+ yards
+        // away across the POI polygon — outside 30y, so nearby_objects is
+        // empty and idle:quest_use_go silently no-ops.
+        //
+        // Strategy: build the set of (a) entries directly named by an
+        // active QUEST_OBJECTIVE_GAMEOBJECT, and (b) item-ids the active
+        // QUEST_OBJECTIVE_ITEM rows need; then do a wider scan and admit
+        // a GO if (a) matches its entry OR (b) intersects with its quest
+        // item drop list. Two-pass radii (80y around bot + 160y around
+        // POI when the bot is within 50y of POI) mirror the creature
+        // expansion above.
+        if (!snap->quest_log.quests.empty())
+        {
+            std::unordered_set<uint32> q_go_entries;
+            std::unordered_set<uint32> q_item_ids;
+            q_go_entries.reserve(8);
+            q_item_ids.reserve(8);
+            for (auto const& q : snap->quest_log.quests)
+            {
+                if (q.state != 0) continue;  // 0 = INCOMPLETE
+                for (auto const& oe : q.objectives)
+                {
+                    if (oe.progress >= oe.amount) continue;
+                    if (oe.type == QUEST_OBJECTIVE_GAMEOBJECT && oe.object_id > 0)
+                        q_go_entries.insert(uint32(oe.object_id));
+                    else if (oe.type == QUEST_OBJECTIVE_ITEM && oe.object_id > 0)
+                        q_item_ids.insert(uint32(oe.object_id));
+                }
+            }
+
+            if (!q_go_entries.empty() || !q_item_ids.empty())
+            {
+                std::vector<GameObject*> q_pool;
+
+                // ---- Tier 1.3 (behavior-preserving): single-traversal reuse ----
+                // The original ran TWO bot-centered VisitGridObjects passes: an
+                // 80y pass (always) and a 160y pass (when sitting on a POI),
+                // concatenating both into q_pool. The 160y pass re-walks every
+                // cell the 80y pass already walked (same center, GameObjects,
+                // AllGameObjectsWithEntryInRange uses IsWithinDist), so the
+                // 80y grid traversal is pure duplicate work whenever the wide
+                // pass fires.
+                //
+                // We reuse a SINGLE traversal: when the wide pass fires we walk
+                // 160y ONCE and reconstruct q_pool with the IDENTICAL multiset
+                // the two-pass code produced — every GO within 80y appears
+                // TWICE (once for the would-be 80y pass, once for the 160y
+                // pass) and every 80–160y GO appears once. Order within q_pool
+                // does NOT affect output here because q_by_dist below is SORTED
+                // by distance before the cap, so the membership after sort+cap
+                // depends only on the (distance,go) MULTISET — which is
+                // preserved exactly, including the duplicate-occupies-two-slots
+                // cap interaction of the original. When the wide pass does NOT
+                // fire we keep the plain single 80y traversal.
+                bool wide_fires = false;
+                {
+                    auto const& poi = snap->quest_log.current_objective_poi;
+                    if (poi.valid && poi.map_id == snap->position.map_id)
+                    {
+                        const float pdx = poi.x - p->GetPositionX();
+                        const float pdy = poi.y - p->GetPositionY();
+                        const float pdz = poi.z - p->GetPositionZ();
+                        const float poi_dist_sq = pdx*pdx + pdy*pdy + pdz*pdz;
+                        wide_fires = (poi_dist_sq < (50.0f * 50.0f));
+                    }
+                }
+
+                if (!wide_fires)
+                {
+                    // Narrow-only: exactly the original 80y pass.
+                    thread_local std::vector<GameObject*> scratch_q_gos;
+                    scratch_q_gos.clear();
+                    scratch_q_gos.reserve(128);
+                    constexpr float kQGoRadiusBot = 80.0f;
+                    Trinity::AllGameObjectsWithEntryInRange q_check(p, /*entry*/ 0, kQGoRadiusBot);
+                    Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> q_searcher(p, scratch_q_gos, q_check);
+                    Cell::VisitGridObjects(p, q_searcher, kQGoRadiusBot);
+                    q_pool.insert(q_pool.end(), scratch_q_gos.begin(), scratch_q_gos.end());
+                }
+                else
+                {
+                    // Wide fires: single 160y traversal, then rebuild the exact
+                    // [80y-subset] ++ [full-160y] multiset the two passes made.
+                    thread_local std::vector<GameObject*> scratch_q_gos_poi;
+                    scratch_q_gos_poi.clear();
+                    scratch_q_gos_poi.reserve(256);
+                    constexpr float kQGoRadiusPOI = 160.0f;
+                    constexpr float kQGoRadiusBot = 80.0f;
+                    Trinity::AllGameObjectsWithEntryInRange q_check_poi(p, /*entry*/ 0, kQGoRadiusPOI);
+                    Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> q_searcher_poi(p, scratch_q_gos_poi, q_check_poi);
+                    Cell::VisitGridObjects(p, q_searcher_poi, kQGoRadiusPOI);
+
+                    // Segment 1 — reproduces the would-be 80y pass: every GO
+                    // the 160y result holds that is also within 80y. We re-use
+                    // the EXACT predicate AllGameObjectsWithEntryInRange applied
+                    // (IsWithinDist with is3D=false / 2D), so this membership is
+                    // identical to the dropped 80y pass.
+                    q_pool.reserve(scratch_q_gos_poi.size() * 2);
+                    for (GameObject* go : scratch_q_gos_poi)
+                        if (go && p->IsWithinDist(go, kQGoRadiusBot, /*is3D*/ false))
+                            q_pool.push_back(go);
+                    // Segment 2 — the full 160y pass.
+                    q_pool.insert(q_pool.end(), scratch_q_gos_poi.begin(), scratch_q_gos_poi.end());
+                }
+
+                std::unordered_set<ObjectGuid> already_in;
+                already_in.reserve(snap->world_objects.nearby_objects.size() + 16);
+                for (auto const& nb : snap->world_objects.nearby_objects)
+                    already_in.insert(nb.guid);
+
+                // Sort candidates by distance so we keep the closest ones
+                // first under the per-bot append cap.
+                std::vector<std::pair<float, GameObject*>> q_by_dist;
+                q_by_dist.reserve(q_pool.size());
+                for (GameObject* go : q_pool)
+                {
+                    if (!go) continue;
+                    if (already_in.count(go->GetGUID())) continue;
+                    const uint32 entry = go->GetEntry();
+                    const bool entry_match = q_go_entries.count(entry) > 0;
+                    bool item_match = false;
+                    if (!entry_match && !q_item_ids.empty())
+                    {
+                        if (std::vector<uint32> const* drops =
+                                sObjectMgr->GetGameObjectQuestItemList(entry))
+                        {
+                            for (uint32 item_id : *drops)
+                            {
+                                if (q_item_ids.count(item_id))
+                                {
+                                    item_match = true;
+                                    break;
+                                }
+                            }
+                        }
+                        // Loot-template GO sources (vanilla: no questitem rows).
+                        if (!item_match)
+                            for (uint32 item_id : q_item_ids)
+                                if (QuestItemDropsFromGameObject(item_id, entry))
+                                {
+                                    item_match = true;
+                                    break;
+                                }
+                    }
+                    if (!entry_match && !item_match) continue;
+                    const float dx = go->GetPositionX() - p->GetPositionX();
+                    const float dy = go->GetPositionY() - p->GetPositionY();
+                    const float dz = go->GetPositionZ() - p->GetPositionZ();
+                    q_by_dist.emplace_back(dx*dx + dy*dy + dz*dz, go);
+                }
+                std::sort(q_by_dist.begin(), q_by_dist.end(),
+                          [](auto const& a, auto const& b) { return a.first < b.first; });
+
+                constexpr size_t kQAppendCap = 24;
+                if (q_by_dist.size() > kQAppendCap) q_by_dist.resize(kQAppendCap);
+
+                for (auto const& [_, go] : q_by_dist)
+                {
+                    if (already_in.count(go->GetGUID())) continue;
+                    BotSnapshot::NearbyObject n{};
+                    n.guid    = go->GetGUID();
+                    n.entry   = go->GetEntry();
+                    n.go_type = go->GetGoType();
+                    n.x = go->GetPositionX();
+                    n.y = go->GetPositionY();
+                    n.z = go->GetPositionZ();
+                    snap->world_objects.nearby_objects.push_back(n);
+                    already_in.insert(go->GetGUID());
+                }
+            }
+        }
+    }
+
     // ---- Cross-quest actionable index ----
     // For every active (non-complete, non-optional, non-blacklisted)
     // objective in the bot's log, list the *currently visible* progression
@@ -8450,906 +9638,6 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
             // (message_type == Normal) before using this as a GUID.
             e.sender_low     = uint64(m->sender);
             snap->mailbox.mail.push_back(std::move(e));
-        }
-    }
-
-    // ---- Nearby GameObjects (30yd, capped, filtered by useful types) ----
-    {
-        constexpr float SCAN_RADIUS = 30.0f;
-        constexpr size_t MAX_OBJECTS = 16;
-        thread_local std::vector<GameObject*> scratch_gos;
-        scratch_gos.clear();
-        scratch_gos.reserve(64);
-        Trinity::AllGameObjectsWithEntryInRange go_check(p, /*entry*/ 0, SCAN_RADIUS);
-        Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> searcher(p, scratch_gos, go_check);
-        Cell::VisitGridObjects(p, searcher, SCAN_RADIUS);
-
-        // thread_local scratch reused across builds — mirrors the
-        // enemy/friend by_dist pattern. clear()+reserve() retains capacity
-        // so the per-build heap alloc is paid once per worker thread.
-        thread_local std::vector<std::pair<float, GameObject*>> by_dist;
-        by_dist.clear();
-        by_dist.reserve(scratch_gos.size());
-        for (GameObject* go : scratch_gos)
-        {
-            if (!go) continue;
-            // Filter to types bot logic actually drives. Skip everything else to
-            // keep the vector bounded — chairs, transports, etc would
-            // dominate the cap in major cities. GATHERING_NODE (50) is the
-            // modern herbalism/mining node type — without it in the
-            // snapshot, the `idle:gather` rule's `obj.go_type != 50`
-            // continue-skip would never find a candidate and the rule
-            // would never fire.
-            const uint8 t = go->GetGoType();
-            const bool useful =
-                t == GAMEOBJECT_TYPE_MAILBOX        ||
-                t == GAMEOBJECT_TYPE_CHEST          ||
-                t == GAMEOBJECT_TYPE_GATHERING_NODE ||
-                t == GAMEOBJECT_TYPE_FISHINGHOLE    ||
-                t == GAMEOBJECT_TYPE_QUESTGIVER     ||
-                t == GAMEOBJECT_TYPE_BINDER         ||
-                t == GAMEOBJECT_TYPE_GOOBER         ||
-                t == GAMEOBJECT_TYPE_MEETINGSTONE   ||
-                t == GAMEOBJECT_TYPE_GUILD_BANK     ||
-                // Quest-interaction GO types — needed by idle:quest_use_go
-                // (B4) so QUEST_OBJECTIVE_GAMEOBJECT (type 2) targets are
-                // visible. GENERIC covers most static quest props (banners,
-                // crates, books). BUTTON covers levers / switches. SPELL_FOCUS
-                // covers altars / runes that gate quest casts.
-                t == GAMEOBJECT_TYPE_GENERIC        ||
-                t == GAMEOBJECT_TYPE_BUTTON         ||
-                t == GAMEOBJECT_TYPE_SPELL_FOCUS    ||
-                // Cross-continent travel (Phase C). SPELLCASTER (22) is
-                // the static portal GO; TRANSPORT (11) is mooring rooms /
-                // elevators / etc; MO_TRANSPORT (15) is the seafaring
-                // ships and zeppelins that move between continents. The
-                // builder pre-resolves their destinations so the bot logic can
-                // walk to them and use/board.
-                t == GAMEOBJECT_TYPE_SPELLCASTER    ||
-                t == GAMEOBJECT_TYPE_TRANSPORT      ||
-                t == GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT ||
-                // Battleground objectives. FLAGSTAND (24) covers AB/EotS/
-                // BfG capturable nodes + AV banners + WSG/TP/BfG flag
-                // pedestals + IoC/SoTA/SS objective markers. FLAGDROP (26)
-                // covers dropped CTF flags. CAPTURE_POINT (42) is the
-                // modern WG/AV-style capture object — auto_use_go_types
-                // doesn't read it directly but BG node-state population
-                // walks it from a separate path; including here lets
-                // future scripts opt in via auto_use_go_types. Without
-                // these, idle:bg_use_objective_go silently no-ops for
-                // every BG that opts in, making node captures impossible.
-                t == GAMEOBJECT_TYPE_FLAGSTAND      ||
-                t == GAMEOBJECT_TYPE_FLAGDROP       ||
-                t == GAMEOBJECT_TYPE_CAPTURE_POINT  ||
-                // Modern BG mechanic GOs (BG audit N12/N25/N32/N67): the
-                // Cata+ CTF flags are NEW_FLAG (36) on the pedestal and
-                // NEW_FLAG_DROP (37) on the ground; EotS towers and the
-                // Silvershard cart zones are CONTROL_ZONE (29). These were
-                // missing from this filter, so idle:bg_use_objective_go
-                // could never SEE the very GOs the WSG/TP/EotS/Kotmogu
-                // scripts opt into via auto_use_go_types — flag and orb
-                // pickup was structurally impossible fleet-wide.
-                t == GAMEOBJECT_TYPE_NEW_FLAG       ||
-                t == GAMEOBJECT_TYPE_NEW_FLAG_DROP  ||
-                t == GAMEOBJECT_TYPE_CONTROL_ZONE   ||
-                // DESTRUCTIBLE_BUILDING (33): IoC keep gates + SoTA defense-
-                // line gates. The BG siege-vehicle fire rule scans these and
-                // casts the vehicle's gate-damage spell at the standing ones
-                // (is_destroyed below); without them in the snapshot a siege
-                // engine could never break a gate and the General was never
-                // reached (BG audit IoC / SoTA siege blockers).
-                t == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING ||
-                // TRAP (6): includes environmental hazards like bonfires
-                // and pyres. Builder classifies as hazard below if the
-                // trap's spell is hostile, so idle:flee_hazard can step
-                // the bot out of damage range. We DO want non-hostile
-                // traps in nearby_objects too (some quest scripts trigger
-                // off them), so the type passes the filter unconditionally.
-                t == GAMEOBJECT_TYPE_TRAP           ||
-                // RITUAL (18): an altar that needs several users (Uldaman's two altars, the UBRS Blackrock Altar). The group's
-                // bots fill the places a person in the group leaves open (ritual_join below).
-                t == GAMEOBJECT_TYPE_RITUAL ||
-                // DOOR (0): only a shut one a player opens by hand (IsShutHandDoor, or named by the dungeon: IsListedShutHandDoor),
-                // or one that opens to a key this bot carries (KeyForShutDoor), for idle:dungeon_open_hand_door.
-                (t == GAMEOBJECT_TYPE_DOOR && (IsShutHandDoor(go) || IsListedShutHandDoor(go) || KeyForShutDoor(p, go) != 0));
-            if (!useful) continue;
-            const float dx = go->GetPositionX() - p->GetPositionX();
-            const float dy = go->GetPositionY() - p->GetPositionY();
-            const float dz = go->GetPositionZ() - p->GetPositionZ();
-            by_dist.emplace_back(dx*dx + dy*dy + dz*dz, go);
-        }
-        std::sort(by_dist.begin(), by_dist.end(),
-                  [](auto const& a, auto const& b) { return a.first < b.first; });
-        if (by_dist.size() > MAX_OBJECTS) by_dist.resize(MAX_OBJECTS);
-
-        // An object's loot the bot has open (an herb or vein its gathering spell opened): the gather rule takes it.
-        snap->world_objects.loot_open = p->GetLootGUID().IsGameObject() ? p->GetLootGUID() : ObjectGuid::Empty;
-        snap->world_objects.nearby_objects.reserve(by_dist.size());
-        for (auto const& [_, go] : by_dist)
-        {
-            BotSnapshot::NearbyObject n{};
-            n.guid    = go->GetGUID();
-            n.entry   = go->GetEntry();
-            n.go_type = go->GetGoType();
-            // [bgflag_diag] TEMP — confirm CTF flag GO (type 36) is in-snapshot on
-            // EotS(566)/TP(726), and which bot sees it (incl. distance via pos).
-            if ((p->GetMapId() == 726 || p->GetMapId() == 566) && go->GetGoType() == 36)
-            {
-                static thread_local uint32 s_bfAt = 0;
-                uint32 const bfn = getMSTime();
-                if (bfn - s_bfAt > 5000)
-                {
-                    s_bfAt = bfn;
-                    TC_LOG_INFO("playerbot.v2",
-                        "[bgflag_diag] map={} flagGO entry={} at ({:.0f},{:.0f},{:.0f}) "
-                        "seen_by={} bot_pos=({:.0f},{:.0f},{:.0f})",
-                        p->GetMapId(), go->GetEntry(), go->GetPositionX(),
-                        go->GetPositionY(), go->GetPositionZ(), p->GetName(),
-                        p->GetPositionX(), p->GetPositionY(), p->GetPositionZ());
-                }
-            }
-            n.x = go->GetPositionX();
-            n.y = go->GetPositionY();
-            n.z = go->GetPositionZ();
-            if (n.go_type == GAMEOBJECT_TYPE_RITUAL)
-                n.ritual_join = RitualNeedsBot(p, go);
-            n.hand_door = n.go_type == GAMEOBJECT_TYPE_DOOR;   // the filter above lets in only a shut hand door
-            if (n.hand_door && !IsShutHandDoor(go) && !IsListedShutHandDoor(go))
-                n.key_item = KeyForShutDoor(p, go);   // a door only a key opens: the bot uses its key on it
-            if (n.go_type == GAMEOBJECT_TYPE_CHEST)
-                n.key_chest = IsListedKeyChest(p, go);
-            // Destructible gate breach state (IoC / SoTA) so the siege-fire
-            // rule skips already-down gates and advances to the next line.
-            if (n.go_type == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING)
-                n.is_destroyed =
-                    go->GetDestructibleState() == GO_DESTRUCTIBLE_DESTROYED;
-            // Herb / ore vein: a chest whose lock asks for Herbalism or Mining (the gathering rules, GatheringRules.cpp).
-            if (n.go_type == GAMEOBJECT_TYPE_CHEST)
-                if (LockEntry const* lock = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId()))
-                    for (uint8 li = 0; li < MAX_LOCK_CASE; ++li)
-                    {
-                        if (lock->Type[li] != LOCK_KEY_SKILL)
-                            continue;
-                        SkillType const sk = SkillByLockType(LockType(lock->Index[li]));
-                        if (sk != SKILL_HERBALISM && sk != SKILL_MINING)
-                            continue;
-                        n.gather_skill = uint16(sk);
-                        n.gather_req   = lock->Skill[li];
-                        n.gather_ready = go->isSpawned() && go->getLootState() == GO_READY;
-                        break;
-                    }
-            // Pre-resolve teleport destination for SPELLCASTER GOs.
-            // Type 22 stores its triggered spell in spellCaster.spell.
-            // The spell's destination is in the spell_target_position
-            // table (loaded once at server start, read-only thereafter
-            // — safe to query from this snapshot path). Most type-22
-            // GOs are altars / event triggers without a teleport effect;
-            // for those, GetSpellTargetPosition returns null and the
-            // teleport_dest_* fields stay zero.
-            if (n.go_type == GAMEOBJECT_TYPE_SPELLCASTER)
-            {
-                if (GameObjectTemplate const* tmpl = go->GetGOInfo())
-                {
-                    const uint32 spell_id = tmpl->spellCaster.spell;
-                    if (spell_id != 0)
-                    {
-                        // Resolve the teleport destination through the SHARED
-                        // PortalIndex resolver, which scans all effect indices
-                        // AND follows the FORCE_CAST/TRIGGER_SPELL indirection
-                        // modern portals use. The GO's own spell often carries
-                        // no spell_target_position: either the teleport sits on
-                        // a non-zero effect index (~156 portals server-wide), or
-                        // the spell merely FORCE_CASTs the real teleport (e.g.
-                        // Org's Undercity portal 293684 -> 17611 -> 121862 ->
-                        // map 0). Either way the old direct scan left
-                        // teleport_dest_map=0, so the in-range use_portal gate
-                        // (dest must match the goal map) skipped the portal and
-                        // the bot walked to it but never used it. Using the same
-                        // resolver as PortalIndex keeps the snapshot and the
-                        // travel graph in lockstep.
-                        uint32 dmap = 0;
-                        float dtx = 0.f, dty = 0.f, dtz = 0.f;
-                        if (Playerbot::V2::Travel::ResolvePortalSpellDest(spell_id, dmap, dtx, dty, dtz))
-                        {
-                            n.teleport_dest_map = dmap;
-                            n.teleport_dest_x   = dtx;
-                            n.teleport_dest_y   = dty;
-                            n.teleport_dest_z   = dtz;
-                        }
-                    }
-                }
-            }
-            // Hazard classification for TRAP-type GOs (bonfires, pyres,
-            // lava grates). We mark a trap as a hazard when its trap
-            // spell is hostile (SpellInfo::IsPositive() == false). The
-            // hazard_radius is the radius the core fires the trap at (see
-            // below). idle:flee_hazard
-            // uses both fields to step the bot 5y past the radius so it
-            // stops standing inside a bonfire and dying.
-            else if (n.go_type == GAMEOBJECT_TYPE_TRAP)
-            {
-                if (GameObjectTemplate const* tmpl = go->GetGOInfo())
-                {
-                    const uint32 trap_spell = tmpl->trap.spell;
-                    if (trap_spell != 0)
-                    {
-                        if (SpellInfo const* si = sSpellMgr->GetSpellInfo(trap_spell, DIFFICULTY_NONE))
-                        {
-                            if (!si->IsPositive())
-                            {
-                                // The core halves the radius only for an owned trap (GameObject::Update, since 2026-10-16); a
-                                // world trap fires at the full radius. Halving every trap left bots 6-11 y from Majordomo's
-                                // Intense Heat pit (20533, radius 10) thinking they stood clear: 17 of the 43 deaths in
-                                // release-0130 mc_majordomo were that pit.
-                                n.is_hazard     = true;
-                                n.hazard_radius = go->GetOwnerGUID().IsEmpty() ? float(tmpl->trap.radius)
-                                                                               : tmpl->trap.radius / 2.0f;
-                            }
-                        }
-                    }
-                }
-            }
-            // Continental transport (ship / zeppelin). Same teleport_dest
-            // semantics: bot logic walks to the transport, server auto-attaches
-            // the bot as a passenger when the bounding box overlaps, the
-            // transport carries them across maps, and the bot's same-map
-            // rules pick up at the destination dock. We populate the
-            // FIRST destination map that isn't the bot's current map —
-            // most transports cycle between exactly two continents, so
-            // there's no ambiguity. (Multi-stop tours like the Pandaria
-            // cruise are rare and not worth special-casing.)
-            // ONLY type-15 MAP_OBJ_TRANSPORT (cross-map ships/zeppelins) get a
-            // cross-map destination. Type-11 GAMEOBJECT_TYPE_TRANSPORT here is a
-            // local animated LIFT (Orgrimmar zeppelin-tower elevators, city
-            // lifts) — same-map, no TransportTemplate. It is still pushed to
-            // nearby_objects (the elevator rules find it), but with NO
-            // teleport_dest_map (stays kInvalidMapId), so the cross-map board
-            // rule never targets it. Old code accepted type-11 too; an elevator
-            // with no template kept the default dest, and when that default was
-            // 0 (== Eastern Kingdoms, a real map) the bot boarded the lift as if
-            // it were the EK zeppelin and rode it up and down forever.
-            else if (n.go_type == GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT)
-            {
-                if (TransportTemplate const* tt =
-                        sTransportMgr->GetTransportTemplate(go->GetEntry()))
-                {
-                    for (uint32 map_id : tt->MapIds)
-                    {
-                        if (map_id != p->GetMapId())
-                        {
-                            n.teleport_dest_map = map_id;
-                            // No exact dest coords — the transport drops
-                            // the passenger at its dock spawn, which the
-                            // Bot logic doesn't strictly need to plan; we just
-                            // need to know "this transport reaches the
-                            // goal map".
-                            break;
-                        }
-                    }
-                }
-            }
-            // Type-11 local lift (Orgrimmar zeppelin-tower elevators, city /
-            // raid lifts). We're on the WORLD THREAD here with the live navmesh
-            // and the bot is physically near this elevator (it's in range of the
-            // grid scan), so this is the right place to lazily derive the stop's
-            // walkable board/disembark LEDGES (nearest navmesh poly beside each
-            // platform-centre). Cheap after the first encounter — every stop's
-            // result is cached in ElevatorIndex. The elevator rules then read the
-            // ledge via ElevatorIndex::LedgeFor on the bot worker.
-            else if (n.go_type == GAMEOBJECT_TYPE_TRANSPORT)
-            {
-                // Derive ledges for the WHOLE nearby lift cluster (not just this
-                // GO), so the boardable-lift preference can compare sibling lifts
-                // immediately (e.g. the two Org zeppelin lifts ~150y apart — one
-                // boardable, one a pit). Cheap + cached after the first pass.
-                V2::Travel::ElevatorIndex::Instance().EnsureLedgesNear(p, /*range*/ 200.0f);
-            }
-            snap->world_objects.nearby_objects.push_back(n);
-        }
-
-        // ---- MO-transport scan (ships / zeppelins) ----
-        // Continental transports (GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT 15 = boats,
-        // and the cross-map TRANSPORT 11 = zeppelins) live in Map::_transports,
-        // NOT the grid, so the Cell::VisitGridObjects scan above NEVER returns
-        // them. That left every cross-map boarding rule blind: 0 bots boarded a
-        // ship fleet-wide despite 98K+ walk_to_known_dock fires — the dominant
-        // cause of the leveling stall (bots can't reach off-continent quests).
-        // Scan the map's transport set directly and add any nearby continental
-        // transport (one with a destination map != current) so a bot waiting at
-        // a dock can SEE its docked ship and board it. Generous radius — the bot
-        // waits on the pier, tens of yards from the ship's moving pivot. Few
-        // transports exist per map, so this is cheap; we bypass the 16-object
-        // cap above because transports are rare and always travel-relevant.
-        if (Map* tmap = p->GetMap())
-        {
-            constexpr float kTransportScanSq = 200.0f * 200.0f;
-            for (Transport* tr : tmap->GetTransports())
-            {
-                if (!tr) continue;
-                const uint8 tt = tr->GetGoType();
-                if (tt != GAMEOBJECT_TYPE_TRANSPORT &&
-                    tt != GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT) continue;
-                const float tdx = tr->GetPositionX() - p->GetPositionX();
-                const float tdy = tr->GetPositionY() - p->GetPositionY();
-                const float tdz = tr->GetPositionZ() - p->GetPositionZ();
-                if (tdx*tdx + tdy*tdy + tdz*tdz > kTransportScanSq) continue;
-                BotSnapshot::NearbyObject n{};
-                n.guid    = tr->GetGUID();
-                n.entry   = tr->GetEntry();
-                n.go_type = tt;
-                n.x = tr->GetPositionX();
-                n.y = tr->GetPositionY();
-                n.z = tr->GetPositionZ();
-                // Resolve the transport's destination continent (first MapId
-                // that isn't the bot's current map) — mirrors the grid-GO
-                // transport handling so the boarding rule's dest match works.
-                if (TransportTemplate const* ttpl =
-                        sTransportMgr->GetTransportTemplate(tr->GetEntry()))
-                {
-                    for (uint32 map_id : ttpl->MapIds)
-                    {
-                        if (map_id != p->GetMapId())
-                        {
-                            n.teleport_dest_map = map_id;
-                            break;
-                        }
-                    }
-                }
-                snap->world_objects.nearby_objects.push_back(n);
-            }
-
-            // Tram cars (type-11 GOs that run between two stations on one map, the Deeprun Tram): they sit in the grid, so the
-            // MO-transport set above never holds them, and the 30 y object scan only sees one standing right beside the bot. A
-            // bot waiting on the platform for a ride looked at "transports in sight 0" for 300 s, then gave the route up. The
-            // cars are few and known (PortalIndex), so look them up by spawn id within the same 200 y.
-            if (Services::Initialized() && Services::Portals().IsInitialized())
-            {
-                auto const& car_ids = Services::Portals().ShuttleSpawnIds(p->GetMapId());
-                if (!car_ids.empty())
-                {
-                    static std::atomic<uint32> s_carLogAt{0};
-                    uint32 const cnow = GameTime::GetGameTimeMS();
-                    uint32 last = s_carLogAt.load(std::memory_order_relaxed);
-                    if (cnow - last >= 120000u && s_carLogAt.compare_exchange_strong(last, cnow ? cnow : 1u))
-                    {
-                        size_t in_world = 0;
-                        for (uint64 const id : car_ids)
-                            if (GameObject* c = tmap->GetGameObjectBySpawnId(id); c && c->IsInWorld()) ++in_world;
-                        TC_LOG_INFO("playerbot.v2", "[xport_cars] map {}: {} tram cars known, {} in the world; {} sees {:.0f},{:.0f},{:.0f}",
-                            p->GetMapId(), car_ids.size(), in_world, p->GetName(), p->GetPositionX(), p->GetPositionY(), p->GetPositionZ());
-                    }
-                }
-                for (uint64 const spawn_id : car_ids)
-                {
-                    GameObject* car = tmap->GetGameObjectBySpawnId(spawn_id);
-                    if (!car || !car->IsInWorld()) continue;
-                    const float cdx = car->GetPositionX() - p->GetPositionX();
-                    const float cdy = car->GetPositionY() - p->GetPositionY();
-                    const float cdz = car->GetPositionZ() - p->GetPositionZ();
-                    if (cdx*cdx + cdy*cdy + cdz*cdz > kTransportScanSq) continue;
-                    bool const have = std::any_of(snap->world_objects.nearby_objects.begin(), snap->world_objects.nearby_objects.end(),
-                        [&](BotSnapshot::NearbyObject const& o) { return o.guid == car->GetGUID(); });
-                    if (have) continue;
-                    BotSnapshot::NearbyObject n{};
-                    n.guid    = car->GetGUID();
-                    n.entry   = car->GetEntry();
-                    n.go_type = car->GetGoType();
-                    n.x = car->GetPositionX();
-                    n.y = car->GetPositionY();
-                    n.z = car->GetPositionZ();
-                    snap->world_objects.nearby_objects.push_back(n);
-                }
-            }
-        }
-
-        // ---- Extended gathering-node scan (200y) ----
-        // The 30y nearby_objects scan above covers vendor / quest-giver
-        // / chest interactions where the bot is typically at the giver.
-        // For gathering nodes we want a much wider horizon so the bot can
-        // SEE a node from across a clearing and walk toward it. Per the
-        // user's design: 40y attract in Questing mode (opportunistic),
-        // 150-200y attract in Professioning mode (active seeking).
-        // Snapshot exposes nodes up to 200y; the rule picks attract radius
-        // based on the bot's activity_mode.
-        //
-        // Cost: O(creatures+GOs within 200y) extra cell visit, gated to
-        // bots that have at least one gathering skill — non-gatherers see
-        // no overhead. The append is filtered to GATHERING_NODE / FISHINGHOLE
-        // / CHEST(gather variant) so it doesn't pollute nearby_objects with
-        // unrelated GOs.
-        constexpr uint16 kHerbalismSk = 182;
-        constexpr uint16 kMiningSk    = 186;
-        constexpr uint16 kSkinningSk  = 393;
-        constexpr uint16 kFishingSk   = 356;
-        const bool has_any_gather =
-            p->HasSkill(kHerbalismSk) || p->HasSkill(kMiningSk) ||
-            p->HasSkill(kSkinningSk)  || p->HasSkill(kFishingSk);
-        // Per-bot 1Hz throttle on the 200y gather-node Cell::VisitGridObjects.
-        // Same rationale as the hub scan above: nodes are static; the
-        // 30y nearby_objects scan still gives near-bot coverage every tick.
-        BotAI* gs_ai = bot_ai;
-        const uint32 gather_now_ms = GameTime::GetGameTimeMS();
-        constexpr uint32 kGatherScanIntervalMs = 1000u;
-        const bool gather_throttled = gs_ai &&
-            gs_ai->last_gather_scan_ms() != 0 &&
-            (gather_now_ms - gs_ai->last_gather_scan_ms()) < kGatherScanIntervalMs;
-        if (has_any_gather && !gather_throttled)
-        {
-            if (gs_ai) gs_ai->set_last_gather_scan_ms(gather_now_ms);
-            constexpr float EXT_GATHER_RADIUS = 200.0f;
-            constexpr size_t EXT_GATHER_MAX = 32;
-            // Same thread_local + reserve(64) pattern as the 30y scan
-            // above. Distinct buffer (`ext_gos`) because both scans can
-            // appear in the same Build pass; reusing the same buffer
-            // would corrupt the 30y result.
-            thread_local std::vector<GameObject*> scratch_ext_gos;
-            scratch_ext_gos.clear();
-            scratch_ext_gos.reserve(128);
-            Trinity::AllGameObjectsWithEntryInRange ext_check(p, /*entry*/ 0, EXT_GATHER_RADIUS);
-            Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> ext_searcher(p, scratch_ext_gos, ext_check);
-            Cell::VisitGridObjects(p, ext_searcher, EXT_GATHER_RADIUS);
-
-            std::unordered_set<ObjectGuid> ext_seen;
-            ext_seen.reserve(snap->world_objects.nearby_objects.size() + 16);
-            for (auto const& nb : snap->world_objects.nearby_objects)
-                ext_seen.insert(nb.guid);
-
-            std::vector<std::pair<float, GameObject*>> ext_by_dist;
-            ext_by_dist.reserve(scratch_ext_gos.size());
-            for (GameObject* go : scratch_ext_gos)
-            {
-                if (!go) continue;
-                const uint8 t = uint8(go->GetGoType());
-                if (t != GAMEOBJECT_TYPE_GATHERING_NODE &&
-                    t != GAMEOBJECT_TYPE_FISHINGHOLE) continue;
-                if (ext_seen.count(go->GetGUID())) continue;
-                const float dx = go->GetPositionX() - p->GetPositionX();
-                const float dy = go->GetPositionY() - p->GetPositionY();
-                const float dz = go->GetPositionZ() - p->GetPositionZ();
-                ext_by_dist.emplace_back(dx*dx + dy*dy + dz*dz, go);
-            }
-            std::sort(ext_by_dist.begin(), ext_by_dist.end(),
-                      [](auto const& a, auto const& b) { return a.first < b.first; });
-            if (ext_by_dist.size() > EXT_GATHER_MAX) ext_by_dist.resize(EXT_GATHER_MAX);
-            for (auto const& [_, go] : ext_by_dist)
-            {
-                BotSnapshot::NearbyObject n{};
-                n.guid    = go->GetGUID();
-                n.entry   = go->GetEntry();
-                n.go_type = go->GetGoType();
-                n.x = go->GetPositionX();
-                n.y = go->GetPositionY();
-                n.z = go->GetPositionZ();
-                snap->world_objects.nearby_objects.push_back(n);
-            }
-        }
-
-        // ---- Spell-based ground-hazard scan (G-P1c) ----
-        // Modern boss "stand in fire" mechanics are NOT GameObject traps
-        // (handled above). They are DynamicObject area-spell entities
-        // (classic voidzones / Consecration-like ground effects) and
-        // AreaTrigger entities (the modern shape-based ground effects used
-        // by virtually every retail boss). Neither is reachable through the
-        // GameObject scan, so without this pass the bot has no snapshot
-        // signal that it is standing in a damage patch — idle:flee_hazard
-        // and the in-combat dungeon-positioning path (G-P0a) both consume
-        // is_hazard / hazard_radius NearbyObject entries and step the bot
-        // out, so feeding these two entity classes into nearby_objects is
-        // all that is required to make bots dodge fire.
-        //
-        // PERF: this is the hottest path (200-2000 bots, ~20K Builds/s
-        // post-throttle). Hazards only matter while the bot is fighting, so
-        // the ENTIRE scan is gated behind p->IsInCombat() — the ~95% idle
-        // fleet pays nothing (not even the cell visit). When it does run we
-        // restrict the grid map-type mask to DYNAMICOBJECT | AREATRIGGER so
-        // VisitAllObjects skips creatures, players, and GameObjects
-        // entirely, and we cap the appended hazards to the closest few.
-        // Instance extension (raid / dungeon ground-hazard avoidance): inside a
-        // dungeon or raid map the scan also runs out of combat - a healer
-        // walking up to the fight, or a bot whose combat flag dropped between
-        // pulls, must still see the Rain of Fire it is standing in - and it
-        // additionally feeds snap->combat.ground_hazards (spell / caster /
-        // radius, damage-classified) for the [raid_hazard] step-out. The
-        // nearby_objects is_hazard feed below keeps its original in-combat
-        // gate. Battlegrounds stay excluded (instance maps, not dungeons).
-        Map const* haz_map = p->GetMap();
-        const bool haz_instance = haz_map && haz_map->IsDungeon() && !haz_map->IsBattlegroundOrArena();
-        const bool haz_combat = p->IsInCombat();
-        if (haz_combat || haz_instance)
-        {
-            constexpr float HAZ_SCAN_RADIUS = 40.0f;
-            constexpr size_t HAZ_MAX = 12;
-            // Reuse the WorldObjectListSearcher + AllWorldObjectsInRange
-            // pattern (same as the TC core scripts), but constrain the
-            // visited grid containers to the two hazard-bearing types via
-            // the searcher's mapTypeMask so the visit never touches the
-            // (far larger) creature / player / GO maps.
-            thread_local std::vector<WorldObject*> scratch_haz;
-            scratch_haz.clear();
-            scratch_haz.reserve(32);
-            Trinity::AllWorldObjectsInRange haz_check(p, HAZ_SCAN_RADIUS);
-            Trinity::WorldObjectListSearcher<Trinity::AllWorldObjectsInRange> haz_searcher(
-                p, scratch_haz, haz_check,
-                GRID_MAP_TYPE_MASK_DYNAMICOBJECT | GRID_MAP_TYPE_MASK_AREATRIGGER);
-            Cell::VisitAllObjects(p, haz_searcher, HAZ_SCAN_RADIUS);
-
-            // Each candidate carries (dist^2, position, radius). We resolve
-            // the spell + caster, apply the hostile-and-non-positive gate,
-            // then sort by distance and keep the closest HAZ_MAX so a
-            // densely-stacked AoE encounter can't blow past the cap.
-            struct HazCand
-            {
-                float d2; float x, y, z, radius; ObjectGuid guid;
-                uint32 spell; ObjectGuid caster; bool hurts; GroundHazardSource src;
-            };
-            std::vector<HazCand> haz_by_dist;
-            haz_by_dist.reserve(scratch_haz.size());
-
-            // Shared classifier: a ground effect is a hazard when its
-            // creating spell is hostile (SpellInfo::IsPositive() == false)
-            // AND its caster is NOT friendly to the bot. A friendly
-            // Consecration / Healing Rain / Death and Decay cast by the bot
-            // or a party member must never be flagged. When the caster is
-            // absent (despawned / environmental), we treat a non-positive
-            // spell as an environmental hazard (e.g. lingering fire). When
-            // the spell is positive, we never flag — that is the safe
-            // default for indeterminate hostility.
-            auto isHostileGround = [&](SpellInfo const* si, Unit* caster) -> bool
-            {
-                if (!si || si->IsPositive())
-                    return false;                       // positive => never a hazard
-                if (!caster)
-                    return true;                        // no caster => environmental hazard
-                return !caster->IsFriendlyTo(p);        // hostile / neutral non-friendly only
-            };
-
-            for (WorldObject* wo : scratch_haz)
-            {
-                if (!wo) continue;
-
-                if (DynamicObject const* dyn = wo->ToDynObject())
-                {
-                    SpellInfo const* si = dyn->GetSpellInfo();
-                    if (!isHostileGround(si, dyn->GetCaster()))
-                        continue;
-                    const float dx = dyn->GetPositionX() - p->GetPositionX();
-                    const float dy = dyn->GetPositionY() - p->GetPositionY();
-                    const float dz = dyn->GetPositionZ() - p->GetPositionZ();
-                    haz_by_dist.push_back({ dx*dx + dy*dy + dz*dz,
-                        dyn->GetPositionX(), dyn->GetPositionY(), dyn->GetPositionZ(),
-                        dyn->GetRadius(), dyn->GetGUID(),
-                        dyn->GetSpellId(), dyn->GetCasterGUID(), SpellHurtsInArea(si),
-                        GroundHazardSource::DynObject });
-                }
-                else if (AreaTrigger const* at = wo->ToAreaTrigger())
-                {
-                    // AreaTrigger exposes only the spell id; resolve the
-                    // SpellInfo through SpellMgr (DIFFICULTY_NONE matches the
-                    // GO-trap classifier above). GetMaxSearchRadius() returns
-                    // the largest extent of the trigger's current shape
-                    // (sphere / box / polygon bounding radius incl. scale),
-                    // which is the conservative radius we want the bot to
-                    // clear.
-                    SpellInfo const* si = sSpellMgr->GetSpellInfo(at->GetSpellId(), DIFFICULTY_NONE);
-                    if (!isHostileGround(si, at->GetCaster()))
-                        continue;
-                    const float dx = at->GetPositionX() - p->GetPositionX();
-                    const float dy = at->GetPositionY() - p->GetPositionY();
-                    const float dz = at->GetPositionZ() - p->GetPositionZ();
-                    // Damage test: the creating spell itself, else the
-                    // template's CAST / ADDAURA actions aimed at enemies
-                    // (the data-driven AT shape). A scripted AT (no
-                    // actions - AreaTriggerAI applies the effect) is taken
-                    // on the hostile-non-positive verdict above.
-                    bool at_hurts = SpellHurtsInArea(si);
-                    if (!at_hurts)
-                    {
-                        AreaTriggerTemplate const* att = at->GetTemplate();
-                        if (!att || att->Actions.empty())
-                            at_hurts = true;
-                        else
-                            for (AreaTriggerAction const& act : att->Actions)
-                            {
-                                if (act.ActionType != AREATRIGGER_ACTION_CAST &&
-                                    act.ActionType != AREATRIGGER_ACTION_ADDAURA)
-                                    continue;
-                                if (act.TargetType != AREATRIGGER_ACTION_USER_ANY &&
-                                    act.TargetType != AREATRIGGER_ACTION_USER_ENEMY)
-                                    continue;
-                                if (SpellHurtsInArea(sSpellMgr->GetSpellInfo(act.Param, DIFFICULTY_NONE)))
-                                { at_hurts = true; break; }
-                            }
-                    }
-                    haz_by_dist.push_back({ dx*dx + dy*dy + dz*dz,
-                        at->GetPositionX(), at->GetPositionY(), at->GetPositionZ(),
-                        at->GetMaxSearchRadius(), at->GetGUID(),
-                        at->GetSpellId(), at->GetCasterGuid(), at_hurts,
-                        GroundHazardSource::AreaTrigger });
-                }
-            }
-
-            std::sort(haz_by_dist.begin(), haz_by_dist.end(),
-                      [](HazCand const& a, HazCand const& b) { return a.d2 < b.d2; });
-
-            // ---- combat.ground_hazards (raid / dungeon step-out feed) ----
-            // Instances only (the consumer is the dungeon / raid cascade).
-            // Three sources, merged closest-first and capped at
-            // kMaxGroundHazards: the damaging DynamicObject / AreaTrigger
-            // zones above (centre within 30y), trigger creatures pulsing a
-            // damage aura (void zone, poison cloud - from this Build's 40y
-            // unfriendly-unit scratch, filled by the merged enemy+friend
-            // scan), and hostile damaging trap GameObjects already in
-            // nearby_objects.
-            if (haz_instance)
-            {
-                constexpr float kGroundHazRange = 30.0f;
-                auto& gh = snap->combat.ground_hazards;
-                thread_local std::vector<std::pair<float, GroundHazard>> gh_by_dist;
-                gh_by_dist.clear();
-                for (HazCand const& h : haz_by_dist)
-                {
-                    if (!h.hurts || h.radius <= 0.0f) continue;
-                    if (h.d2 > kGroundHazRange * kGroundHazRange) continue;
-                    gh_by_dist.push_back({ h.d2, GroundHazard{ h.x, h.y, h.z, h.radius,
-                                                              h.spell, h.caster, h.src } });
-                }
-                for (Unit* t : scratch_enemies_tl())
-                {
-                    Creature const* c = t ? t->ToCreature() : nullptr;
-                    if (!c || !c->IsAlive() || c->IsFriendlyTo(p)) continue;
-                    const float dx = c->GetPositionX() - p->GetPositionX();
-                    const float dy = c->GetPositionY() - p->GetPositionY();
-                    const float dz = c->GetPositionZ() - p->GetPositionZ();
-                    const float d2 = dx*dx + dy*dy + dz*dz;
-                    if (d2 > kGroundHazRange * kGroundHazRange) continue;
-                    uint32 zone_spell = 0;
-                    const float r = TriggerCreatureZone(c, zone_spell);
-                    if (r <= 0.0f) continue;
-                    ObjectGuid const owner = !c->GetCreatorGUID().IsEmpty() ? c->GetCreatorGUID()
-                                                                            : c->GetGUID();
-                    gh_by_dist.push_back({ d2, GroundHazard{ c->GetPositionX(), c->GetPositionY(),
-                                                            c->GetPositionZ(), r, zone_spell, owner,
-                                                            GroundHazardSource::TriggerCreature } });
-                }
-                for (auto const& o : snap->world_objects.nearby_objects)
-                {
-                    if (!o.is_hazard || o.entry == 0 || o.hazard_radius <= 0.0f) continue;
-                    GameObject const* go = ObjectAccessor::GetGameObject(*p, o.guid);
-                    if (!go) continue;
-                    GameObjectTemplate const* tmpl = go->GetGOInfo();
-                    if (!tmpl || tmpl->type != GAMEOBJECT_TYPE_TRAP) continue;
-                    SpellInfo const* tsi = sSpellMgr->GetSpellInfo(tmpl->trap.spell, DIFFICULTY_NONE);
-                    if (!SpellHurtsInArea(tsi)) continue;
-                    if (Unit const* owner = go->GetOwner())
-                        if (owner->IsFriendlyTo(p)) continue;   // a friendly hunter's trap
-                    const float dx = o.x - p->GetPositionX();
-                    const float dy = o.y - p->GetPositionY();
-                    const float dz = o.z - p->GetPositionZ();
-                    const float d2 = dx*dx + dy*dy + dz*dz;
-                    if (d2 > kGroundHazRange * kGroundHazRange) continue;
-                    gh_by_dist.push_back({ d2, GroundHazard{ o.x, o.y, o.z, o.hazard_radius,
-                                                            tmpl->trap.spell, go->GetOwnerGUID(),
-                                                            GroundHazardSource::GoTrap } });
-                }
-                std::sort(gh_by_dist.begin(), gh_by_dist.end(),
-                          [](auto const& a, auto const& b) { return a.first < b.first; });
-                if (gh_by_dist.size() > kMaxGroundHazards) gh_by_dist.resize(kMaxGroundHazards);
-                gh.reserve(gh_by_dist.size());
-                for (auto const& [_, h] : gh_by_dist)
-                    gh.push_back(h);
-            }
-
-            if (haz_by_dist.size() > HAZ_MAX) haz_by_dist.resize(HAZ_MAX);
-
-            for (auto const& h : haz_by_dist)
-            {
-                if (!haz_combat) break;   // nearby_objects feed: original in-combat gate
-                BotSnapshot::NearbyObject n{};
-                n.guid          = h.guid;
-                // entry / go_type stay 0 — these are not GameObjects. The
-                // consumer keys off is_hazard / hazard_radius, not go_type.
-                n.x             = h.x;
-                n.y             = h.y;
-                n.z             = h.z;
-                n.is_hazard     = true;
-                n.hazard_radius = h.radius;
-                snap->world_objects.nearby_objects.push_back(n);
-            }
-        }
-
-        // ---- combat.tank_los (raid / dungeon LoS step feed) ----
-        // LoS from the bot to every live same-map group tank (threat_tanks,
-        // built with group_tank above), through the TTL-cached raycast the
-        // nearby scans use. In combat inside an instance only: the
-        // [raid_los] step (State_InCombat) is its sole consumer, and a raid
-        // has at most a handful of tanks.
-        if (haz_combat && haz_instance)
-        {
-            const uint32 los_now = GameTime::GetGameTimeMS();
-            for (Unit const* tk : threat_tanks)
-            {
-                if (!tk || tk == p) continue;
-                if (snap->combat.tank_los.size() >= 8) break;
-                snap->combat.tank_los.push_back({ tk->GetGUID(), CachedLosCheck(p, tk, los_now) });
-            }
-        }
-
-        // ---- Quest-relevant GameObject expansion (POI-aware) ----
-        // Mirrors the "quest-target neutral creature" expansion above: the
-        // baseline 30y nearby_objects scan misses GameObjects that are
-        // 50-150y from the bot. Many ITEM-objective quests source their
-        // item from a *lootable GO* (Quest 29401/29412 "Blown Away" loots
-        // item 71034 from balloons scattered around Razor Hill). The bot
-        // arrives at the POI center but the balloons cluster 100+ yards
-        // away across the POI polygon — outside 30y, so nearby_objects is
-        // empty and idle:quest_use_go silently no-ops.
-        //
-        // Strategy: build the set of (a) entries directly named by an
-        // active QUEST_OBJECTIVE_GAMEOBJECT, and (b) item-ids the active
-        // QUEST_OBJECTIVE_ITEM rows need; then do a wider scan and admit
-        // a GO if (a) matches its entry OR (b) intersects with its quest
-        // item drop list. Two-pass radii (80y around bot + 160y around
-        // POI when the bot is within 50y of POI) mirror the creature
-        // expansion above.
-        if (!snap->quest_log.quests.empty())
-        {
-            std::unordered_set<uint32> q_go_entries;
-            std::unordered_set<uint32> q_item_ids;
-            q_go_entries.reserve(8);
-            q_item_ids.reserve(8);
-            for (auto const& q : snap->quest_log.quests)
-            {
-                if (q.state != 0) continue;  // 0 = INCOMPLETE
-                for (auto const& oe : q.objectives)
-                {
-                    if (oe.progress >= oe.amount) continue;
-                    if (oe.type == QUEST_OBJECTIVE_GAMEOBJECT && oe.object_id > 0)
-                        q_go_entries.insert(uint32(oe.object_id));
-                    else if (oe.type == QUEST_OBJECTIVE_ITEM && oe.object_id > 0)
-                        q_item_ids.insert(uint32(oe.object_id));
-                }
-            }
-
-            if (!q_go_entries.empty() || !q_item_ids.empty())
-            {
-                std::vector<GameObject*> q_pool;
-
-                // ---- Tier 1.3 (behavior-preserving): single-traversal reuse ----
-                // The original ran TWO bot-centered VisitGridObjects passes: an
-                // 80y pass (always) and a 160y pass (when sitting on a POI),
-                // concatenating both into q_pool. The 160y pass re-walks every
-                // cell the 80y pass already walked (same center, GameObjects,
-                // AllGameObjectsWithEntryInRange uses IsWithinDist), so the
-                // 80y grid traversal is pure duplicate work whenever the wide
-                // pass fires.
-                //
-                // We reuse a SINGLE traversal: when the wide pass fires we walk
-                // 160y ONCE and reconstruct q_pool with the IDENTICAL multiset
-                // the two-pass code produced — every GO within 80y appears
-                // TWICE (once for the would-be 80y pass, once for the 160y
-                // pass) and every 80–160y GO appears once. Order within q_pool
-                // does NOT affect output here because q_by_dist below is SORTED
-                // by distance before the cap, so the membership after sort+cap
-                // depends only on the (distance,go) MULTISET — which is
-                // preserved exactly, including the duplicate-occupies-two-slots
-                // cap interaction of the original. When the wide pass does NOT
-                // fire we keep the plain single 80y traversal.
-                bool wide_fires = false;
-                {
-                    auto const& poi = snap->quest_log.current_objective_poi;
-                    if (poi.valid && poi.map_id == snap->position.map_id)
-                    {
-                        const float pdx = poi.x - p->GetPositionX();
-                        const float pdy = poi.y - p->GetPositionY();
-                        const float pdz = poi.z - p->GetPositionZ();
-                        const float poi_dist_sq = pdx*pdx + pdy*pdy + pdz*pdz;
-                        wide_fires = (poi_dist_sq < (50.0f * 50.0f));
-                    }
-                }
-
-                if (!wide_fires)
-                {
-                    // Narrow-only: exactly the original 80y pass.
-                    thread_local std::vector<GameObject*> scratch_q_gos;
-                    scratch_q_gos.clear();
-                    scratch_q_gos.reserve(128);
-                    constexpr float kQGoRadiusBot = 80.0f;
-                    Trinity::AllGameObjectsWithEntryInRange q_check(p, /*entry*/ 0, kQGoRadiusBot);
-                    Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> q_searcher(p, scratch_q_gos, q_check);
-                    Cell::VisitGridObjects(p, q_searcher, kQGoRadiusBot);
-                    q_pool.insert(q_pool.end(), scratch_q_gos.begin(), scratch_q_gos.end());
-                }
-                else
-                {
-                    // Wide fires: single 160y traversal, then rebuild the exact
-                    // [80y-subset] ++ [full-160y] multiset the two passes made.
-                    thread_local std::vector<GameObject*> scratch_q_gos_poi;
-                    scratch_q_gos_poi.clear();
-                    scratch_q_gos_poi.reserve(256);
-                    constexpr float kQGoRadiusPOI = 160.0f;
-                    constexpr float kQGoRadiusBot = 80.0f;
-                    Trinity::AllGameObjectsWithEntryInRange q_check_poi(p, /*entry*/ 0, kQGoRadiusPOI);
-                    Trinity::GameObjectListSearcher<Trinity::AllGameObjectsWithEntryInRange> q_searcher_poi(p, scratch_q_gos_poi, q_check_poi);
-                    Cell::VisitGridObjects(p, q_searcher_poi, kQGoRadiusPOI);
-
-                    // Segment 1 — reproduces the would-be 80y pass: every GO
-                    // the 160y result holds that is also within 80y. We re-use
-                    // the EXACT predicate AllGameObjectsWithEntryInRange applied
-                    // (IsWithinDist with is3D=false / 2D), so this membership is
-                    // identical to the dropped 80y pass.
-                    q_pool.reserve(scratch_q_gos_poi.size() * 2);
-                    for (GameObject* go : scratch_q_gos_poi)
-                        if (go && p->IsWithinDist(go, kQGoRadiusBot, /*is3D*/ false))
-                            q_pool.push_back(go);
-                    // Segment 2 — the full 160y pass.
-                    q_pool.insert(q_pool.end(), scratch_q_gos_poi.begin(), scratch_q_gos_poi.end());
-                }
-
-                std::unordered_set<ObjectGuid> already_in;
-                already_in.reserve(snap->world_objects.nearby_objects.size() + 16);
-                for (auto const& nb : snap->world_objects.nearby_objects)
-                    already_in.insert(nb.guid);
-
-                // Sort candidates by distance so we keep the closest ones
-                // first under the per-bot append cap.
-                std::vector<std::pair<float, GameObject*>> q_by_dist;
-                q_by_dist.reserve(q_pool.size());
-                for (GameObject* go : q_pool)
-                {
-                    if (!go) continue;
-                    if (already_in.count(go->GetGUID())) continue;
-                    const uint32 entry = go->GetEntry();
-                    const bool entry_match = q_go_entries.count(entry) > 0;
-                    bool item_match = false;
-                    if (!entry_match && !q_item_ids.empty())
-                    {
-                        if (std::vector<uint32> const* drops =
-                                sObjectMgr->GetGameObjectQuestItemList(entry))
-                        {
-                            for (uint32 item_id : *drops)
-                            {
-                                if (q_item_ids.count(item_id))
-                                {
-                                    item_match = true;
-                                    break;
-                                }
-                            }
-                        }
-                        // Loot-template GO sources (vanilla: no questitem rows).
-                        if (!item_match)
-                            for (uint32 item_id : q_item_ids)
-                                if (QuestItemDropsFromGameObject(item_id, entry))
-                                {
-                                    item_match = true;
-                                    break;
-                                }
-                    }
-                    if (!entry_match && !item_match) continue;
-                    const float dx = go->GetPositionX() - p->GetPositionX();
-                    const float dy = go->GetPositionY() - p->GetPositionY();
-                    const float dz = go->GetPositionZ() - p->GetPositionZ();
-                    q_by_dist.emplace_back(dx*dx + dy*dy + dz*dz, go);
-                }
-                std::sort(q_by_dist.begin(), q_by_dist.end(),
-                          [](auto const& a, auto const& b) { return a.first < b.first; });
-
-                constexpr size_t kQAppendCap = 24;
-                if (q_by_dist.size() > kQAppendCap) q_by_dist.resize(kQAppendCap);
-
-                for (auto const& [_, go] : q_by_dist)
-                {
-                    if (already_in.count(go->GetGUID())) continue;
-                    BotSnapshot::NearbyObject n{};
-                    n.guid    = go->GetGUID();
-                    n.entry   = go->GetEntry();
-                    n.go_type = go->GetGoType();
-                    n.x = go->GetPositionX();
-                    n.y = go->GetPositionY();
-                    n.z = go->GetPositionZ();
-                    snap->world_objects.nearby_objects.push_back(n);
-                    already_in.insert(go->GetGUID());
-                }
-            }
         }
     }
 
@@ -11285,6 +11573,8 @@ std::shared_ptr<BotSnapshot const> BotSnapshotBuilder::Build(Player* p, BotAI* b
         snap->quest_discovery.quest_offers.clear();
         snap->quest_discovery.quest_turnins.clear();
     }
+
+    BuildDungeonScan(p, bot_ai, *snap);
 
     return snap;
 }

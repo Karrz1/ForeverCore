@@ -37,6 +37,12 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                               BotIntentEmitter& emit,
                               DungeonAdvice const& advice);
 
+// Up for air, on the server's breath timer (Swim::BreathGoesUp), in every state: idle:surface_to_breathe, the dungeon preempt and the
+// fight. BreathDue updates the bot's latch and logs [breath] when it goes up and when its breath is full again; SurfaceForAir swims it
+// straight up and holds it at the surface until then (true = the tick is spent). Definitions in State_Idle.cpp.
+bool BreathDue(BotSnapshotView const& s, BotAI& ai);
+bool SurfaceForAir(BotSnapshotView const& s, BotAI& ai, BotIntentEmitter& emit, char const* rule);
+
 // Off-mesh-aware single step toward a dungeon target (the tank), GUID-keyed with
 // float out-params. Resolves the bot from self_guid, then returns the next
 // navmesh waypoint (capped at maxStep) toward (tx,ty,tz); sets is_offmesh when

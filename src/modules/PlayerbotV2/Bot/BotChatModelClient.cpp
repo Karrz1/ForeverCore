@@ -1,6 +1,7 @@
 // BotChatModelClient - see header.
 
 #include "BotChatModelClient.h"
+#include "BotBridgeFormat.h"
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
@@ -163,7 +164,7 @@ std::string FilterChars(std::string const& in)
 
 } // namespace
 
-std::string CleanReply(std::string const& raw, std::string const& bot_name, std::size_t max_bytes)
+std::string CleanReply(std::string const& raw, std::string const& bot_name, std::size_t max_bytes, std::vector<std::string> const& other_names)
 {
     std::string s = raw;
 
@@ -199,15 +200,13 @@ std::string CleanReply(std::string const& raw, std::string const& bot_name, std:
     }
     s = Trim(s);
 
-    // "Name: text", "<Name>: text", "[Name]: text" - the model speaking as the bot by name (the add-on also hides a whisper
-    // that starts "<Name>:" as an order confirmation).
-    if (std::size_t const colon = s.find(':'); colon != std::string::npos && colon <= 26)
+    // "Name: text", "<Name>: text", "[Name ]: text" - the model labelling the line with the bot's name, or with the name of the one
+    // it answers or of another bot in its talk, as the talk it was shown is written (the add-on also hides a whisper that starts
+    // "<Name>:" as an order confirmation).
     {
-        std::string head = Lower(Trim(s.substr(0, colon)));
-        if (head.size() >= 2 && ((head.front() == '<' && head.back() == '>') || (head.front() == '[' && head.back() == ']')))
-            head = Trim(head.substr(1, head.size() - 2));
-        if (!bot_name.empty() && head == Lower(bot_name))
-            s = Trim(s.substr(colon + 1));
+        std::vector<std::string> names = other_names;
+        names.push_back(bot_name);
+        s = Bridge::StripSpeakerLabel(s, names);
     }
 
     // Wrapping quotes.

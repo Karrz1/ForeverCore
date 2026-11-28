@@ -118,8 +118,11 @@ struct Spread { uint32_t enemy; float radius; Who who; float hpMax = 100.0f; flo
 struct Stand { uint32_t enemy; Who who; float x, y, z; float tolerance; bool needVictimIsMe; uint32_t needOtherEnemy; float hpMax = 100.0f; float hpMin = 0.0f;
               uint8_t share = 0;      // share 1 / 2: only the even / odd numbered of the members this rule matches (by guid order), so one rule list can split e.g. the off-tanks between two posts
               uint32_t endEnemy = 0;   // the post ends once this enemy is in the fight (EnemyInFight): a phase's layout that the next phase must not keep
-              float maxFromEnemy = 0.0f; };   // > 0: the post holds only while the enemy is within this many yards of it (a boss pulled
+              float maxFromEnemy = 0.0f;      // > 0: the post holds only while the enemy is within this many yards of it (a boss pulled
                                              // somewhere else is fought where he is, not from posts across the room); 0 = always
+              bool endAfterEnemy = false;     // endEnemy ends the post only once no <enemy> is left alive in the fight (StandEnded)
+              float fightTolerance = 0.0f; }; // > 0: once endEnemy is in the fight (the post kept by endAfterEnemy), the post holds within
+                                             // this many yards instead, and a bot past it walks back to just inside it (room to spread)
 
 // While <enemy> is alive and fighting, a member carrying <aura> stands <distance> yards from the enemy's live position
 // along the fixed world bearing <bearing> (radians) and holds within <tolerance> (Thaddius' Positive / Negative Charge
@@ -289,7 +292,18 @@ struct StayNear { uint32_t enemy; float radius; Who who; float hpMax = 100.0f; f
 // the back of the lair, wherever the raid stands (the raid enters from the west and spreads; a bearing taken from where it stood at the pull
 // put the tank on the wrong side once the raid moved).
 constexpr float kNoBearing = 1000.0f;
-struct FaceAway { uint32_t enemy; float hpMax = 100.0f; float hpMin = 0.0f; float bearingDeg = kNoBearing; };
+// maxTurnDeg: how far off that line the tank may stand (its spot, and the check that it is already there). Past 30 degrees only for an
+// enemy whose frontal hazard is narrow enough that a turn that far still keeps the raid behind it (Kel'Thuzad's Soul Weavers).
+struct FaceAway { uint32_t enemy; float hpMax = 100.0f; float hpMin = 0.0f; float bearingDeg = kNoBearing; float maxTurnDeg = 30.0f;
+                  float knockback = 0.0f; };   // > 0: the enemy's frontal cast throws its tank this far straight back; a spot whose landing
+                                               // lies in a keep-out or an idle pack's reach is refused
+
+// While an untanked <enemy> is on a raider, that raider leads it (Kel'Thuzad's Soul Weavers): it stands where the enemy, walking up to it,
+// faces nobody else with its frontal cast (a cone of <range> yards, <halfDeg> degrees each side of its facing), where its walk there passes
+// nobody (an enemy that takes the nearest raider in its melee reach while its victim is out of it), and where the cast's knockback
+// (<knockback> yards straight on, 0 for none) lands clear of the keep-outs and the idle packs. A victim already in such a place holds it.
+// Only for an enemy within <maxDist> yards of its victim, and never a tank holding an add of a fixed row (its place is its slot).
+struct LeadAway { uint32_t enemy; float range; float halfDeg; float knockback = 0.0f; float maxDist = 45.0f; };
 
 // While <anchor> is fighting, the players that hold an <enemy> stand <reach> yards past the spot the anchor stood on when the fight began, away from the
 // raid's centre at that moment, side by side <spacing> yards apart (Majordomo: his tank drags him out, each Elite tank one Elite, all visibly apart).
@@ -298,7 +312,17 @@ struct FaceAway { uint32_t enemy; float hpMax = 100.0f; float hpMin = 0.0f; floa
 // middle of the arc on bearing rowDeg (a camp at (x, y) then has every tank's pile at the same distance). also: further entries whose holders share the one row (adds of any colour), so no two tanks get the same slot.
 // endEnemy: the row ends once this enemy is in the fight (EnemyInFight), as Stand::endEnemy.
 struct TankSpot { uint32_t anchor; uint32_t enemy; float reach; float spacing; bool fixed = false; float x = 0.0f, y = 0.0f, rowDeg = 0.0f;
-                  std::vector<uint32_t> also = {}; uint32_t endEnemy = 0; };
+                  std::vector<uint32_t> also = {}; uint32_t endEnemy = 0;
+                  float fetchMax = 0.0f;      // > 0 (fixed row): a tank goes after a loose add only within this many yards of (x, y)
+                  float fetchTurned = 0.0f;     // > 0 (fixed row): a FaceAway add turned from the side (maxTurnDeg past 30) is met
+                                                // once it is within this many yards of (x, y), wherever the tank stands, and not before
+                  uint8_t handOffFrom = 0;      // > 0 (fixed row): a tank holding this many of the row's adds hands all but its most hurt
+                                                // one to an empty-handed tank of the row (0: from 3, keeping 2)
+                  uint32_t skipClassMask = 0;   // fixed row: tanks of these classes (1 << (class - 1)) take none of the row's adds
+                  float holdSlack = 0.0f;       // > 0 (fixed row): a tank in melee with one of the row's adds on it stays when it is this
+                                                // close to its slot (the walk turns its back to the add)
+                  bool endAfterAdds = false; }; // endEnemy ends the row only once none of the row's adds is alive; until then the tank that
+                                                // holds the endEnemy is out of the row and the others keep their slots (RowEnded, OnEndEnemy)
 inline bool InTankSpot(TankSpot const& rule, uint32_t entry)
 {
     return entry == rule.enemy || std::find(rule.also.begin(), rule.also.end(), entry) != rule.also.end();
@@ -379,9 +403,14 @@ struct RaidRules
     std::vector<KillTogether> killTogether;
     std::vector<StayNear> stayNear;
     std::vector<FaceAway> faceAway;
+    std::vector<LeadAway> leadAway;
     std::vector<TankSpot> tankSpot;
     std::vector<StandBehind> standBehind;
     std::vector<GuardRise> guardRise;
+    // While any of these enemies is alive and in the fight, every live tank is on the raid's tank roster (PveGroupCoordinator): an
+    // encounter that sends tanked adds the whole time (Kel'Thuzad's Abominations, each with a Mortal Wound swap) cannot wait for the
+    // engaged count to grow the roster one add at a time.
+    std::vector<uint32_t> allTanks;
     std::vector<StandFlank> standFlank;
     std::vector<ResistPotion> resistPotion;
     std::vector<CarrierPotion> carrierPotion;
@@ -390,6 +419,11 @@ struct RaidRules
     std::vector<ThreatDrop> threatDrop;   // bosses that cut their tank's threat on a schedule (ThreatDropFraction)
     std::vector<uint32_t> noDispel;   // auras nobody removes (removing them hurts: Wyvern Sting, Mutating Injection)
     std::vector<uint32_t> noTank;   // summoned adds the DPS burns down: tanks hold every other mob first and never count them as a roster need
+    // The tanks keep off the noTank adds for the whole fight, not only while a fixed tank row holds (Kel'Thuzad: a Soul Weaver a tank holds
+    // faces the tank, and the camp behind it).
+    bool noTankWholeFight = false;
+    std::vector<uint32_t> burstTank;   // adds whose single hits take a full tank to a quarter (Kel'Thuzad's Abominations): their tank's healers
+                                       // pre-heal it as they would under a boss, whoever else is hurt (HitsTankHard)
     std::vector<uint32_t> tankOrder;   // mobs the tanks take in this order, first listed first (Majordomo: Healers, then Elites); unlisted mobs come after
     std::vector<uint32_t> tankLast;    // a mob the tanks take only when no other free mob is left (Majordomo: he does little damage and cannot die)
     std::vector<uint32_t> offTankMob;  // a boss the second tank holds from the first second (Majordomo); no area taunt while he is up, the tanks keep their mobs
@@ -398,6 +432,10 @@ struct RaidRules
     // then the higher priority, then the most hurt one: wave fights where adds keep coming, an untanked one only means a threat hold, and
     // the raid has to finish one before the next (Victor Nefarius' drakonids).
     std::vector<uint32_t> focusHeldLowest;
+    // Encounters (an enemy entry that is up during them) where a ranged DPS looking for a target takes one inside its spell range before
+    // any farther one, whatever the priority, and leaves a far one it is on for a near one: adds that keep walking in from all sides, where
+    // the top priority is most often a fresh one at the far wall (Kel'Thuzad's Soldiers from the alcoves).
+    std::vector<uint32_t> rangedNearFirst;
 };
 
 // How long the corridor of a cast breath stays open from the first sighting of the cast. Onyxia's damage is one instant at the end of the 5 s cast
@@ -455,6 +493,10 @@ size_t InterruptOrder(uint32_t mapId, uint32_t spell);
 // True when the map's rules list <entry> as an add the tanks do not hold (Firelord's Lava Spawns): the tank assignment gives a
 // tank such a mob only when no other engaged mob is free, and the tank roster does not grow for it.
 bool NoTank(uint32_t mapId, uint32_t entry);
+
+// True when the map's rules list <entry> as an add whose hits take a full tank to a quarter (burstTank): the tank pre-heal treats
+// one on the tank as a boss and keeps a heal going on it whoever else is hurt. Static data, safe on the bot worker threads.
+bool HitsTankHard(uint32_t mapId, uint32_t entry);
 
 // RaidRules::tankOrder: the position of <entry> in the map's tank order (0 = first), or UINT32_MAX when it is not listed.
 uint32_t TankOrder(uint32_t mapId, uint32_t entry);

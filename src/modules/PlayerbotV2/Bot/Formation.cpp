@@ -139,7 +139,9 @@ FormationOffset ComputeOwnerSlotOffset(FormationType type, uint32_t index, uint3
             // Concentric rings round the owner, inner rings first (tanks and melee, the order the caller sorted by), each ring
             // holding as many bots as fit `spacing` apart on its circumference. 40 bots make four compact rings instead of one
             // 25 y circle. The outer ring is spread evenly over the bots it actually has; odd rings are turned half a step so
-            // nobody stands directly behind another. Slot 0 is directly behind the owner.
+            // nobody stands directly behind another. Each ring fills from the front: slot 0 ahead of the owner, then left and
+            // right in turn towards his back, so the tanks (sorted first) lead and the healers (sorted last) close the ring
+            // behind him. Before, slot 0 was directly behind the owner and the tank trailed the whole group (row 348).
             uint32_t ring = 0, first = 0, in_ring = 0;
             float radius = 0.0f;
             for (;; ++ring)
@@ -153,7 +155,10 @@ FormationOffset ComputeOwnerSlotOffset(FormationType type, uint32_t index, uint3
             }
             uint32_t const pos = index - first;
             float const step = 2.0f * kPi / float(in_ring);
-            float const a = kPi + step * (float(pos) + (ring % 2 ? 0.5f : 0.0f)) + jit(21, 0.25f * step);
+            // Even rings: 0, +1, -1, +2, -2 ... steps; odd rings (half a step turned): -0.5, +0.5, -1.5, +1.5 ... (+ = the owner's left).
+            float const a = (ring % 2 == 0)
+                ? (pos % 2 == 1 ? 1.0f : -1.0f) * step * float((pos + 1) / 2) + jit(21, 0.25f * step)
+                : (pos % 2 == 1 ? 1.0f : -1.0f) * step * (float(pos / 2) + 0.5f) + jit(21, 0.25f * step);
             float const r = radius + jit(22, 0.2f * spacing);
             return FromLocal(r * std::cos(a), r * std::sin(a));
         }

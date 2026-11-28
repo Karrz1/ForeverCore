@@ -44,7 +44,9 @@ bool ParseReply(std::string const& body, std::string& out, std::string& error);
 // Turns a raw model reply into one chat line a bot can say: drops a <think> block, keeps the first non-empty line, strips a
 // leading "Name:" (also "<Name>:" / "[Name]:") and wrapping quotes or asterisks, removes '|' (the client's escape character) and characters the game
 // font has no glyph for (emoji), and cuts it to `max_bytes` on a word boundary. Empty when nothing usable is left.
-std::string CleanReply(std::string const& raw, std::string const& bot_name, std::size_t max_bytes = 250);
+// `other_names`: the one the bot answers and the others in its talk; a line labelled with one of their names loses the label too.
+std::string CleanReply(std::string const& raw, std::string const& bot_name, std::size_t max_bytes = 250,
+                       std::vector<std::string> const& other_names = {});
 
 class Client
 {

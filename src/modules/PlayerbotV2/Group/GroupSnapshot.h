@@ -42,6 +42,11 @@ struct GroupMemberSummary
     float                  damage_taken_per_s = 0.f;
     // The largest single hit it took in the last ClassicHeal::kSpikeWindowMs (DamageSpike): the next hit can be that big again.
     int32                  damage_spike = 0;
+    // The damage the member's own harmful periodic auras deal it in the next ClassicHeal::kAuraDueHorizonMs: their damage ticks, and the
+    // ticks of a triggered spell whose damage takes in the member itself (Cinder's Conflagration 1310512: 300 a second on its carrier,
+    // and its Conflagration 16806 another 300 to every ally within 5 y, the carrier too: 600 a second for 4 s on a 2.5k cloth). Kept in
+    // 5-man instances (not raids). The healers count it with the swings coming (ClassicHeal::MakePatient).
+    int32                  aura_damage_due = 0;
     int32                  mana    = 0;     // Power index 0 (mana) only.
     int32                  max_mana = 0;
     bool                   online  = false;

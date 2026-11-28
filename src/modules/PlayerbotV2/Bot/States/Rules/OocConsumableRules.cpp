@@ -308,11 +308,12 @@ int32 OocDrinkStart(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
 }
 
 // A player's bots (grouped, led by him) rest only when they need it and until full (Classic::LedMaySitDown); every other bot keeps the
-// personality's food mark and the pull-ready drink marks. With the tank leading a dungeon ("lead on") the tank's pull gate sets the
-// pace, as in a group of bots alone, so they drink to its marks between pulls.
+// personality's food mark and the pull-ready drink marks. With the tank leading a five-man ("lead on") they still do: the lead mode
+// (2026-11-14) put them back on the pull gate's marks, and the healer drank at 80-89 % with the group stopped at nearly every pack,
+// what the owner had ruled out on 2026-10-15 and 2026-10-29 (GitHub #23, 2026-11-22). A raid under the lead keeps the raid marks.
 bool LedRest(BotSnapshotView const& s, BotAI const& ai)
 {
-    return s.in_group() && s.is_led_by_player() && !ai.tank_leads_here(s);
+    return s.in_group() && s.is_led_by_player() && (!ai.tank_leads_here(s) || !s.is_in_raid());
 }
 
 Classic::RecoveryPick OocRecoveryPick(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const& g, uint32 now_ms)
@@ -341,6 +342,9 @@ bool OocEatFoodGate(BotSnapshotView const& s, BotAI& ai,
     if (s.recently_in_combat(5000)) return false;
     if (s.raw().movement.is_mounted) return false;
     if (s.is_encounter_in_progress()) return false;
+    // Not with the head under water: a player eats on the bank or at the surface, not on the lake floor with the breath bar running
+    // (the Vile Reef mage sat down 25 y deep after its fight and drowned there, vile_reef_fight af64).
+    if (s.is_underwater()) return false;
     if (!Classic::SafeToRecover(s, &g)) return false;
     // A solo quester does not sit down with its quest kill targets ready to engage in scan range; a grouped bot goes at the
     // group's pace, so this never applies to it.

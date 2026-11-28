@@ -1046,10 +1046,15 @@ bool PullBackTick(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&,
     if (p.map != s.map_id()) return finish("left the map");
     using Phase = BotAI::PullBackPhase;
     constexpr uint32 kTimeoutMs = 30000u, kHoldCapMs = 300000u;
+    constexpr uint32 kUnpullableGateMs = 120000u;   // a pack no pull from here could wake (PackPullGate::Note)
     auto tag = [&](char const* idle_tag, char const* combat_tag)
     { ai.set_last_rule_fired(in_combat_state ? combat_tag : idle_tag); };
     if (p.phase != Phase::Hold && now_ms - p.started_ms > kTimeoutMs)
     {
+        // A pull that never woke its target is no pull from here: the pack is passed by for a while, like an unreachable one
+        // (see go_home_and_finish below), or the next pick takes the same mob again.
+        if (p.phase == Phase::Pull)
+            ai.pack_pull_gate().Note(p.target.GetCounter(), /*gated*/ true, now_ms, kUnpullableGateMs);
         // Don't stand where the pull left us (a ledge, the lava edge): walk back to the return point once, off the mob.
         if (!s.victim().IsEmpty()) emit.stop_attack();
         if (s.is_casting()) emit.cancel_cast();
@@ -1296,17 +1301,41 @@ bool PullBackTick(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&,
         if (!tu && d <= 38.0f)
             return finish("target left the scan");
 
-        auto go_home_and_finish = [&](char const* why)
+        auto go_home_and_finish = [&](char const* why, uint32 gate_ms = PackPullGate::kGatedMs)
         {
             if (!s.victim().IsEmpty()) emit.stop_attack();
             if (s.is_casting()) emit.cancel_cast();
             emit.move_to(p.rx, p.ry, p.rz, true);
             TC_LOG_INFO("playerbot.v2", "[pull_back] {} unreachable: {} -> back to the return point ({:.1f},{:.1f})",
                 s.name(), why, p.rx, p.ry);
+            // No opener spot leads to this target from here: the pack is no pull for this tank yet, the same verdict the pack stop
+            // gives a pack it can only walk to the long way round (PackPullGate), so the advance passes it by and the route reaches it
+            // from its own side. The path to it can be short while every spot in the opener's window lies over a drop: alcaz_full af66,
+            // the tank on the main hall's upper floor took a Prisoner in a cell on the level below for the next pack, found no pull spot,
+            // walked out to the balcony's edge on short steps toward it, gave up, and the pack stop handed it the same Prisoner one
+            // second later, four times in ten seconds.
+            ai.pack_pull_gate().Note(p.target.GetCounter(), /*gated*/ true, now_ms, gate_ms);
             finish("unreachable");
             tag("idle:pull_back_retreat", "combat:pull_back_retreat");
             return true;
         };
+
+        // The opener went out and neither it nor the hand pull after it woke the target: it still stands idle 8 s on. Something the
+        // snapshot's sight check does not see stands between (sfk_full af70c 2026-11-25: Throw refused LINE_OF_SIGHT x2 on a Shadowfang
+        // Ragetooth 12 y off behind the courtyard wall, no path to it, "in sight yes"; the order re-threw for its full 30 s, the next pick
+        // took the same mob, four times, and the run stalled). The pack is passed by for 2 minutes: the advance and the next pull go on to
+        // a pack the tank can reach, and the route brings it to this one from its own side.
+        if (opener_failed && now_ms - p.opened_ms > 8000u && tu && tu->victim.IsEmpty() && !tu->unit_in_combat)
+        {
+            for (auto const& u : s.raw().combat.nearby_enemies)
+            {
+                if (u.hp <= 0 || !u.victim.IsEmpty() || u.unit_in_combat) continue;
+                float const px = u.x - tx, py = u.y - ty, pz = u.z - tz;
+                if (px * px + py * py + pz * pz <= 18.0f * 18.0f)
+                    ai.pack_pull_gate().Note(u.guid.GetCounter(), /*gated*/ true, now_ms, kUnpullableGateMs);
+            }
+            return go_home_and_finish("the opener and the hand pull did not wake it in 8 s", kUnpullableGateMs);
+        }
 
         if (!p.stand_pull && (d > reach - 2.0f || d < near_min))
         {
@@ -1506,9 +1535,14 @@ bool PullBackTick(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&,
     if (NearbyUnit const* u = pack_on_group_at_point())
         return finish_for_pack(*u);
     const float td2 = d2xy(bx, by, tu->x, tu->y);
-    bool others = false;   // something besides the pull target is on us
+    // Something besides the pull target hits the tank here, in melee: the fight has come to the return point. A caster of the pack
+    // that casts at the tank from where it stands is not that: it stays off and is the line-of-sight pull's to bring in. Counting it
+    // handed the fight to the rotation the moment the Defias Squallshaper's first bolt landed, and the auto attack walked the tank up
+    // the gangplank after the Pirate it had pulled (scan66 deadmines_full: Hold at 1484 s, up on the deck at 1490 s with the mage
+    // behind it, the parrot, a Blackguard and Mr. Smite on the group, the priest dry at 1553 s, the warrior dead at 1561 s).
+    bool others = false;
     for (auto const& u : s.raw().combat.attackers)
-        if (u.guid != p.target && u.hp > 0) { others = true; break; }
+        if (u.guid != p.target && u.hp > 0 && d2xy(bx, by, u.x, u.y) <= 8.0f * 8.0f) { others = true; break; }
     // A caster on the tank that stays where it stands (Deadmines' Defias Squallshaper up on the ship's deck) does not come to the return
     // point: the tank waits here, still, so the line-of-sight pull can start (PveGroupCoordinator::PlanSightPull sees a mob of the fight
     // stand off while the tank holds at its return point), and the 8 s cap below still hands the fight on. Handing it to the rotation at

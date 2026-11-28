@@ -63,7 +63,7 @@ DungeonAdvice DeadminesClassicAdvice()
         { -22.8f, -797.3f, 20.4f },   // Mr. Smite
         { -69.0f, -808.0f, 40.8f },   // Captain Greenskin
         { -87.4f, -819.9f, 39.3f },   // Edwin VanCleef
-        { -67.6f, -853.7f, 17.1f },   // Cookie
+        { -110.0f, -844.9f, 16.9f },   // Cookie (his spawn; the old spot was 43 y off it)
     };
     return a;
 }

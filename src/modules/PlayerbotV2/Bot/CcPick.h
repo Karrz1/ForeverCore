@@ -2,7 +2,9 @@
 // list: the pure choice behind State_Idle idle:dungeon_auto_cc_script.
 //
 // An eligible candidate is a live enemy of the script's priority list that no teammate has locked yet, that is not hitting the
-// bot itself, is not the skull (the group's focus-kill mark) and whose creature type the CC spell accepts. Among them the
+// bot itself, is not the skull (the group's focus-kill mark) and whose creature type the CC spell accepts. An idle mob also
+// has to be one the tank can walk to: crowd control on an idle mob pulls its pack, and a pack the tank's pull passes by
+// (another level, across a gap) comes to the group with nobody able to hold it. Among them the
 // group's kill focus (PveOrder::kill_focus, the first priority add of the script's list that is engaged) goes first: it is the
 // most dangerous caster, and once it is locked the coordinator moves the focus on to the next add (PveGroupCoordinator skips
 // adds a member has CC-locked), so the DPS burn a different one. Deadmines 2026-10-09: the Defias Evoker's Flamestrike (546 damage)
@@ -24,6 +26,7 @@ struct CcCandidate
     bool is_skull = false;           // the group's focus-kill mark
     bool wrong_type = false;         // the CC spell cannot take its creature type (mechanical, ...)
     bool is_kill_focus = false;      // the coordinator's current kill focus
+    bool tank_cannot_pull = false;   // an idle mob the tank can only walk to the long way round, or not at all (PackPullGate.h)
 };
 
 constexpr size_t kNoCcTarget = size_t(-1);
@@ -34,7 +37,7 @@ inline size_t PickCcTarget(std::vector<CcCandidate> const& candidates)
     for (size_t i = 0; i < candidates.size(); ++i)
     {
         CcCandidate const& c = candidates[i];
-        if (!c.in_priority_list || c.locked || c.hits_me || c.is_skull || c.wrong_type)
+        if (!c.in_priority_list || c.locked || c.hits_me || c.is_skull || c.wrong_type || c.tank_cannot_pull)
             continue;
         if (c.is_kill_focus)
             return i;

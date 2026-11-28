@@ -18,6 +18,13 @@ public:
     uint32_t  map_id() const override { return 469; }
     char const* name() const override { return "blackwing_lair"; }
 
+    std::vector<uint32_t> scripted_spawn_bosses() const override
+    {
+        return {
+            11583,   // Nefarian: summoned by Lord Victor Nefarius (classic_boss_victor_nefarius)
+        };
+    }
+
     DungeonAdvice get_advice(BotSnapshotView const& /*s*/) const override
     {
         DungeonAdvice a;

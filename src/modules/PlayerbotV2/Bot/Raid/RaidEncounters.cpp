@@ -90,6 +90,12 @@ bool RulesPlaceTank(uint32_t mapId, uint32_t boss)
     return false;
 }
 
+bool HitsTankHard(uint32_t mapId, uint32_t entry)
+{
+    RaidRules const* rules = RulesForMap(mapId);
+    return rules && std::find(rules->burstTank.begin(), rules->burstTank.end(), entry) != rules->burstTank.end();
+}
+
 bool OwnsAura(uint32_t mapId, uint32_t aura)
 {
     RaidRules const* rules = RulesForMap(mapId);

@@ -406,6 +406,21 @@ void PveGroupCoordinator::Update(uint32 now_ms)
                                 100.0f * float(u.hp) / float(u.max_hp) <= rule.hpMax)
                                 want = std::max<size_t>(want, mem.size());
                 }
+            // An encounter that sends tanked adds the whole fight (RaidRules::allTanks) has every live tank on the roster while it is on.
+            // naxx_kelthuzad kt62a (1123): the roster stayed at three (0-1 engaged Abominations at a time, the Soldiers and Weavers are no
+            // tank's) until 133 s; the bear Mctankda played DPS in Cat Form, an Abomination stood on it untanked, and the Abominations killed
+            // 15 of 43 with the three tanks on Mortal Wound swaps among themselves.
+            // The fight is the group's combat: a listed enemy alive near it is enough (kt66a/b: keyed on the enemy's own combat flag the
+            // roster went 4 -> 3 -> 4 three times in the first 70 s, between sent Soldiers).
+            if (Raid::RaidRules const* rules = Raid::RulesForMap(b.map_id); rules && !rules->allTanks.empty() && b.in_combat)
+                for (auto const& sn : snaps)
+                {
+                    if (sn->position.map_id != b.map_id) continue;
+                    for (auto const& u : sn->combat.nearby_enemies)
+                        if (u.hp > 0 &&
+                            std::find(rules->allTanks.begin(), rules->allTanks.end(), u.entry) != rules->allTanks.end())
+                            want = std::max<size_t>(want, mem.size());
+                }
             // A melee-soak boss (RaidRules::meleeSoak, Patchwerk) needs the main tank and every soaker on the roster: with three, the
             // fourth tank played DPS, drank no Stoneshield and had no tank healer while the raid layer still sent it in as a soaker, and
             // the bear on the roster was not one of the raid layer's soakers (naxx_patchwerk 1115 night, [raid_soak]).
@@ -1860,8 +1875,16 @@ void PveGroupCoordinator::PlanPrePullCc(uint64 bkey, uint64 group_low, uint32 ma
                 group_low, map_id, cu->entry, pcc.mob.GetCounter(), caster->src->name);
         }
     }
-    // The mage may crowd-control the idle marked mob: the squad's tank asked for it (MarksNeedOrder).
-    if (pcc.state != PrePullCc::State::Refused)
+    // An on-pull request is done once the mob is held in the fight: the moon and the mage's assignment stay kAfterDoneMs more.
+    if (pcc.on_pull && !pcc.done_ms && cu->is_cc_locked)
+    {
+        PrePullCc::Done(group_low, now_ms);
+        TC_LOG_INFO("playerbot.v2", "[raid_pull] group={} map={} {} ({}) is held in the fight after {} ms",
+            group_low, map_id, cu->entry, pcc.mob.GetCounter(), uint32(now_ms - pcc.requested_ms));
+    }
+    // The mage may crowd-control the idle marked mob: the squad's tank asked for it (MarksNeedOrder). Not on an on-pull
+    // request: the moon alone assigns the mob, and the hold waits for the mob to be in the fight (MarkGate::MayEngage).
+    if (pcc.state != PrePullCc::State::Refused && !pcc.on_pull)
         if (auto pit = plan.find(pcc.caster_low); pit != plan.end())
             pit->second.marks_released = true;
 }
@@ -1918,7 +1941,15 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
             if (Raid::GetBrain().AllSchoolsAvoided(group_low, map_id, u.guid)) continue;
             if (find_mob(u.guid)) continue;
             Member const* v = member_of(u.victim);
-            mobs.push_back({ &u, v && !v->tank });
+            // A mob on a tank whose raid order forbids it that mob is loose too: that tank does not hold it, so another tank has to take
+            // it. naxx_kelthuzad kt70f (1125): the first Abomination was sent at the bear, which takes none (TankSpot::skipClassMask);
+            // the bear dropped it ("the raid order forbids it") for 10 s while the three warriors stood at their slots with nothing,
+            // counting it held, until it turned on Mcmagee in the camp and killed it at 43 s.
+            bool forbiddenOnTank = false;
+            if (v && v->tank)
+                if (RaidOrder const* ro = Raid::GetBrain().OrderFor(v->guid_low); ro && ro->active)
+                    forbiddenOnTank = std::find(ro->forbidden_targets.begin(), ro->forbidden_targets.end(), u.guid) != ro->forbidden_targets.end();
+            mobs.push_back({ &u, v && (!v->tank || forbiddenOnTank) });
         }
     }
 
@@ -1959,6 +1990,8 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
         auto raid_forbids = [&](uint64 tank_low, ObjectGuid mob) -> bool
         {
             RaidOrder const* ro = Raid::GetBrain().OrderFor(tank_low);
+            if (ro && ro->active && ro->no_tank_off && Raid::NoTank(map_id, mob.GetEntry()))
+                return true;
             return ro && ro->active && std::find(ro->forbidden_targets.begin(), ro->forbidden_targets.end(), mob) != ro->forbidden_targets.end();
         };
         for (auto it = sticky.begin(); it != sticky.end();)
@@ -2255,8 +2288,10 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
                 if (!pick || is_taken(pick->u->guid))
                 {
                     pick = nullptr;
+                    // Not one the raid order forbids this tank: naxx_kelthuzad kt69i (1124), a Soldier of the Frozen Wastes sent at the main tank
+                    // was handed to it 57 times from 50 y out ("takes Soldier ... on Mctankwa why=on_main_tank"), past the fixed row's forbid.
                     for (auto const& m : mobs)
-                        if (m.u->victim == t->src->guid && !is_taken(m.u->guid) &&
+                        if (m.u->victim == t->src->guid && !is_taken(m.u->guid) && !raid_forbids(t->guid_low, m.u->guid) &&
                             !(Raid::TankLast(map_id, m.u->entry) && other_free_mob(m.u->guid))) { pick = &m; why = "on_main_tank"; break; }
                 }
                 if (!pick) { pick = nearest_free(t); why = "nearest"; }
@@ -2325,7 +2360,11 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
                     Mob const* held = find_mob(sit->second);
                     if (!held || held->u->is_dungeon_boss || held->u->is_boss_rank || Raid::OffTankMob(map_id, held->u->entry)) continue;
                     if (mk_grp && (sit->second == mk_grp->GetTargetIcon(7) || sit->second == mk_grp->GetTargetIcon(6))) continue;
-                    int const have = prio_of(*held);
+                    // A summoned add no tank is meant to hold (RaidRules::noTank) is held only while nothing else needs the tank: any loose
+                    // mob it may tank outranks it. naxx_kelthuzad kt61b (1122): the free tanks took Soldiers of the Frozen Wastes 57 y off
+                    // (why=loose_nearest) and Soul Weavers, both priority equal to or above the Abominations', and kept them while an
+                    // Abomination stood on a mage 12 s; the Abominations killed 35 of 43.
+                    int const have = Raid::NoTank(map_id, held->u->entry) ? 0 : prio_of(*held);
                     if (have >= want) continue;
                     const float dx = m.u->x - t->src->x, dy = m.u->y - t->src->y;
                     const float d2 = dx * dx + dy * dy;
@@ -2979,10 +3018,13 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
         fl.dmg_total = 0;
         fl.dmg_last_ms = 0;
         fl.start_mana.clear();
+        fl.dps_label.clear();
         for (auto const& e : mem)
         {
             TakeDamageDone(e.guid_low, true);
             if (e.src && e.src->max_mana > 0) fl.start_mana[e.guid_low] = Pct(e.src->mana, e.src->max_mana);
+            if (e.src && e.is_bot && !e.tank && !e.healer)
+                fl.dps_label[e.guid_low] = std::string(e.src->name) + "(" + ShortClass(e.cls) + ")";
         }
         uint32 alive = 0, tanks = 0, healers = 0;
         for (auto const& e : mem)
@@ -3071,8 +3113,10 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
             if (listed++ >= 8) continue;
             if (!mob_txt.empty()) mob_txt += ", ";
             Member const* v = member_of(m.u->victim);
-            mob_txt += MobName(m.u->entry) + " " + std::to_string(Pct(m.u->hp, m.u->max_hp)) + "%>" +
-                       (v ? v->src->name : std::string("pet")) + (m.loose ? "!" : "");
+            // The creature's guid counter (#n): one add's life can be followed from line to line (naxx_kelthuzad: how long each Soul
+            // Weaver lives, from its first line to its last).
+            mob_txt += MobName(m.u->entry) + " #" + std::to_string(m.u->guid.GetCounter()) + " " + std::to_string(Pct(m.u->hp, m.u->max_hp)) +
+                       "%>" + (v ? v->src->name : std::string("pet")) + (m.loose ? "!" : "");
             // Where a boss is: a boss dragged off his spot shows in the line (naxx_horsemen r23: Sir Zeliek's Holy Wrath killed raiders at
             // Mograine's corner and then at Korth'azz's, and the log could not say where Zeliek stood; Heigan pulled 40 y west, Feugen across).
             if (m.u->is_dungeon_boss || m.u->is_boss_rank)
@@ -3172,6 +3216,14 @@ void PveGroupCoordinator::PlanRaidTanks(uint64 bkey, uint64 group_low, uint32 ma
             rows.emplace_back(d, std::string(e.src->name) + "(" + ShortClass(e.cls) + ") " + std::to_string(d) + " (" +
                                      std::to_string(d / dur) + "/s" + mana + ")");
         }
+        for (auto const& [low, label] : fl.dps_label)
+        {
+            if (std::any_of(mem.begin(), mem.end(), [&](auto const& e) { return e.guid_low == low; }))
+                continue;   // listed above
+            if (uint64 const d = TakeDamageDone(low, true))
+                rows.emplace_back(d, label + " " + std::to_string(d) + " (" + std::to_string(d / dur) + "/s, dead)");
+        }
+        fl.dps_label.clear();
         std::sort(rows.begin(), rows.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
         std::string txt;
         for (auto const& r : rows) { if (!txt.empty()) txt += ", "; txt += r.second; }
@@ -3694,6 +3746,7 @@ void PveGroupCoordinator::PlanSightPull(uint64 bkey, uint64 group_low, uint32 ma
     constexpr float  kArrivedYd       = 10.0f;    // a mob this close to the spot has come in
     // b3ca0b4b67 overnight: a spot the mobs did not come to held the group for 20 s; 12 s is a caster's walk round a corner and back.
     constexpr uint32 kSightPullCapMs  = 12000;
+    constexpr uint32 kSightPullSpentMs = 120000;   // a mob a plan ended on is left to the tank this long (SightPull::spent)
     constexpr float  kSideYd          = 2.0f;     // the spot stays hidden this far to each side of it
     constexpr float  kFloorDz         = 4.0f;     // the spot is on the return point's floor
     constexpr float  kMaxPathYd       = 35.0f;
@@ -3882,15 +3935,27 @@ void PveGroupCoordinator::PlanSightPull(uint64 bkey, uint64 group_low, uint32 ma
             }
         if (left.empty())
             return end("every mob that stood off has come in");
+        auto spend = [&](std::vector<ObjectGuid> const& mobs)
+        {
+            for (ObjectGuid const& g : mobs)
+                sp.spent[g.GetCounter()] = now_ms ? now_ms : 1u;
+        };
         if (now_ms - sp.since_ms > kSightPullCapMs)
-            return end(fmt::format("{} s cap, {} still out", kSightPullCapMs / 1000u, left.size()).c_str());
+        {
+            spend(left);
+            return end(fmt::format("{} s cap, {} still out, left to the tank for {} s", kSightPullCapMs / 1000u, left.size(),
+                                   kSightPullSpentMs / 1000u).c_str());
+        }
         if (seen_again)
         {
             float x = 0.f, y = 0.f, z = 0.f;
             std::string why;
             if (sp.replans >= 1 || !search(stopped, sp.x, sp.y, sp.z, x, y, z, why))
+            {
+                spend(left);
                 return end(fmt::format("a mob stopped with the spot in its sight: {}{}", names(stopped),
                                        why.empty() ? std::string() : " (" + why + ")").c_str());
+            }
             ++sp.replans;
             TC_LOG_INFO("playerbot.v2", "[sight_pull] group={} map={} {} stopped with the spot ({:.1f},{:.1f}) in sight: new spot ({:.1f},{:.1f},{:.1f})",
                         group_low, map_id, names(stopped), sp.x, sp.y, x, y, z);
@@ -3925,9 +3990,11 @@ void PveGroupCoordinator::PlanSightPull(uint64 bkey, uint64 group_low, uint32 ma
         float const ay = pulling_back ? pb.ry : tank->GetPositionY();
         float const az = pulling_back ? pb.rz : tank->GetPositionZ();
         char const* const from = pulling_back ? "the return point" : "the tank";
+        for (auto it = sp.spent.begin(); it != sp.spent.end();)
+            it = now_ms - it->second >= kSightPullSpentMs ? sp.spent.erase(it) : std::next(it);
         std::vector<Creature*> mobs;
         for (Creature* c : standing)
-            if (dist2(c->GetPositionX(), c->GetPositionY(), ax, ay) <= kStandOffNearYd * kStandOffNearYd)
+            if (dist2(c->GetPositionX(), c->GetPositionY(), ax, ay) <= kStandOffNearYd * kStandOffNearYd && !sp.spent.count(c->GetGUID().GetCounter()))
                 mobs.push_back(c);
         if (mobs.empty())
             return;

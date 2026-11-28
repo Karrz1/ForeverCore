@@ -215,6 +215,8 @@ void ConfigReader::apply_from_loaded_config()
         c.GetIntDefault("PlayerbotV2.Threat.OpeningWaitBossMs", 6000, true));
     threat_opening_wait_trash_ms_ = static_cast<uint32>(
         c.GetIntDefault("PlayerbotV2.Threat.OpeningWaitTrashMs", 2000, true));
+    threat_party_pull_delay_ms_ = static_cast<uint32>(
+        std::clamp<int32>(c.GetIntDefault("PlayerbotV2.Threat.PartyPullDelayMs", 2000, true), 0, 4000));
 
     bhv_owner_follow_hold_    = c.GetBoolDefault("Playerbot.Behavior.OwnerFollowHold", true, true);
     bhv_fallback_             = c.GetBoolDefault("Playerbot.Behavior.Fallback", true, true);

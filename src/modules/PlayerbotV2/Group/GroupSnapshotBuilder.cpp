@@ -15,11 +15,13 @@
 #include "ObjectAccessor.h"
 #include "Map.h"
 #include "SpellAuras.h"
+#include "SpellAuraEffects.h"   // AuraDamageDue: the periodic effects of a member's auras
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Spell.h"
 #include "LFG.h"
 #include "Log.h"
+#include <limits>
 #include <mutex>
 #include <unordered_set>
 #include <shared_mutex>
@@ -154,6 +156,69 @@ uint32 TrackedRaidBuffId(uint32 spell_id)
         memo.emplace(spell_id, m.recorded_as);
     }
     return m.recorded_as;
+}
+
+// GroupMemberSummary::aura_damage_due. A triggered spell counts when the member casts it itself (the periodic trigger's caster is the
+// aura's target unless the spell needs the aura's caster) and one of its damage effects takes in the caster: the caster itself, or an
+// area of allies or party round it or its target (the member).
+static int64 TriggeredSelfDamage(SpellInfo const* aura, uint32 trigger_id, Difficulty diff, Unit const* u)
+{
+    SpellInfo const* t = trigger_id ? sSpellMgr->GetSpellInfo(trigger_id, diff) : nullptr;
+    if (!t || t->NeedsToBeTriggeredByCaster(aura))
+        return 0;
+    auto const hits_self = [](Targets tg)
+    {
+        switch (tg)
+        {
+            case TARGET_UNIT_CASTER: case TARGET_UNIT_CASTER_AREA_PARTY: case TARGET_UNIT_CASTER_AREA_RAID:
+            case TARGET_UNIT_SRC_AREA_ALLY: case TARGET_UNIT_DEST_AREA_ALLY: case TARGET_UNIT_SRC_AREA_PARTY: case TARGET_UNIT_DEST_AREA_PARTY:
+                return true;
+            default:
+                return false;
+        }
+    };
+    int64 dmg = 0;
+    for (SpellEffectInfo const& e : t->GetEffects())
+        if (e.IsEffect(SPELL_EFFECT_SCHOOL_DAMAGE) && (hits_self(e.TargetA.GetTarget()) || hits_self(e.TargetB.GetTarget())))
+            dmg += std::max(e.CalcValueAsInt(u), 0);
+    return dmg;
+}
+
+// The damage `u`'s own harmful periodic auras deal it in the next `horizon_ms` (GroupMemberSummary::aura_damage_due): each damage tick
+// that falls inside it, and inside what is left of the aura, at the effect's amount (stacks included; before resistances).
+static int32 AuraDamageDue(Unit const* u, int32 horizon_ms)
+{
+    int64 due = 0;
+    for (auto const& [id, app] : u->GetAppliedAuras())
+    {
+        if (!app || app->IsPositive())
+            continue;
+        Aura const* base = app->GetBase();
+        if (!base)
+            continue;
+        int32 const window = base->IsPermanent() ? horizon_ms : std::min(base->GetDuration(), horizon_ms);
+        if (window <= 0)
+            continue;
+        for (AuraEffect const* eff : base->GetAuraEffects())
+        {
+            if (!eff || !app->HasEffect(eff->GetEffIndex()) || !eff->IsPeriodic())
+                continue;
+            int32 const period = eff->GetPeriod();
+            if (period <= 0)
+                continue;
+            int32 const first = std::max(period - eff->GetPeriodicTimer(), 1);   // the timer counts up from the last tick
+            if (first > window)
+                continue;
+            int64 const ticks = 1 + (window - first) / period;
+            int64 per_tick = 0;
+            if (eff->GetAuraType() == SPELL_AURA_PERIODIC_DAMAGE)
+                per_tick = std::max(eff->GetAmountAsInt(), 0);
+            else if (eff->GetAuraType() == SPELL_AURA_PERIODIC_TRIGGER_SPELL)
+                per_tick = TriggeredSelfDamage(base->GetSpellInfo(), eff->GetSpellEffectInfo().TriggerSpell, base->GetCastDifficulty(), u);
+            due += per_tick * ticks;
+        }
+    }
+    return int32(std::min<int64>(due, std::numeric_limits<int32>::max()));
 }
 
 // Single-walk filler for both tracked raid buffs and harmful debuffs on
@@ -447,6 +512,8 @@ std::shared_ptr<GroupSnapshot const> GroupSnapshotBuilder::Build(Player* p, Snap
                 }
             }
             CopyMemberAuras(mp, m.buffs, m.debuffs);
+            if (Map const* mm = mp->GetMap(); mm && mm->IsDungeon() && !mm->IsRaid())
+                m.aura_damage_due = AuraDamageDue(mp, Combat::ClassicHeal::kAuraDueHorizonMs);
             for (size_t i = 0; i < sizeof(kGroupClassBuffSpells) / sizeof(kGroupClassBuffSpells[0]); ++i)
                 if (mp->HasSpell(kGroupClassBuffSpells[i]))
                     m.known_class_buffs |= uint8(1u << i);

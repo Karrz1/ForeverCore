@@ -40,6 +40,14 @@ constexpr uint64 kObjectKeyBit = uint64(1) << 41;
 
 bool FindPos(BotSnapshotView const& s, ObjectGuid guid, float& x, float& y, float& z)
 {
+    // A player giver is the owner passing on a quest an item started (CompanionQuest::BuildState); his spot is in the state.
+    if (guid.IsPlayer())
+    {
+        auto const& cq = s.raw().companion_quest;
+        if (!cq.owner_here) return false;
+        x = cq.owner_x; y = cq.owner_y; z = cq.owner_z;
+        return true;
+    }
     for (auto const& u : s.raw().combat.nearby_friends)
         if (u.guid == guid) { x = u.x; y = u.y; z = u.z; return true; }
     for (auto const& o : s.raw().world_objects.nearby_objects)

@@ -22,6 +22,13 @@ public:
     uint32_t  map_id() const override { return 533; }
     char const* name() const override { return "naxxramas"; }
 
+    std::vector<uint32_t> scripted_spawn_bosses() const override
+    {
+        return {
+            15989,   // Sapphiron: summoned by the instance (classic_instance_naxxramas)
+        };
+    }
+
     DungeonAdvice get_advice(BotSnapshotView const& /*s*/) const override
     {
         DungeonAdvice a;
@@ -164,8 +171,10 @@ public:
             { 2642.1f, -3387.0f, 285.5f },   // Gothik the Harvester
             { 2520.5f, -2955.4f, 245.6f },   // Four Horsemen room
             // Construct Quarter
-            { 3256.4f, -3230.3f, 294.1f },   // Patchwerk
-            { 3227.6f, -3378.3f, 311.3f },   // Grobbulus
+            // Patchwerk and Grobbulus stood at other spots (3256.4,-3230.3 and 3227.6,-3378.3), 52 y and 44 y from their Classic spawns
+            // (af59c boss smoketest, DungeonBossSpawns); every other boss here sits on its spawn. Both spawns are reachable on the mesh.
+            { 3308.5f, -3232.1f, 294.2f },   // Patchwerk
+            { 3205.4f, -3341.9f, 320.2f },   // Grobbulus
             { 3283.1f, -3157.0f, 297.8f },   // Gluth
             { 3513.8f, -2926.6f, 302.9f },   // Thaddius
             // Frostwyrm Lair

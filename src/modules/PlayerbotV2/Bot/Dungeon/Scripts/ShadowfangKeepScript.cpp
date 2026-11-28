@@ -44,6 +44,15 @@ DungeonAdvice ShadowfangKeepClassicAdvice()
     };
     // Fenrus the Devourer's Toxic Saliva (spell_template: periodic damage, poison), cleansed first.
     a.dispel_priority_spells = { 7125 };
+    // The Courtyard Door to Razorclaw opens when a prisoner of Rethilgore's cells is freed: a player talks to him once Rethilgore is
+    // dead (gossip 301 / 302, the first option), he walks to the door and opens it (his waypoint script sets the instance's free-NPC
+    // data). Sorcerer Ashcrombe speaks to the Alliance, Deathstalker Adamant to the Horde; the other one is hostile and is left
+    // alone. Spawns from the Classic creature data (map 33). Nobody talked to them, so the party walked back and forth at the shut
+    // door for 45 minutes (sfk_full af58).
+    a.door_talks = {
+        { 3850, -240.9f, 2122.6f, 81.3f, 3886, { 3914 } },   // Sorcerer Ashcrombe
+        { 3849, -243.7f, 2113.7f, 81.3f, 3886, { 3914 } },   // Deathstalker Adamant
+    };
     a.bosses = {
         3914,   // Rethilgore
         3886,   // Razorclaw the Butcher

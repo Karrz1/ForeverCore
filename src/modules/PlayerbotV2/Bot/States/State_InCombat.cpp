@@ -20,6 +20,7 @@
 #include "Bot/MarkGate.h"                       // Playerbot.Behavior.MarksNeedOrder
 #include "Bot/RacialRules.h"                    // EscapeArtistWanted
 #include "Bot/ThreatDiscipline.h"                // opening lead + [raid_threat] / [raid_pull] log pacing
+#include "Bot/PullDelay.h"                      // the damage dealers' wait after the tank's pull
 #include "Bot/ThreatLimits.h"                    // hard threat ratios shared with the raid brain
 #include "ClassicSpec.h"                         // Classic::IsSingleSpecClass — combat:pve_heal_focus
 #include "Bot/Dungeon/MarkCc.h"               // MarkCc::TryCast - combat:marked_cc
@@ -760,6 +761,8 @@ ThreatHold EvaluateThreatHold(BotAI& ai, BotSnapshotView const& s, ObjectGuid ta
     if (ai.effective_role(s) == Role::Tank) return ThreatHold::None;
     // A boss fight script owns this bot's start and target (RaidFightScript.h): its start wait is the only hold.
     if (s.raw().raid_order.active && s.raw().raid_order.script_owns) return ThreatHold::None;
+    // The damage dealers' wait after the tank's pull (Bot/PullDelay.h), also for a mob not yet in this bot's scan.
+    if (PartyPullDelayHolds(ai, s, target)) return ThreatHold::TankOpening;
     NearbyUnit const* u = s.hostile_unit(target);
     if (!u) return ThreatHold::None;
 
@@ -1069,6 +1072,11 @@ bool LooseMobEscape(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView const
     for (NearbyUnit const& u : s.attackers()) consider(u);
     for (NearbyUnit const& u : s.nearby_enemies()) consider(u);
     if (!mob) return false;
+    // An add no tank holds (RaidRules::noTank: Kel'Thuzad's Soldiers and Soul Weavers, sent at a raider) is shed by neither: no tank comes
+    // for it, so a threat drop only hands it to the next raider and the walk to the tank carries it (and a Weaver's Wail of Souls cone)
+    // into the tanks' fight while the bot stops casting. naxx_kelthuzad kt61a / kt61b (1122): 34 / 55 "stepping to tank"
+    // lines on Soldiers and 4 / 10 on Weavers (logged once in 4 s a bot).
+    if (s.is_in_raid() && Raid::NoTank(s.map_id(), mob->entry)) return false;
 
     constexpr uint32 FEIGN_DEATH = 5384, VANISH = 1856, FEINT = 1966, FADE = 586, FROST_NOVA = 122;
     if (s.cls() == CLASS_HUNTER && s.has_aura(FEIGN_DEATH))
@@ -1134,11 +1142,17 @@ bool LooseMobEscape(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView const
     // In the group's fight outside the raid rules the bot keeps hitting and its tank takes the mob (GroupFight.h rule 5): the walk to the
     // tank stopped the damage (UBRS 2026-10-28: [raid_escape] "stepping to tank" on Jaidal, Gun, Elentinari through every pull).
     if (ai.group_fight() && !s.raid_rules())
+    {
+        note("the group fights: keeps hitting, the tank takes it");
         return false;
+    }
     // Step toward the tank so it can taunt / body-pull the mob off us.
     GroupMemberSummary const* tk = GroupAnchorTank(s, ai, g);
     if (!tk || !tk->online || !tk->is_alive || tk->guid == s.guid() || tk->map_id != s.map_id() || s.is_rooted())
+    {
+        note(!tk ? "no anchor tank" : s.is_rooted() ? "rooted" : "the tank is gone, dead or on another map");
         return false;
+    }
     // The tank is feared / stunned: it picks nothing up, and a feared one runs off, so the walk toward it only drags the mob with us
     // and costs the casts (Deadmines 627eb082: the priest "stepping to tank" with Terrify on the tank, 25 y away). Stand and cast.
     if (tk->is_controlled)
@@ -1148,7 +1162,12 @@ bool LooseMobEscape(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView const
     }
     const float dx = tk->x - bx, dy = tk->y - by, dz = tk->z - bz;
     const float d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 <= 6.0f * 6.0f || d2 > 80.0f * 80.0f) return false;   // already on the tank / not this fight's tank
+    if (d2 <= 6.0f * 6.0f || d2 > 80.0f * 80.0f)   // already on the tank / not this fight's tank
+    {
+        if (d2 > 80.0f * 80.0f)
+            note("the tank is over 80 y away");
+        return false;
+    }
     const float dist = std::sqrt(d2);
     const float step = std::min(15.0f, dist - 4.0f);
     // A healer keeps healing on the run: instant heals / HoTs / Power Word:
@@ -1172,10 +1191,21 @@ bool LooseMobEscape(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView const
     // rotation keeps the bot alive in place (and the drops above already ran).
     // Nor into an idle pack's aggro reach (raid): the tank comes for the mob
     // instead (its taunt / pick-up), a step into the next pack adds one.
-    if (RaidStandPointBlocked(s, sx, sy, sz) || RaidPointInUnpulledReach(s, sx, sy, sz)) return false;
+    // exc_full af66: Shadetooth feared the mage away four times and killed her 80 y from the group in 90 s, and no line told which of
+    // these gates kept her from walking it back. Each one says so now (paced with the others, 4 s).
+    if (RaidStandPointBlocked(s, sx, sy, sz) || RaidPointInUnpulledReach(s, sx, sy, sz))
+    {
+        note(fmt::format("the step to the tank, {:.0f} y away, is blocked ({:.1f},{:.1f},{:.1f}): {}", dist, sx, sy, sz,
+                         RaidStandPointBlocked(s, sx, sy, sz) ? "hazard or avoid circle" : "an idle pack's reach").c_str());
+        return false;
+    }
     if (!emit.move_to(sx, sy, sz, /*run*/ true))
     {
-        if (!s.has_path_destination()) return false;
+        if (!s.has_path_destination())
+        {
+            note(fmt::format("the step to the tank, {:.0f} y away, was refused ({:.1f},{:.1f},{:.1f})", dist, sx, sy, sz).c_str());
+            return false;
+        }
         heal_on_the_run();                 // same step already under way: keep it
         return true;
     }
@@ -1348,11 +1378,20 @@ bool PreemptiveTankHeal(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView c
     if (CH::Dist2(tk->x, tk->y, tk->z, bx, by, bz) > CH::kHealRange * CH::kHealRange || !CH::InLos(s, tk->guid))
         return false;
     CH::Patient const tank = CH::MakePatient(s, tk->guid, tk->hp, tk->max_hp, tk->x, tk->y, tk->z, true);
-    if (tank.actual_pct <= 65 || tank.incoming <= 0) return false;
+    // An add of the map's burstTank list on the tank (Raid::HitsTankHard) is one whose single hit takes the tank from full to a quarter:
+    // it counts as a boss, and its healers keep a heal going whoever else is hurt and however full the tank is. naxx_kelthuzad kt70c
+    // (1124): an Unstoppable Abomination's Mortal Wound (200% weapon damage, 7,500-9,000 on a tank) killed the bear from 72% and from
+    // full, the healers at 95-99% mana cast nothing from 73 s to 94 s ("hurt tanks 0"), and the pre-heal ran 12 times in the pull. The
+    // Soldiers' Dark Blast (1,750 to the whole room every few seconds) leaves somebody under 80% most of the time, which stands the
+    // pre-heal down below.
+    bool burst = false;
+    for (NearbyUnit const& u : s.nearby_enemies())
+        if (u.hp > 0 && u.victim == tank.guid && Raid::HitsTankHard(s.map_id(), u.entry)) { burst = true; break; }
+    if (tank.actual_pct <= 65 || (tank.incoming <= 0 && !burst)) return false;
     // No top-off on a tank near full unless the swings on it would take it under the spike mark (a boss on the tank hits every
     // 2 s; a heal per hit was the largest mana sink of the Garr kill, MC 2026-10-10).
-    if (tank.actual_pct >= CH::kRaidTankSpikeFloorPct && tank.hp_pct >= CH::kRaidTankSpikePct) return false;
-    bool boss = false;
+    if (!burst && tank.actual_pct >= CH::kRaidTankSpikeFloorPct && tank.hp_pct >= CH::kRaidTankSpikePct) return false;
+    bool boss = burst;
     for (NearbyUnit const& u : s.nearby_enemies())
         if (u.hp > 0 && u.victim == tank.guid && Classic::IsBossUnit(u)) { boss = true; break; }
     if (!boss && tank.incoming * 20 < tank.max_hp) return false;   // light trash hits: the rotation's
@@ -1360,14 +1399,18 @@ bool PreemptiveTankHeal(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView c
     // pull was most of the level-21 priest's mana (deadmines_full run 10). In a raid it stays for mana of 70% and up.
     if (!boss && (!s.is_in_raid() || CH::ManaPct(s) < 70)) return false;
     CH::Patient const best = CH::PickPatient(s, g);
-    if (best.valid && best.guid != tank.guid && best.hp_pct < 80) return false;
+    if (!burst && best.valid && best.guid != tank.guid && best.hp_pct < 80) return false;
     if (Classic::PickDispel(s, g).spell) return false;
 
     const uint32 top = s.resolve_rank(spell);
     SpellInfo const* si = top ? sSpellMgr->GetSpellInfo(top, DIFFICULTY_NONE) : nullptr;
     const int32 cast_ms = si && si->CastTimeEntry ? std::max(si->CastTimeEntry->Base, 0) : 2500;
     const float swings = std::max(1.0f, float(cast_ms) / 2000.0f);
-    const float want = float(tank.max_hp - tank.hp) + float(tank.incoming) * swings;
+    float want = float(tank.max_hp - tank.hp) + float(tank.incoming) * swings;
+    // A burst add's next hit is a quarter of the tank or more: the heal is sized for that hit, landed or not yet (CancelOverheal stops it
+    // in its last half-second when the tank is still full).
+    if (burst)
+        want = std::max(want, float(tank.max_hp) * 0.5f);
     // Only when the swings expected over the cast take the tank clearly under
     // full: at 100% a 10% hit leaves it at 90% and the heal lands as an
     // overheal (MC 2026-10-06: pre-heals on a 100% tank, cancelled or not,
@@ -1378,7 +1421,7 @@ bool PreemptiveTankHeal(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView c
     constexpr float kPreHealProjectedPct = 85.0f;
     constexpr float kPreHealBossProjectedPct = 95.0f;
     float const projected_limit = boss ? kPreHealBossProjectedPct : kPreHealProjectedPct;
-    if ((float(tank.hp) - float(tank.incoming) * swings) * 100.0f >= float(tank.max_hp) * projected_limit) return false;
+    if (!burst && (float(tank.hp) - float(tank.incoming) * swings) * 100.0f >= float(tank.max_hp) * projected_limit) return false;
     // Another healer's pre-heal already on its way covers the deficit.
     if (CH::HealClaimsOn())   // Playerbot.Behavior.HealClaims
     {
@@ -1392,7 +1435,7 @@ bool PreemptiveTankHeal(BotAI& ai, BotSnapshotView const& s, GroupSnapshotView c
     CH::NoteHealClaim(s, tank.guid, plan.rank ? plan.rank : top, plan.est > 0.0f ? plan.est : plan.want);
     if (RaidLogDue(CH::HealLogKey(s, CH::HealLogKind::PreHeal), s.published_at_ms(), 5000u))
         TC_LOG_INFO("playerbot.v2", "[raid_heal] {} pre-heals tank {} at {}% ({} incoming{}) with {} (want {:.0f}, est {:.0f}, mana {}%)",
-                    s.name(), tank.guid.GetCounter(), tank.actual_pct, tank.incoming, boss ? ", boss" : "",
+                    s.name(), tank.guid.GetCounter(), tank.actual_pct, tank.incoming, burst ? ", burst add" : boss ? ", boss" : "",
                     plan.rank ? plan.rank : top, plan.want, plan.est, CH::ManaPct(s));
     ai.set_last_rule_fired("combat:raid_preheal_tank");
     return true;
@@ -2452,6 +2495,10 @@ static bool GroupFightPick(BotAI& ai, BotSnapshotView const& s, GroupSnapshotVie
     }
     if (units[pick]->guid == cur)
         return false;
+    // The pull delay (Bot/PullDelay.h): no start on the tank's mob before it is over, or the victim hold below stops the attack
+    // on the next tick and the pick starts it again. Melee walk up meanwhile (ThreatHoldWait).
+    if (role != Role::Tank && PartyPullDelayHolds(ai, s, units[pick]->guid))
+        return ThreatHoldWait(ai, s, emit, units[pick]->guid, ThreatHold::TankOpening, IsMeleeSpec(s.cls(), s.spec()));
     uint32& last = ai.group_fight_pick_ms();
     if (last != 0 && now - last < 2000u && cur_ok)
         return false;
@@ -2864,7 +2911,8 @@ void DispatchInCombat(BotAI& ai,
     // A bot in tar, lava or a slime with a spell walks to the nearest dry ground (the builder's water_escape point) before anything
     // below moves it or roots it in a cast, everywhere: idle:flee_damaging_liquid only runs out of combat. shapers_full af51 (20 Nov):
     // the rogue chased an Ironhide Ravasaur into the Tar Pits and swung at it there until the tar killed her (killer=self). The melee
-    // gap-close does not follow a victim standing in such a liquid (chase_blocked below), so the bot stays on the bank.
+    // gap-close does not follow a victim standing in such a liquid (chase_blocked below): the bot stays on the bank, or walks to a
+    // dry bank spot inside its reach (victim_bank).
     if (snapshot.is_in_damaging_liquid() && snapshot.water_escape_valid() && snapshot.is_alive() &&
         !snapshot.is_rooted() && !snapshot.on_transport())
     {
@@ -2875,6 +2923,13 @@ void DispatchInCombat(BotAI& ai,
         ai.set_last_rule_fired("combat:leave_damaging_liquid");
         return;
     }
+
+    // ---- Up for air ([breath], SurfaceForAir) ----
+    // A fight under water uses up the breath as a swim does, and the idle rule never ran during one: the Vile Reef mage fought on the
+    // reef, then sat down 25 y deep to eat and drowned before the idle clock got to 35 s (vile_reef_fight af64). On the server's
+    // breath timer: up with 25 s left, back down to the fight once the bar is full.
+    if (SurfaceForAir(snapshot, ai, emit, "combat:surface_to_breathe"))
+        return;
 
     // ---- Out of a fighting mob's area attack ([area_attack_step], State_Idle.cpp) ----
     // A healer or ranged bot in reach of a mob's Frost Nova / Thunderclap that is not on it steps out before anything below roots it
@@ -4596,11 +4651,45 @@ void DispatchInCombat(BotAI& ai,
             // An owner Stay / Hold keeps the bot at its spot too: a mob out of reach is not chased (a mob on the bot lifts the hold).
             // Nor is a victim standing in a burning liquid (tar, lava), anywhere: the bot waits on the bank for the mob to come out
             // to it, as a player does ([liquid_escape] above takes it out if it is in already).
+            // ...unless there is a bank in reach of it: a dry spot inside the bot's melee reach, reached by a dry path (the snapshot's
+            // victim_bank). The bot walks there and swings from it, as a player does. Ragnaros never leaves his lava: with only the wait,
+            // every melee bot stood 37-40 y off for the whole fight, 0 hits on him (mc_ragnaros af53 1120, BUGS-ALL 312).
             const bool victim_in_burning_liquid = snapshot.raw().combat.victim_in_damaging_liquid;
+            const bool victim_bank = victim_in_burning_liquid && snapshot.raw().combat.victim_bank_known;
+            // The bot fights from its own side of the victim, at melee reach, not on the victim's centre: the test is where it would
+            // stand. A victim on the rim of a circle is fought from outside it, a victim deep inside is still waited for.
+            // naxx_kelthuzad kt62a (1123): an Abomination stood 29.5 y from an alcove's centre (keep-out 30 y, +2 y margin) and 10 y
+            // from its tank, which stood outside the circle and held ("combat:melee_hold_hazard") for 18 s while the Abomination killed
+            // five DPS; Taunt is melee range. A victim in a burning liquid with a bank keeps the bank test (the bank is the stand spot).
+            float stop_x = vu->x, stop_y = vu->y;
+            bool stand_off_victim = false;
+            bool chase_hazard = false;
+            if (victim_bank)
+            {
+                chase_hazard = snapshot.is_in_instance() && !snapshot.in_battleground() &&
+                    RaidStandPointBlocked(snapshot, snapshot.raw().combat.victim_bank_x, snapshot.raw().combat.victim_bank_y,
+                                          snapshot.raw().combat.victim_bank_z);
+            }
+            else if (d2 > kMeleeRange * kMeleeRange && snapshot.is_in_instance() && !snapshot.in_battleground() &&
+                     RaidStandPointBlocked(snapshot, vu->x, vu->y, vu->z))
+            {
+                chase_hazard = true;
+                const float d2d = std::sqrt(dx * dx + dy * dy);
+                const float stand = std::max(kMeleeRange - 1.0f, 1.0f);
+                if (d2d > stand + 0.5f)
+                {
+                    stop_x = vu->x - dx / d2d * stand;
+                    stop_y = vu->y - dy / d2d * stand;
+                    if (!RaidStandPointBlocked(snapshot, stop_x, stop_y, vu->z))
+                    {
+                        chase_hazard = false;
+                        stand_off_victim = true;
+                    }
+                }
+            }
             const bool chase_blocked = d2 > kMeleeRange * kMeleeRange &&
-                ((snapshot.is_in_instance() && !snapshot.in_battleground() &&
-                  RaidStandPointBlocked(snapshot, vu->x, vu->y, vu->z)) ||
-                 victim_in_burning_liquid ||
+                (chase_hazard ||
+                 (victim_in_burning_liquid && !victim_bank) ||
                  HeldByOwner(ai, snapshot));
             // Stuck-chase tracking: count ticks where we're out of melee
             // range with the same victim. Reset on different victim or once
@@ -4637,10 +4726,15 @@ void DispatchInCombat(BotAI& ai,
             }
             else if (d2 > kMeleeRange * kMeleeRange)
             {
-                if (ai.stuck_chase_victim() == snapshot.victim())
-                    ai.set_stuck_chase(snapshot.victim(), ai.stuck_chase_ticks() + 1);
-                else
-                    ai.set_stuck_chase(snapshot.victim(), 1);
+                // A bot walking to the bank of a victim in a burning liquid is not stuck: the bank can be 40 y off (the melee pre-pull
+                // spot at Ragnaros), more than the 5 s cap at run speed.
+                if (!(victim_bank && snapshot.is_moving()))
+                {
+                    if (ai.stuck_chase_victim() == snapshot.victim())
+                        ai.set_stuck_chase(snapshot.victim(), ai.stuck_chase_ticks() + 1);
+                    else
+                        ai.set_stuck_chase(snapshot.victim(), 1);
+                }
                 // A tank never gives up a mob that is on a group member: dropping it leaves the mob killing the healer
                 // (deadmines_full run 8: Rhahk'Zor on the priest for 57 s, the warrior silent after its 5 s chase cap). Its
                 // chase ends when the mob is in reach (Taunt / melee) or dies; a victim it truly cannot path to is handled
@@ -4727,7 +4821,9 @@ void DispatchInCombat(BotAI& ai,
                     while (diff < -float(M_PI)) diff += 2.0f * float(M_PI);
                     in_front_of_victim = std::fabs(diff) < 0.5f * float(M_PI);
                 }
-                if (Services::Config().behavior_spread_out() && in_front_of_victim &&
+                // Not round a victim in a burning liquid: its spread spot is in the liquid, and the bank the bot stands on is the only
+                // dry footing in reach.
+                if (Services::Config().behavior_spread_out() && in_front_of_victim && !victim_in_burning_liquid &&
                     vu->victim != snapshot.guid() && ai.effective_role(snapshot) != Role::Tank &&
                     !snapshot.is_rooted() && !snapshot.is_casting() && !snapshot.has_path_destination() &&
                     !ai.action_recently_tried(BotAI::ActionKind::RaidSpacing, 0, snapshot.published_at_ms()))
@@ -4768,7 +4864,7 @@ void DispatchInCombat(BotAI& ai,
                 else
                 {
                 // Default: gap-close to the victim.
-                float cx = vu->x, cy = vu->y, cz = vu->z;
+                float cx = stand_off_victim ? stop_x : vu->x, cy = stand_off_victim ? stop_y : vu->y, cz = vu->z;
                 // Travel-through-combat (2026-06-15): when the bot has a FAR
                 // same-map travel objective it is IN TRANSIT — incidental aggro
                 // must not pull it off-course chasing mobs. Live: Somi drifted
@@ -4809,6 +4905,17 @@ void DispatchInCombat(BotAI& ai,
                     const float pd2 = pdx*pdx + pdy*pdy + pdz*pdz;
                     constexpr float kReplanRange = 3.0f;
                     if (pd2 < kReplanRange * kReplanRange) already_pathing = true;
+                }
+                // A victim in a burning liquid: its bank spot, not its centre (the move gate refuses a point in the liquid).
+                if (victim_bank)
+                {
+                    cx = snapshot.raw().combat.victim_bank_x;
+                    cy = snapshot.raw().combat.victim_bank_y;
+                    cz = snapshot.raw().combat.victim_bank_z;
+                    if (RaidLogDue(RaidLogKey(snapshot, RaidLogKind::ThreatHold) ^ 0x62616e6bu, snapshot.published_at_ms(), 5000u))
+                        TC_LOG_INFO("playerbot.v2", "[liquid_bank] {} walks to ({:.1f},{:.1f},{:.1f}) to hit entry {} in a burning liquid from the bank ({:.1f} y from it, reach {:.1f} y)",
+                                    snapshot.name(), cx, cy, cz, vu->entry, std::sqrt((cx - vu->x) * (cx - vu->x) + (cy - vu->y) * (cy - vu->y) + (cz - vu->z) * (cz - vu->z)),
+                                    kMeleeRange);
                 }
                 // SpreadOut: walk to this bot's own spot round the victim's back / sides, not its centre.
                 if (cx == vu->x && cy == vu->y)

@@ -294,8 +294,30 @@ void BotSetupPipeline::LearnLevelKit(Player* bot)
     uint32 const quest_spells = api.learn_class_quest_spells_free();
     uint32 const spells = api.learn_trainer_spells_free();
     uint32 const weapon_skills = api.learn_weapon_skills_free();
-    TC_LOG_INFO("playerbot.v2", "[BotSetupPipeline] {} levelled to {}: {} class quest spells, {} trainer spells, {} weapon skills",
-        bot->GetName(), uint32(target_level), quest_spells, spells, weapon_skills);
+    // Lockpicking at the level's cap (level x 5), as the rogue a player levels has it: a player raises it on the boxes and doors on the
+    // way, which a bot does not pick, and Player::LearnSpell sets it full only once, at the level Pick Lock was learned. The scenario
+    // rogue is re-levelled from row to row (the Deadmines row is 21: 105), so at 53 it can stand short of Alcaz Prison's Maximum
+    // Security Door (250): in alcaz_full on af94 (27 Nov) the party stood at that door to the end and the rogue never tried it.
+    uint16 lockpicking = 0;
+    if (bot->HasSkill(SKILL_LOCKPICKING))
+    {
+        uint16 const cap = bot->GetMaxSkillValueForLevel();
+        if (bot->GetPureSkillValue(SKILL_LOCKPICKING) < cap)
+            bot->SetSkill(SKILL_LOCKPICKING, bot->GetSkillStep(SKILL_LOCKPICKING), cap, cap);
+        lockpicking = bot->GetPureSkillValue(SKILL_LOCKPICKING);
+    }
+    // Pick Lock (1804) asks for Thieves' Tools (5060) in the bags (SpellTotems Totem1), which a rogue buys from a trade vendor (15 silver).
+    // Without them every cast fails SPELL_FAILED_TOTEMS (153): alcaz_full on af98 (27 Nov) cast it 298 times on the
+    // Maximum Security Door, result 153 each time. A bot does not shop, so it carries the tools from the day it learns the spell.
+    constexpr uint32 kPickLock = 1804, kThievesTools = 5060;
+    if (bot->HasSpell(kPickLock) && !bot->HasItemCount(kThievesTools, 1, true))
+    {
+        ItemPosCountVec dest;
+        if (bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, kThievesTools, 1) == EQUIP_ERR_OK)
+            bot->StoreNewItem(dest, kThievesTools, true);
+    }
+    TC_LOG_INFO("playerbot.v2", "[BotSetupPipeline] {} levelled to {}: {} class quest spells, {} trainer spells, {} weapon skills, lockpicking {}",
+        bot->GetName(), uint32(target_level), quest_spells, spells, weapon_skills, lockpicking);
     TC_LOG_INFO("playerbot.v2", "[BotSetupPipeline] {} trait spells: {}", bot->GetName(), api.describe_trait_spells());
 }
 
@@ -625,6 +647,34 @@ bool BotSetupPipeline::DoLearnProfessions(Player* bot)
     grant_skill(pair.gather_skill, pair.gather_apprentice);
     grant_skill(pair.craft_skill,  pair.craft_apprentice);
 
+    // The tool of each granted skill in the bags: the real mechanics want it
+    // there (Spell::EffectOpenLock refuses an ore vein without a Mining Pick,
+    // craft spells check for the hammer), and the station show
+    // (idle:town_errand craft lingers) puts it in the bot's hand.
+    auto grant_tool = [&](uint32 entry)
+    {
+        if (!sObjectMgr->GetItemTemplate(entry) || bot->GetItemCount(entry)) return;
+        ItemPosCountVec dest;
+        if (bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, entry, 1) == EQUIP_ERR_OK)
+            bot->StoreNewItem(dest, entry, true);
+    };
+    if (pair.gather_skill == 186) grant_tool(2901);   // Mining Pick
+    if (pair.craft_skill  == 164) grant_tool(5956);   // Blacksmith Hammer
+    if (pair.craft_skill  == 202) grant_tool(6219);   // Arclight Spanner
+    if (pair.gather_skill == 393) grant_tool(7005);   // Skinning Knife
+
+    // One real starter recipe per station craft so a station visit casts for
+    // real (idle:town_errand CraftUse) — the trainer teaches the rest.
+    auto grant_recipe = [&](uint32 spell_id)
+    {
+        if (sSpellMgr->GetSpellInfo(spell_id, DIFFICULTY_NONE) && !bot->HasSpell(spell_id))
+            bot->LearnSpell(spell_id, /*dependent=*/false);
+    };
+    if (pair.craft_skill  == 164) grant_recipe(2660);   // Rough Sharpening Stone
+    if (pair.craft_skill  == 202) grant_recipe(3918);   // Rough Blasting Powder
+    if (pair.gather_skill == 186) grant_recipe(2657);   // Smelt Copper
+    if (pair.craft_skill  == 197) grant_recipe(2963);   // Bolt of Linen Cloth
+
     // Secondaries — every bot gets Cooking + Fishing, regardless of class
     // pick. First Aid (skill 129) was removed in BfA 8.0, so it's not
     // granted here even though bandages still exist as items. Apprentice
@@ -634,6 +684,8 @@ bool BotSetupPipeline::DoLearnProfessions(Player* bot)
     if (!bot->HasSpell(818) && sSpellMgr->GetSpellInfo(818, DIFFICULTY_NONE))
         bot->LearnSpell(818, /*dependent=*/false);
     grant_skill(/*Fishing*/  356, 7732);
+    grant_tool(6256);                               // Fishing Pole
+    grant_recipe(8604);                             // Herb Baked Egg
 
     // Classic 1.60: vanilla has First Aid (removed only in BfA) and no
     // per-expansion profession skill lines, so a vanilla bot gets First Aid
@@ -744,10 +796,10 @@ bool BotSetupPipeline::DoAcquireMount(Player* bot)
     // none here, and the pet rules give it one when it reaches 10.
     if (bot->GetClass() == CLASS_HUNTER && bot->GetLevel() >= 10 && bot->GetPetGUID().IsEmpty())
     {
-        uint32 pet_entry = World::HunterPetEntryForRace(bot->GetRace());
-        // A hunter nobody owns (world / pool bot) gets its own beast, stable per bot, instead of its race's one.
-        if (::Playerbot::Services::Owners().GetOwner(bot->GetGUID().GetCounter()).account_id == 0)
-            pet_entry = World::VariedHunterPetEntry(bot->GetTeam() == ALLIANCE, bot->GetGUID().GetCounter(), pet_entry);
+        // Every hunter gets its own beast, stable per bot, instead of its race's one: a player's hired hunters used to all bring the
+        // race's starter pet (Discord 2026-11-24, Gabriel: every hunter the same Plainstrider). A world bot did already.
+        uint32 pet_entry = World::VariedHunterPetEntry(bot->GetTeam() == ALLIANCE, bot->GetGUID().GetCounter(),
+            World::HunterPetEntryForRace(bot->GetRace()));
         if (!pet_entry)
         {
             // Unmapped race (allied) — fall back to faction-generic.

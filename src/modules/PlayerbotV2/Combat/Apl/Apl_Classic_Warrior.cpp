@@ -686,6 +686,44 @@ void DoTankThunderClap(ApPredicateContext const& ctx, BotIntentEmitter& e)
     }
 }
 
+// -- Charge opener in the open world --
+// Out of combat with a live target 8-25 y away (Charge's window): Defensive -> Battle -> Charge -> Defensive, the vanilla tank's
+// opener, which also brings the first rage. Before, Charge was only in the arms / fury / low-level list, so a Protection bot walked
+// to every mob (RU bug list 11-23, row 349). Not in a dungeon or raid: there the pull is planned (the pull back with a ranged opener,
+// the pre-pull crowd control) and a Charge into the pack would break it. Never at a crowd-controlled target.
+bool ProtChargeWanted(ApPredicateContext const& ctx)
+{
+    if (ctx.bot.in_combat() || ctx.bot.is_in_instance() || !HasLiveTarget(ctx) || !ctx.bot.knows_spell(CHARGE))
+        return false;
+    NearbyUnit const* v = ctx.bot.victim_info();
+    if (!v || v->is_cc_locked || !v->in_los) return false;
+    float const d = DistToVictim(ctx);
+    return d >= 8.f && d <= 25.f;
+}
+
+bool ShouldChargeStance(ApPredicateContext const& ctx)
+{
+    return Services::Config().behavior_warrior_stance_dance()   // off: a Protection warrior never leaves Defensive Stance
+        && !StanceForced(ctx) && InStance(ctx, DEFENSIVE_STANCE) && !DanceLockedOut(ctx)
+        && Ready(ctx, CHARGE) && StanceReady(ctx, BATTLE_STANCE) && ProtChargeWanted(ctx);
+}
+void DoChargeStance(ApPredicateContext const& ctx, BotIntentEmitter& e)
+{
+    if (e.cast(BATTLE_STANCE))
+        DanceBegin(ctx, CHARGE);
+}
+
+bool ShouldProtCharge(ApPredicateContext const& ctx)
+{
+    return InStance(ctx, BATTLE_STANCE) && DanceActive(ctx, CHARGE) && Ready(ctx, CHARGE)
+        && ctx.bot.victim_in_spell_range(CHARGE) && ProtChargeWanted(ctx);
+}
+void DoProtCharge(ApPredicateContext const& ctx, BotIntentEmitter& e)
+{
+    if (e.cast(CHARGE, ctx.bot.victim()))
+        DanceEnd(ctx);   // back to Defensive Stance on the next tick
+}
+
 // Stay in Battle Stance only while the dance's ability is still wanted and
 // waits on nothing but the GCD (the stance change's own); any other case
 // ends the dance at once.
@@ -696,6 +734,8 @@ bool DanceHold(ApPredicateContext const& ctx)
         return OffOwnCooldown(ctx, MOCKING_BLOW) && Rage(ctx) >= kMockingBlowRage && MockingBlowTarget(ctx) != nullptr;
     if (DanceActive(ctx, THUNDER_CLAP))
         return OffOwnCooldown(ctx, THUNDER_CLAP) && Rage(ctx) >= kThunderClapRage && ThunderClapWorth(ctx);
+    if (DanceActive(ctx, CHARGE))
+        return OffOwnCooldown(ctx, CHARGE) && ProtChargeWanted(ctx);
     return false;
 }
 
@@ -1026,6 +1066,8 @@ ApRule const kTankRules[] = {
     { ShouldFearDanceRage,    DoFearDanceRage,   "classic_prot:fear_berserker_rage" },
     { ShouldFearDanceStance,  DoFearDanceStance, "classic_prot:fear_berserker_stance" },
     { ShouldMockingBlow,      DoMockingBlow,     "classic_prot:mocking_blow" },
+    { ShouldProtCharge,       DoProtCharge,      "classic_prot:charge" },
+    { ShouldChargeStance,     DoChargeStance,    "classic_prot:charge_stance" },
     { ShouldTankThunderClap,  DoTankThunderClap, "classic_prot:thunder_clap" },
     { ShouldDefensiveStance,  DoDefensiveStance, "classic_prot:defensive_stance" },
     { ShouldChallengingShout, DoChallengingShout, "classic_prot:challenging_shout" },

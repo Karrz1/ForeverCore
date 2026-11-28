@@ -31,6 +31,7 @@
 #include "../ThreatLimits.h"
 #include "../Dungeon/PveGroupCoordinator.h"
 #include "../../Group/GroupSnapshot.h"
+#include "../../Fleet/BotAccountMgr.h"   // is_pool_account: a player's own character keeps its raid role
 #include "../../Fleet/BotIdentityRegistry.h"
 #include "../../Services.h"
 #include "../../Threading/SnapshotPublisher.h"
@@ -993,6 +994,15 @@ std::unordered_map<uint64_t, uint32_t> g_lastSpread;
 std::unordered_map<uint64_t, uint32_t> g_lastSpreadLog;
 std::unordered_map<uint64_t, uint32_t> g_lastTankFace;
 std::unordered_map<uint64_t, uint32_t> g_lastFaceAway;
+constexpr float kFaceAwayReach = 10.0f;   // the face-away step turns an enemy within this many yards of its tank
+// Lead away (RaidRules::leadAway): when the victim last chose a spot, and that spot.
+struct LeadSpot { float x, y, z; uint32_t at; };
+std::unordered_map<uint64_t, LeadSpot> g_leadSpot;
+std::unordered_map<uint64_t, uint32_t> g_lastLeadLog;
+constexpr uint32_t kLeadEveryMs = 2000;   // a victim picks a new spot at most this often
+constexpr float kLeadApexBack = 2.5f;     // the enemy stops about this far short of its victim: the cone's apex
+constexpr float kLeadPathClear = 6.0f;    // a raider this close to the enemy's walk may be taken on the way (its melee reach and a margin)
+constexpr float kLeadConeMarginDeg = 10.0f;
 std::unordered_map<uint64_t, uint32_t> g_lastRearStep;
 std::unordered_map<uint64_t, uint32_t> g_lastCarrierLog;
 std::unordered_map<uint64_t, uint32_t> g_lastBombLog;
@@ -1001,6 +1011,8 @@ std::unordered_map<uint64_t, uint32_t> g_lastDragOutLog;
 std::unordered_map<uint64_t, uint32_t> g_lastIdleHoldLog;
 std::unordered_map<uint64_t, uint32_t> g_lastOutOfReachLog;   // [raid_target] a melee bot leaving an enemy it cannot get to, per bot
 constexpr float kMeleeChaseMargin = 5.0f;   // a chasing melee bot stops this far from its target
+constexpr float kRangedNearReach = 30.0f;   // rangedNearFirst: a ranged pick past this is ranked after every nearer one
+constexpr float kRangedFarDrop = 38.0f;    // rangedNearFirst: a ranged bot on a target past this leaves it for a near pick
 std::unordered_map<uint64_t, uint32_t> g_lastSafeCrossLog;
 
 // The idle pack whose aggro reach a melee bot at (bx, by) walks into on its way to an enemy at (vx, vy), or -1. The chase stops
@@ -1507,6 +1519,7 @@ constexpr float kGuardRiseScan = 100.0f;         // GuardRise: the bones within 
 std::unordered_map<uint64_t, uint32_t> g_guardRiseLog;   // bot -> last [raid_guard_rise] line (ms)
 std::unordered_map<uint64_t, uint32_t> g_postHazardLog;  // bot -> last [raid_post] "the post is in a hazard" line (ms)
 constexpr float kFixedSpotFreshScan = 100.0f;   // ... and the adds just spawned within this reach, in nobody's combat yet, are off limits too
+constexpr float kFaceAwaySlotSlack = 12.0f;      // ... and one holding a FaceAway add from its far side stays this close to its slot (HoldsFacedAway)
 
 // An add of a fixed row that has reached the raid: it stands in melee with a raider, wherever that raider is (another tank's pile, a melee DPS
 // beside it, a healer). bwl_nefarian 1109y: a drakonid held at a neighbour's pile (on the arc's far side, 23-26 y from the centre) or on a
@@ -1520,6 +1533,13 @@ bool EnemyInFight(Plan const& plan, uint32_t entry)
     {
         return e->GetEntry() == entry && e->IsAlive() && !e->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) && !e->IsImmuneToPC();
     });
+}
+
+// The enemy has a FaceAway rule whose tank may stand well off the line (FaceAway::maxTurnDeg past 30).
+bool TurnedFromTheSide(Plan const& plan, uint32_t entry)
+{
+    return plan.rules && std::any_of(plan.rules->faceAway.begin(), plan.rules->faceAway.end(),
+                                     [&](FaceAway const& fa) { return fa.enemy == entry && fa.maxTurnDeg > 30.0f; });
 }
 
 bool ReachedRaid(Plan const& plan, Unit* add)
@@ -1546,6 +1566,42 @@ bool ReachedRaid(Plan const& plan, Unit* add)
 // same way at 124 s and 145 s, and the raid never reached phase three. FetchesAdd kept every add on another tank off limits, so nobody
 // relieved it.
 constexpr size_t kHandOffFrom = 3, kHandOffKeep = 2;
+
+// TankSpot::skipClassMask: a tank of a skipped class is left out of the row while a live tank of another class has a hand free (holds none of
+// the row's adds). Once every other tank holds one, a further add is better on the bear than on a healer. naxx_kelthuzad kt70g (1125): at
+// 291-313 s six Abominations were up, the three warriors held one each, two or three walked through the camp (#1589 on the healers for 20 s)
+// while the bear stood at its slot with nothing, and the raid went from 33 alive to 28 before Kel'Thuzad came down.
+bool OnEndEnemy(Plan const& plan, TankSpot const& rule, Player const* p);
+
+// Stand::endEnemy and endAfterEnemy: whether the post has ended. With endAfterEnemy the next phase's enemy ends it only once the post's own
+// enemy is gone from the fight. naxx_kelthuzad kt74b (1125): Kel'Thuzad came down at 316 s with four Soul Weavers at 100% still walking in;
+// the camp posts ended, the ranged and healers spread round him east of the camp, and one Weaver (3745,-5089) killed 16 with one Wail of
+// Souls at 322 s, 15 of them 22-38 y from the camp. kt74a: Wail of Souls 18 of the dead, all in phase 2.
+bool StandEnded(Plan const& plan, Stand const& rule)
+{
+    if (!EnemyInFight(plan, rule.endEnemy))
+        return false;
+    if (!rule.endAfterEnemy)
+        return true;
+    return std::none_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e) { return e->IsAlive() && e->GetEntry() == rule.enemy; });
+}
+
+bool RowSkips(Plan const& plan, TankSpot const& rule, Player const* p)
+{
+    auto const skipped = [&](Player const* q) { return (rule.skipClassMask & (1u << (q->GetClass() - 1))) != 0; };
+    if (!skipped(p))
+        return false;
+    for (Member const& m : plan.members)
+    {
+        if (!m.tank || !m.p->IsAlive() || skipped(m.p) || OnEndEnemy(plan, rule, m.p))
+            continue;
+        if (std::none_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e)
+                         { return e->IsAlive() && InTankSpot(rule, e->GetEntry()) && e->GetVictim() == m.p; }))
+            return true;
+    }
+    return false;
+}
+
 bool HandedOffTo(Plan const& plan, TankSpot const& rule, Player* bot, Unit* add)
 {
     std::vector<Player*> idle;
@@ -1560,15 +1616,20 @@ bool HandedOffTo(Plan const& plan, TankSpot const& rule, Player* bot, Unit* add)
                 held.push_back(enemy);
         if (held.empty())
         {
-            if (m.bot)
+            if (m.bot && !RowSkips(plan, rule, m.p) && !OnEndEnemy(plan, rule, m.p))   // skipClassMask (while another tank is free), endAfterAdds
                 idle.push_back(m.p);
             continue;
         }
-        if (held.size() < kHandOffFrom)
+        // TankSpot::handOffFrom: from that many, keeping one. naxx_kelthuzad kt70a (1124): Mctankwa held two Abominations (99%, 100%) and
+        // a Soul Weaver at 100 s, two Abominations to 106 s, while Mctankwb stood at its slot with nothing at 97-100 s; Mortal Wound killed
+        // Mctankwa at 109 s.
+        size_t const from = rule.handOffFrom ? size_t(rule.handOffFrom) : kHandOffFrom;
+        size_t const keep = rule.handOffFrom ? size_t(1) : kHandOffKeep;
+        if (held.size() < from)
             continue;
         std::sort(held.begin(), held.end(), [](Unit* a, Unit* b) { return a->GetHealth() != b->GetHealth() ? a->GetHealth() < b->GetHealth()
                                                                                                              : a->GetGUID() < b->GetGUID(); });
-        pool.insert(pool.end(), held.begin() + kHandOffKeep, held.end());
+        pool.insert(pool.end(), held.begin() + keep, held.end());
     }
     std::sort(pool.begin(), pool.end(), [](Unit* a, Unit* b) { return a->GetHealth() != b->GetHealth() ? a->GetHealth() > b->GetHealth()
                                                                                                          : a->GetGUID() < b->GetGUID(); });
@@ -1587,10 +1648,29 @@ bool FetchesAdd(Plan const& plan, TankSpot const& rule, Player* bot, Unit* add)
     // from 24 s to 57 s at (-7555,-1199), north of every place, and all four tanks died there at 188-208 s.
     if (Unit* const v = add->GetVictim(); v && v != bot && v->IsAlive())
         if (Player* const vp = v->ToPlayer())
-            if (std::any_of(plan.members.begin(), plan.members.end(), [&](Member const& m) { return m.p == vp && m.tank; }))
+            // (A tank the row skips, TankSpot::skipClassMask and RowSkips, counts as a raider: an add sent at the bear is fetched off it.)
+            if (std::any_of(plan.members.begin(), plan.members.end(), [&](Member const& m)
+                            { return m.p == vp && m.tank && !RowSkips(plan, rule, m.p); }))
                 return HandedOffTo(plan, rule, bot, add);   // ... unless that tank holds too many and this one none
     if (ReachedRaid(plan, add))
         return true;
+    // TankSpot::fetchMax: a loose add that has not reached anybody yet is not fetched out at the edge of the room. naxx_kelthuzad kt69c
+    // (1124): a tank went 15 y out from its slot to a Soul Weaver at the alcove keep-out rim (3700,-5079, 31 y from the camp), found no
+    // spot on its far side (inside the keep-out), and the Weaver faced the camp from there: its Wail of Souls killed 28. One in melee with
+    // a raider is fetched wherever it is (above): kt69e, with this check first, an Abomination sent at a warrior 25 y from the camp was
+    // left on him and killed him 8 s later (Mortal Wound, 9,642).
+    // A FaceAway add turned from the side (maxTurnDeg past 30) is met where it is: it walks in slowly, facing the raider it was sent at
+    // across the camp (kt69f: a Weaver was on its tank 50 s, 36 y from the raid's centre, with no spot found; one at 3694,-5083 killed 8).
+    // TankSpot::fetchTurned: such an add is met once it is that close to (x, y), wherever the tank stands, and not before. The reach test
+    // below (within 15 y of the tank as well) left the tanks at their slots while it walked on to its victim at the camp: naxx_kelthuzad
+    // kt69o (1124): at 87 s three Weavers were in the fight, one on a tank and two on casters, at 90 s none on a tank, and at 93 s one
+    // 29 y south of the camp (3709,-5134) killed twelve. Further out it is still in an alcove's mouth, among the resting adds (kt69o: no spot behind a Weaver
+    // at 3704,-5169, "idle pack 27").
+    if (rule.fetchTurned > 0.0f && TurnedFromTheSide(plan, add->GetEntry()))
+        return Dist2D(add->GetPositionX(), add->GetPositionY(), rule.x, rule.y) <= rule.fetchTurned;
+    if (rule.fetchMax > 0.0f && Dist2D(add->GetPositionX(), add->GetPositionY(), rule.x, rule.y) > rule.fetchMax &&
+        !TurnedFromTheSide(plan, add->GetEntry()))
+        return false;
     if (rule.reach <= 0.0f)
         return bot->IsWithinDistInMap(add, kFixedSpotFetchReach);
     float const fromCentre = Dist2D(add->GetPositionX(), add->GetPositionY(), rule.x, rule.y);
@@ -1751,11 +1831,44 @@ float SeenArcAngle(Plan const& plan, TankSpot const& rule, Player* bot, uint32_t
 }
 
 // waitFor (fixed rows): set to the loose add this tank waits for at its slot instead of walking out to it.
+// A fixed row holds while its anchor is in the fight, or any of the adds it is for: Kel'Thuzad's phase 1 has no enemy that is always in the
+// raid's combat (he is immune; each sent Soldier lives a few seconds), and the row came and went with the Soldiers.
+bool FixedRowUp(Plan const& plan, TankSpot const& rule)
+{
+    return std::any_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e)
+    {
+        return e->IsAlive() && (e->GetEntry() == rule.anchor || InTankSpot(rule, e->GetEntry()));
+    });
+}
+
+// TankSpot::endEnemy and endAfterAdds: whether the row has ended. With endAfterAdds the next phase's enemy ends it only once the last of the
+// row's adds is dead. naxx_kelthuzad kt72a (1125): Kel'Thuzad came down at 315 s with 16 phase 1 adds up (an Abomination on a tank, Soul
+// Weavers, Soldiers); the row and its forbids ended at once, the tanks took Soldiers and Weavers (Mctankwa on a Soldier with an Abomination
+// assigned, a Weaver on it), and in the next 60 s Dark Blast killed 5 at once and Wail of Souls 3.
+bool RowEnded(Plan const& plan, TankSpot const& rule)
+{
+    if (!EnemyInFight(plan, rule.endEnemy))
+        return false;
+    if (!rule.endAfterAdds)
+        return true;
+    return std::none_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e) { return e->IsAlive() && InTankSpot(rule, e->GetEntry()); });
+}
+
+// TankSpot::endAfterAdds: this tank holds the next phase's enemy (Kel'Thuzad) while the row still holds the last adds: it has no slot,
+// takes none of the row's adds, and counts as busy for the bear (RowSkips) and the hand-off (HandedOffTo).
+bool OnEndEnemy(Plan const& plan, TankSpot const& rule, Player const* p)
+{
+    if (!rule.endAfterAdds || !rule.endEnemy || !EnemyInFight(plan, rule.endEnemy))
+        return false;
+    Unit* const v = p->GetVictim();
+    return v && v->IsAlive() && v->GetEntry() == rule.endEnemy;
+}
+
 bool TankSpotFor(Plan const& plan, TankSpot const& rule, Player* bot, uint32_t now, float& outX, float& outY, Unit** waitFor = nullptr)
 {
     uint64_t const key = (plan.groupLow << 32) ^ rule.anchor;
     TankSpotLock& lock = g_tankSpot[key];
-    if (EnemyInFight(plan, rule.endEnemy))
+    if (RowEnded(plan, rule) || OnEndEnemy(plan, rule, bot))
         return false;
     if (rule.fixed)
     {
@@ -1772,11 +1885,7 @@ bool TankSpotFor(Plan const& plan, TankSpot const& rule, Player* bot, uint32_t n
             if (waitFor)
                 *waitFor = v;
         }
-        bool anchorUp = false;
-        for (Unit* enemy : plan.enemies)
-            if (enemy->GetEntry() == rule.anchor && enemy->IsAlive())
-                anchorUp = true;
-        if (!anchorUp)
+        if (!FixedRowUp(plan, rule))
             return false;
         float const along = rule.rowDeg * (float(M_PI) / 180.0f);
         lock = { rule.x - rule.reach * std::cos(along + float(M_PI) * 0.5f), rule.y - rule.reach * std::sin(along + float(M_PI) * 0.5f),
@@ -1824,7 +1933,7 @@ bool TankSpotFor(Plan const& plan, TankSpot const& rule, Player* bot, uint32_t n
     {
         holders.clear();
         for (Member const& m : plan.members)
-            if (m.tank && m.p && m.p->IsAlive())
+            if (m.tank && m.p && m.p->IsAlive() && !OnEndEnemy(plan, rule, m.p))
                 holders.push_back(m.p->GetGUID().GetCounter());
         std::sort(holders.begin(), holders.end());
     }
@@ -1854,8 +1963,13 @@ bool FaceAxisFor(Plan const& plan, Unit* enemy, uint32_t now, float& axis, float
         axis = fixedBearingDeg * (float(M_PI) / 180.0f);
         return true;
     }
-    uint64_t const key = (plan.groupLow << 32) ^ enemy->GetEntry();
+    // One lock per creature, not per entry: Kel'Thuzad's Soul Weavers (several at once, each on its own tank round the camp) shared one
+    // lock and threw it away for one another every pass.
+    uint64_t const key = (plan.groupLow << 32) ^ enemy->GetGUID().GetCounter();
     float const ex = enemy->GetPositionX(), ey = enemy->GetPositionY();
+    if (g_faceAxis.size() > 256)
+        for (auto it = g_faceAxis.begin(); it != g_faceAxis.end();)
+            it = (now - it->second.seenMs > 2 * kAxisStaleMs) ? g_faceAxis.erase(it) : std::next(it);
     FaceAxisLock& lock = g_faceAxis[key];
     if (lock.seenMs && now - lock.seenMs < kAxisStaleMs && geo::AxisHolds(lock.bossX, lock.bossY, ex, ey, kAxisDrift))
     {
@@ -1879,6 +1993,28 @@ bool FaceAxisFor(Plan const& plan, Unit* enemy, uint32_t now, float& axis, float
     TC_LOG_INFO("playerbot.v2.raid", "[raid_face] axis for {} locked: raid centre {:.0f} yd out, {} raiders, bearing {:.0f} deg", enemy->GetName(),
         Dist2D(sx / float(n), sy / float(n), ex, ey), n, axis * 180.0f / float(M_PI));
     return true;
+}
+
+// The tank holds an add of the fixed row <row> that has a FaceAway rule, and stands on its far side from the raid (the face-away step's own
+// 30 degree test), so that add's back is to the raid.
+bool HoldsFacedAway(Plan const& plan, RaidRules const& rules, TankSpot const& row, Player* bot, uint32_t now)
+{
+    for (FaceAway const& fa : rules.faceAway)
+    {
+        if (!InTankSpot(row, fa.enemy))
+            continue;
+        for (Unit* enemy : plan.enemies)
+        {
+            if (enemy->GetEntry() != fa.enemy || !enemy->IsAlive() || enemy->GetVictim() != bot || !InPhase(enemy, fa.hpMax, fa.hpMin))
+                continue;
+            float axis;
+            if (FaceAxisFor(plan, enemy, now, axis, fa.bearingDeg) &&
+                geo::TankOnAxis(enemy->GetPositionX(), enemy->GetPositionY(), bot->GetPositionX(), bot->GetPositionY(), axis,
+                                fa.maxTurnDeg * (float(M_PI) / 180.0f)))
+                return true;
+        }
+    }
+    return false;
 }
 
 // Whether (x,y) lies inside a frontal cone of <enemy> as it faces now, widened by the rule's margin, for a bot like <self>. The same sector test
@@ -2525,7 +2661,7 @@ int TanksSeenFrom(Player* bot, std::vector<Player*> const& tanks, float x, float
 }
 
 SightSpot HealerSightSpot(Plan const& plan, Stand const& rule, std::vector<Circle> const& circles, uint32_t now, Player* bot,
-                          float& outX, float& outY, float& outZ)
+                          float& outX, float& outY, float& outZ, float roam = kSightRoam)
 {
     std::vector<Player*> tanks;
     for (Member const& m : plan.members)
@@ -2535,7 +2671,7 @@ SightSpot HealerSightSpot(Plan const& plan, Stand const& rule, std::vector<Circl
         return SightSpot::Post;
 
     float const bx = bot->GetPositionX(), by = bot->GetPositionY();
-    bool const inRoam = Dist2D(bx, by, rule.x, rule.y) <= kSightRoam;
+    bool const inRoam = Dist2D(bx, by, rule.x, rule.y) <= roam;   // kSightRoam, or a wider post's (Stand::fightTolerance)
     int const here = inRoam && !InsideAny(circles, bx, by, 0.0f) ? TanksSeenFrom(bot, tanks, bx, by, bot->GetPositionZ()) : -1;
     if (here == int(tanks.size()))
         return SightSpot::Here;
@@ -2964,24 +3100,44 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
             bool const stayHidden = HidingFromBreath(plan, self, enemy, now);
             // Leave through the nearer edge, a few degrees past it, keeping roughly the same distance from the boss (never closer than 6 yards).
             float const side = toBot >= 0.0f ? 1.0f : -1.0f;
-            float const ring = std::max(distance, 6.0f);
+            // An enemy that turns a lot sweeps whoever stands just past its edge: one no tank holds (it faces each new victim) or one its tank
+            // turns from the side (FaceAway::maxTurnDeg past 30, a step round it every few seconds). The way out from it keeps 12 y and never
+            // steps nearer. naxx_kelthuzad kt69h (1124): four healers left the cone of a Soul Weaver their tank could not turn (its far side
+            // in the keep-out of the alcove at 3768,-5072) onto its flank, 8 y from it (3739-3743,-5084); one Wail of Souls killed some and threw the
+            // rest 26 y (its knockback) to the north alcove.
+            Unit* const coneVictim = enemy->GetVictim();
+            bool const loose = TurnedFromTheSide(plan, enemy->GetEntry()) || !coneVictim ||
+                               std::none_of(plan.members.begin(), plan.members.end(), [&](Member const& m) { return m.tank && m.p == coneVictim; });
+            float const ring = std::max(distance, loose ? 12.0f : 6.0f);
+            // The way out stays out of the keep-out circles while another way out is found (pass 0), as the hazard escape's does: the
+            // keep-out escape (2a) walks a bot that ends inside one straight back out, into the cone again. naxx_kelthuzad kt66a (1124):
+            // the mages and healers by the alcoves alternated "leave cone" and "leave hazard" every second under a Soul Weaver (488 and
+            // 474 such steps, kt66b 683 and 621) and cast little. Pass 0 also tries a ring nearer the enemy, off the room's rim.
             int pathChecks = 0;
+            for (int pass = 0; pass < 2; ++pass)
+            for (float r : { ring, std::max(ring * 0.6f, 6.0f) })
             for (float extra : { 0.12f, 0.30f, 0.55f })
                 for (float flip : { 1.0f, -1.0f })
                 {
+                    if (pass == 1 && r != ring)
+                        continue;   // the second pass is the old search, keep-out circles allowed
+                    if (loose && r < ring)
+                        continue;
                     float const angle = facing + side * flip * (half + extra);
-                    float const px = enemy->GetPositionX() + ring * std::cos(angle);
-                    float const py = enemy->GetPositionY() + ring * std::sin(angle);
+                    float const px = enemy->GetPositionX() + r * std::cos(angle);
+                    float const py = enemy->GetPositionY() + r * std::sin(angle);
                     if (!circles.empty() && InsideAny(circles, px, py, 1.0f))
+                        continue;
+                    if (pass == 0 && InsideAny(g_keepOut, px, py, 1.0f))
                         continue;
                     // The way out goes round him, never across his face: the walk to the far edge runs past his front (naxx_sapphiron r27:
                     // three bots 25 y off his flank took the far edge when the near one was no use, passed 3-6 y from him and his Cleave
                     // killed all three; four more died that way). A straight line that comes nearer to him than most of the ring is not
                     // taken.
                     if (SegmentDist2D(bot->GetPositionX(), bot->GetPositionY(), px, py, enemy->GetPositionX(), enemy->GetPositionY()) <
-                        0.8f * std::min(distance, ring))
+                        0.8f * std::min(distance, r))
                         continue;
-                    if (++pathChecks > 6)
+                    if (++pathChecks > 10)
                         break;
                     float pz = 0.0f;
                     if (!Usable(bot, px, py, bot->GetPositionZ(), pz, /*urgent*/ true, /*hazard*/ true))
@@ -3056,6 +3212,164 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
             }
         }
 
+    // 2c. Lead away (RaidRules::leadAway): the raider an untanked enemy is on stands where its frontal cast hits nobody else. The enemy
+    // walks up to its victim and faces it, so the victim decides where the cone points: out of the raid, with the raid behind the enemy.
+    // naxx_kelthuzad kt70e (1125, script19ac): a Soul Weaver walked up to the healer Mchealse in the camp, 19 y from its centre, and at 3%
+    // health its Wail of Souls killed 13 standing behind the healer; with the Soldiers' Dark Blast the raid went from 31 alive to 5.
+    // A tank leads one too while it holds none of a fixed row's adds: the enemy takes whoever is in its melee reach on its way in (a Soul
+    // Weaver whose victim is out of it), and a tank standing at its slot has the camp behind it. naxx_kelthuzad kt77a (1125): a Weaver on
+    // the bear (which takes no Abomination while a warrior is free) in 14 samples, another in 4, one on Mctankwc in 2; kt77b one on
+    // Mctankwa in about 11.
+    bool const holdsRowAdd = self.tank && std::any_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e)
+    {
+        return e->IsAlive() && e->GetVictim() == bot &&
+               std::any_of(rules.tankSpot.begin(), rules.tankSpot.end(), [&](TankSpot const& row) { return row.fixed && InTankSpot(row, e->GetEntry()); });
+    });
+    if (!holdsRowAdd)
+        for (LeadAway const& rule : rules.leadAway)
+            for (Unit* enemy : plan.enemies)
+            {
+                if (enemy->GetEntry() != rule.enemy || !enemy->IsAlive() || enemy->GetVictim() != bot ||
+                    !bot->IsWithinDistInMap(enemy, rule.maxDist))
+                    continue;
+                float const ex = enemy->GetPositionX(), ey = enemy->GetPositionY();
+                float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+                std::vector<std::pair<float, float>> spots;
+                for (Player* p : others)
+                    if (p->IsAlive())
+                    {
+                        float px, py;
+                        PlannedAt(p, px, py);
+                        spots.emplace_back(px, py);
+                    }
+                float const cosHalf = std::cos((rule.halfDeg + kLeadConeMarginDeg) * (float(M_PI) / 180.0f));
+                // The raiders the enemy hits (in) and passes within reach of (near) when its victim stands at (sx, sy): it walks there from
+                // where it is, facing the victim, and casts from anywhere on that walk once the victim is within the cone's range, from
+                // range - 2 yards out (or where it stands, if nearer) down to kLeadApexBack short of it. Both ends of that walk count.
+                // naxx_kelthuzad kt76a (1125): a Weaver 23 y north-east of the camp (3736,-5094) cast at its victim in the camp and threw
+                // the camp 26 y west, 20 dead; the step had counted the cone from 2.5 y short of the victim only, as for an enemy that casts
+                // in melee ("Mchealpd leads Soul Weaver (29 y off) 14 y" a second before).
+                auto exposed = [&](float sx, float sy, int& in, int& near)
+                {
+                    in = near = 0;
+                    float const d = Dist2D(ex, ey, sx, sy);
+                    float const ux = d > 0.1f ? (sx - ex) / d : std::cos(enemy->GetOrientation());
+                    float const uy = d > 0.1f ? (sy - ey) / d : std::sin(enemy->GetOrientation());
+                    float const nearBack = std::min(kLeadApexBack, d);
+                    float const farBack = std::min(d, std::max(kLeadApexBack, rule.range - 2.0f));
+                    float const ax = sx - ux * nearBack, ay = sy - uy * nearBack;
+                    float const fx = sx - ux * farBack, fy = sy - uy * farBack;
+                    auto const inCone = [&](float apexX, float apexY, float px, float py)
+                    {
+                        float const dx = px - apexX, dy = py - apexY;
+                        float const pd = std::sqrt(dx * dx + dy * dy);
+                        return pd <= rule.range + 2.0f && (pd < 1.0f || (dx * ux + dy * uy) / pd >= cosHalf);
+                    };
+                    for (auto const& s : spots)
+                    {
+                        if (inCone(ax, ay, s.first, s.second) || inCone(fx, fy, s.first, s.second))
+                            ++in;
+                        else if (SegmentDist2D(ex, ey, ax, ay, s.first, s.second) < kLeadPathClear)
+                            ++near;
+                    }
+                };
+                int hereIn = 0, hereNear = 0;
+                exposed(bx, by, hereIn, hereNear);
+                uint64_t const key = bot->GetGUID().GetCounter();
+                if (hereIn == 0 && hereNear == 0)
+                {
+                    out.at_post = true;   // the formation walk and the role post leave the victim where it is
+                    return;
+                }
+                auto const last = g_leadSpot.find(key);
+                if (last != g_leadSpot.end() && now - last->second.at < kLeadEveryMs)
+                {
+                    if (Dist2D(bx, by, last->second.x, last->second.y) > 1.5f)
+                    {
+                        SetMove(out, last->second.x, last->second.y, last->second.z, "lead away", hereIn > 0 && Dist2D(bx, by, ex, ey) < 12.0f);
+                        Remember(bot, out, now);
+                    }
+                    else
+                        out.at_post = true;
+                    return;
+                }
+                // Out of the raid first: from the centre of the others through the victim.
+                float cx = 0.0f, cy = 0.0f;
+                for (auto const& s : spots) { cx += s.first; cy += s.second; }
+                float const outward = spots.empty() ? geo::Bearing(ex, ey, bx, by)
+                                                    : geo::Bearing(cx / float(spots.size()), cy / float(spots.size()), bx, by);
+                struct Cand { float x, y; int in, near; float reach, offDeg; };
+                std::vector<Cand> cands;
+                for (float reach : { 6.0f, 10.0f, 14.0f, 20.0f })
+                    for (int k = -5; k <= 6; ++k)
+                    {
+                        float const off = float(k) * 30.0f;
+                        float const b = outward + off * (float(M_PI) / 180.0f);
+                        float const sx = bx + reach * std::cos(b), sy = by + reach * std::sin(b);
+                        int in = 0, near = 0;
+                        exposed(sx, sy, in, near);
+                        if (in * 2 + near < hereIn * 2 + hereNear)
+                            cands.push_back({ sx, sy, in, near, reach, std::fabs(off) });
+                    }
+                std::sort(cands.begin(), cands.end(), [](Cand const& a, Cand const& b)
+                {
+                    int const sa = a.in * 2 + a.near, sb = b.in * 2 + b.near;
+                    if (sa != sb) return sa < sb;
+                    if (a.reach != b.reach) return a.reach < b.reach;
+                    return a.offDeg < b.offDeg;
+                });
+                std::map<std::string, int> refused;
+                int probes = 0;
+                for (Cand const& c : cands)
+                {
+                    if (probes >= 8)
+                        break;
+                    if (!circles.empty() && InsideAny(circles, c.x, c.y, 0.5f))
+                    {
+                        ++refused["hazard circle"];
+                        continue;
+                    }
+                    if (rule.knockback > 0.0f)
+                    {
+                        float const d = Dist2D(ex, ey, c.x, c.y);
+                        float const lx = d > 0.1f ? c.x + (c.x - ex) / d * rule.knockback : c.x;
+                        float const ly = d > 0.1f ? c.y + (c.y - ey) / d * rule.knockback : c.y;
+                        if (InsideAny(g_keepOut, lx, ly, 0.0f) || InsideAny(g_idleHostiles, lx, ly, 0.0f))
+                        {
+                            ++refused["knockback lands in a keep-out"];
+                            continue;
+                        }
+                    }
+                    ++probes;
+                    float pz = 0.0f;
+                    if (!Usable(bot, c.x, c.y, bot->GetPositionZ(), pz, /*urgent*/ true))
+                    {
+                        ++refused[UsableWhyName(g_usableWhy)];
+                        continue;
+                    }
+                    g_leadSpot[key] = { c.x, c.y, pz, now ? now : 1u };
+                    bool const urgent = hereIn > 0 && Dist2D(bx, by, ex, ey) < 12.0f;
+                    SetMove(out, c.x, c.y, pz, "lead away", urgent);
+                    Remember(bot, out, now);
+                    TC_LOG_INFO("playerbot.v2.raid", "[raid_lead] {} leads {} ({:.0f} y off) {:.0f} y, {:.0f} deg off the raid's outward line: {} in its "
+                                "cone and {} by its way here, {} and {} there", bot->GetName(), enemy->GetName(), Dist2D(bx, by, ex, ey), c.reach,
+                                c.offDeg, hereIn, hereNear, c.in, c.near);
+                    return;
+                }
+                g_leadSpot[key] = { bx, by, bot->GetPositionZ(), now ? now : 1u };
+                uint32_t& logged = g_lastLeadLog[key];
+                if (now - logged >= 10000)
+                {
+                    logged = now;
+                    std::string why;
+                    for (auto const& r : refused)
+                        why += (why.empty() ? "" : ", ") + r.first + " " + std::to_string(r.second);
+                    TC_LOG_INFO("playerbot.v2.raid", "[raid_lead] {} has {} ({:.0f} y off) with {} in its cone and {} by its way here: no better spot "
+                                "({} better, {})", bot->GetName(), enemy->GetName(), Dist2D(bx, by, ex, ey), hereIn, hereNear, cands.size(),
+                                why.empty() ? "none refused" : why);
+                }
+            }
+
     // 3. Spread: keep distance from the nearest raid member while the boss is up and open to attack. A boss the raid cannot touch yet casts
     // nothing the spread is for: Kel'Thuzad sits immune on his throne through phase 1 while the adds come, and naxx_kelthuzad r25 spent 287
     // "spread" steps of the ranged and healers on him ("wants 10 y from the raid at Kel'Thuzad ... no spot"), each one a cast not made.
@@ -3094,11 +3408,16 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 if (enemy->GetEntry() != rule.enemy || !enemy->IsAlive() || enemy->GetVictim() != bot ||
                     !InPhase(enemy, rule.hpMax, rule.hpMin))
                     continue;
+                // Only one the tank has in reach: an add still walking in to it is met first. naxx_kelthuzad kt69o (1124): a Soul Weaver
+                // just sent at Mctankwa from the south alcove (3704,-5169) had it as its victim, and the tank, 77 y off at its slot,
+                // looked for a spot behind it on every pass for 40 s, each one in the alcove's resting adds' reach ("idle pack 27").
+                if (!bot->IsWithinDistInMap(enemy, kFaceAwayReach))
+                    continue;
                 float const ex = enemy->GetPositionX(), ey = enemy->GetPositionY();
                 float axis;
                 if (!FaceAxisFor(plan, enemy, now, axis, rule.bearingDeg))
                     continue;
-                if (geo::TankOnAxis(ex, ey, bot->GetPositionX(), bot->GetPositionY(), axis, 30.0f * (float(M_PI) / 180.0f)))
+                if (geo::TankOnAxis(ex, ey, bot->GetPositionX(), bot->GetPositionY(), axis, rule.maxTurnDeg * (float(M_PI) / 180.0f)))
                     continue;
                 uint32_t& at = g_lastFaceAway[bot->GetGUID().GetCounter()];
                 if (now - at < 5000)
@@ -3109,18 +3428,55 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 // raid), and the tank then never found a spot.
                 bool found = false;
                 float px = 0.0f, py = 0.0f, pz = 0.0f;
+                // The spot behind an add of a fixed row is the encounter's place, like the row's slots (Usable's fixedPlace): ground, path
+                // and detour count (keep-outs and idle packs too), the fight area round the main tank does not: the tank's place is set by
+                // the add it holds. naxx_kelthuzad kt69k (1124): a Soul Weaver's tank on the west of Kel'Thuzad's arc "found no spot on the
+                // axis behind" it on every pass from 90 s, 20-22 y from the camp and clear of the alcove keep-outs; the line gave no reason.
+                // Each failed probe now says why (refused).
+                bool const rowAdd = std::any_of(rules.tankSpot.begin(), rules.tankSpot.end(),
+                                                [&](TankSpot const& row) { return row.fixed && InTankSpot(row, rule.enemy); });
+                std::map<std::string, int> refused;
+                // FaceAway::maxTurnDeg past 30: when the line itself has no spot (the far side of a Soul Weaver at Kel'Thuzad's alcove rim lies
+                // in the alcove's keep-out), a spot further round, toward the side. naxx_kelthuzad kt69c / kt69f (1124): 3 and 11 "found no
+                // spot" a run, the Weaver went on facing its tank and the camp behind it, 26 and 28 dead to Wail of Souls.
+                std::vector<float> turns = { 0.0f, 15.0f, -15.0f, 28.0f, -28.0f };
+                for (float wide : { 50.0f, 75.0f })
+                    if (wide <= rule.maxTurnDeg - 5.0f)
+                    {
+                        turns.push_back(wide);
+                        turns.push_back(-wide);
+                    }
                 for (float reach : { 3.5f, 2.8f, 2.2f })
                 {
-                    for (float turnDeg : { 0.0f, 15.0f, -15.0f, 28.0f, -28.0f })
+                    for (float turnDeg : turns)
                     {
                         geo::AxisSpot(ex, ey, axis, reach, turnDeg * (float(M_PI) / 180.0f), px, py);
                         if (!circles.empty() && InsideAny(circles, px, py, 0.5f))
+                        {
+                            ++refused["hazard circle"];
                             continue;
-                        if (Usable(bot, px, py, enemy->GetPositionZ(), pz, /*urgent*/ true))
+                        }
+                        // FaceAway::knockback: where the enemy's cast throws the tank from that spot, straight away from the enemy. Not into
+                        // a keep-out or an idle pack's reach. naxx_kelthuzad kt70a (1124): Mctankwa stepped behind a Soul Weaver 26 y north of
+                        // the camp, Wail of Souls threw it 26 y on to 3735,-5057 at the north alcove's rim, and it held that Weaver, an
+                        // Abomination and a Soldier there, 50 y from the healers' post, at 97-100 s (44-49% health); it died at 109 s.
+                        if (rule.knockback > 0.0f)
+                        {
+                            float const d = Dist2D(ex, ey, px, py);
+                            float const lx = d > 0.1f ? px + (px - ex) / d * rule.knockback : px;
+                            float const ly = d > 0.1f ? py + (py - ey) / d * rule.knockback : py;
+                            if (InsideAny(g_keepOut, lx, ly, 0.0f) || InsideAny(g_idleHostiles, lx, ly, 0.0f))
+                            {
+                                ++refused["knockback lands in a keep-out"];
+                                continue;
+                            }
+                        }
+                        if (Usable(bot, px, py, enemy->GetPositionZ(), pz, /*urgent*/ true, /*hazard*/ false, /*fixedPlace*/ rowAdd))
                         {
                             found = true;
                             break;
                         }
+                        ++refused[UsableWhyName(g_usableWhy)];
                     }
                     if (found)
                         break;
@@ -3128,7 +3484,11 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 at = now;
                 if (!found)
                 {
-                    TC_LOG_INFO("playerbot.v2.raid", "[raid_face] {} found no spot on the axis behind {}", bot->GetName(), enemy->GetName());
+                    std::string why;
+                    for (auto const& [reason, n] : refused)
+                        why += fmt::format("{}{} {}", why.empty() ? "" : ", ", reason, n);
+                    TC_LOG_INFO("playerbot.v2.raid", "[raid_face] {} found no spot on the axis behind {} at ({:.0f},{:.0f}): {}", bot->GetName(),
+                                enemy->GetName(), ex, ey, why);
                     continue;
                 }
                 TC_LOG_INFO("playerbot.v2.raid", "[raid_face] {} steps behind {} to turn it away from the raid", bot->GetName(), enemy->GetName());
@@ -3256,8 +3616,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
         // tank whose victim died turned on the nearest one at the door (bwl_nefarian 1109c run 2: Mctankwc "attacks ... 14263 ... mob
         // in_combat 0", then "takes Bronze Drakonid on Mctankwc dist=54y why=already_on_it"; the first tank to die in each run was 35-48 y
         // from the camp centre).
-        if (rule.fixed && self.tank && !EnemyInFight(plan, rule.endEnemy) &&
-            std::any_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e) { return e->GetEntry() == rule.anchor && e->IsAlive(); }))
+        if (rule.fixed && self.tank && !RowEnded(plan, rule) && FixedRowUp(plan, rule))
         {
             std::vector<Unit*> adds(plan.enemies.begin(), plan.enemies.end());
             std::list<Creature*> fresh;
@@ -3267,8 +3626,18 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
             for (Creature* c : fresh)
                 if (!c->IsInCombat())
                     adds.push_back(c);
+            // TankSpot::skipClassMask: a tank of such a class takes none of the row's adds and keeps its slot. naxx_kelthuzad kt70c (1124):
+            // the bear (10,153 health, 6,241 armour on its sheet; the warriors 12,119 and 9,617) died to single Mortal Wounds of 9,007 from
+            // 72% at 95 s, 9,056 from full at 126 s and 8,112 at 193 s.
+            // Only while another tank has a hand free (RowSkips): kt70g, six Abominations up and the bear idle.
+            bool const skipsRow = RowSkips(plan, rule, bot) || OnEndEnemy(plan, rule, bot);
             for (Unit* enemy : adds)
             {
+                if (skipsRow && enemy->IsAlive() && InTankSpot(rule, enemy->GetEntry()))
+                {
+                    out.forbidden_targets.push_back(enemy->GetGUID());
+                    continue;
+                }
                 // An add already on this tank but still far out is waited for too: it walks to the tank at its slot. The rotation's chase
                 // walked the tank out to meet it, and the next one, and the one after (bwl_nefarian 1110b: "takes Bronze Drakonid on Mctankwa
                 // dist=39y why=already_on_it", then its melee spot at -7544,-1185; from 25 s on every tank fought 40-67 y from the camp
@@ -3298,6 +3667,34 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                 }
         }
         if (Dist2D(bot->GetPositionX(), bot->GetPositionY(), tx, ty) < 3.0f)
+            continue;
+        // TankSpot::holdSlack: a tank in melee with an add of the row that is on it stays this close to its slot. The walk turns its back
+        // to the add, and a blow from behind cannot be parried, dodged or blocked. naxx_kelthuzad kt70c (1124): Mctankwc walked to its
+        // slot from 3 y off with an Abomination behind it (facing 152 degrees off), and the Abomination's next swing killed it at 135 s.
+        if (rule.holdSlack > 0.0f && Dist2D(bot->GetPositionX(), bot->GetPositionY(), tx, ty) < rule.holdSlack &&
+            std::any_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e)
+            {
+                return e->IsAlive() && InTankSpot(rule, e->GetEntry()) && e->GetVictim() == bot && e->IsWithinMeleeRange(bot);
+            }))
+            continue;
+        // A tank that holds a FaceAway add of the row and already stands on its far side from the raid stays, a few yards off its slot: the
+        // face-away step put it there, and the walk back to the slot took it past the add, which turned to the raid again, and the next step
+        // took it out again (Kel'Thuzad's Soul Weavers, Wail of Souls in front of them).
+        if (HoldsFacedAway(plan, rules, rule, bot, now) && Dist2D(bot->GetPositionX(), bot->GetPositionY(), tx, ty) < kFaceAwaySlotSlack)
+            continue;
+        // One turned from the side (FaceAway::maxTurnDeg past 30, met wherever it was) is fought where it is, turned away or not yet: the
+        // walk to the slot takes the tank out of the Weaver's melee reach (it turns to the nearest raider in reach, or the top of its
+        // threat), and only the face-away step moves that tank. naxx_kelthuzad kt69k (1124): a Weaver's tank found no spot behind it at
+        // 3692,-5120 and walked toward its slot 14 y west of the camp; a second later the Weaver was on another raider 11 y from the tank
+        // ([tank_loose]), and one Wail of Souls killed seven healers at 92 s (3684,-5106), the start of the wipe.
+        if (std::any_of(rules.faceAway.begin(), rules.faceAway.end(), [&](FaceAway const& fa)
+            {
+                return fa.maxTurnDeg > 30.0f && InTankSpot(rule, fa.enemy) &&
+                       std::any_of(plan.enemies.begin(), plan.enemies.end(), [&](Unit* e)
+                       {
+                           return e->GetEntry() == fa.enemy && e->IsAlive() && e->GetVictim() == bot && InPhase(e, fa.hpMax, fa.hpMin);
+                       });
+            }))
             continue;
         uint32_t& at = g_lastTankSpot[bot->GetGUID().GetCounter()];
         if (now - at < 3000)
@@ -3540,7 +3937,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
     }
     for (Stand const& rule : rules.stand)
     {
-        if (!Matches(rule.who, self, plan.mainTank) || EnemyInFight(plan, rule.endEnemy))
+        if (!Matches(rule.who, self, plan.mainTank) || StandEnded(plan, rule))
             continue;
         if (rule.share)
         {
@@ -3580,10 +3977,12 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
         if (rule.needOtherEnemy ? !other : (rule.needVictimIsMe && boss->GetVictim() != bot))
             continue;
         out.post_enemy = boss->GetGUID();
+        bool const fightPost = rule.fightTolerance > 0.0f && EnemyInFight(plan, rule.endEnemy);
+        float const tolerance = fightPost ? rule.fightTolerance : rule.tolerance;
         if (rule.who == Who::Healer && self.healer)
         {
             float sx = 0.0f, sy = 0.0f, sz = 0.0f;
-            SightSpot const spot = HealerSightSpot(plan, rule, circles, now, bot, sx, sy, sz);
+            SightSpot const spot = HealerSightSpot(plan, rule, circles, now, bot, sx, sy, sz, std::max(kSightRoam, tolerance));
             if (spot == SightSpot::Here)
             {
                 out.at_post = true;
@@ -3596,7 +3995,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
             }
         }
         float const offPost = Dist2D(bot->GetPositionX(), bot->GetPositionY(), rule.x, rule.y);
-        if (offPost <= rule.tolerance)
+        if (offPost <= tolerance)
         {
             out.at_post = true;
             continue;
@@ -3604,7 +4003,7 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
         // Near its post a healer with a hurt tank in reach heals, and a ranged DPS with its victim in reach casts, before it walks back: a hard
         // cast is refused while the bot moves (bwl_nefarian 1108h: the healers walked "role position" for 30 s and more at 97-100% mana, one
         // of twelve casting, while all four tanks died 45-80 s in). The post holds it there as if it stood on it.
-        if (offPost <= rule.tolerance + kPostCastSlack)
+        if (offPost <= tolerance + kPostCastSlack)
         {
             bool castsFirst = false;
             if (self.healer)
@@ -3640,6 +4039,19 @@ void DecideMove(Plan const& plan, Member const& self, uint32_t now, std::vector<
                             offPost, rule.x, rule.y);
             }
             return;
+        }
+        // Stand::fightTolerance: back to just inside the wider post, along the line from its centre, not to the centre (the spread would
+        // walk the bot straight out again).
+        if (fightPost && offPost > 0.1f)
+        {
+            float const f = (tolerance - 3.0f) / offPost;
+            float const px = rule.x + (bot->GetPositionX() - rule.x) * f, py = rule.y + (bot->GetPositionY() - rule.y) * f;
+            float pz = 0.0f;
+            if (Usable(bot, px, py, rule.z, pz))
+            {
+                SetMove(out, px, py, pz, "role position");
+                return;
+            }
         }
         SetMove(out, rule.x, rule.y, rule.z, "role position");
         return;
@@ -4717,6 +5129,18 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
         return Matches(Who::Melee, m, plan.mainTank) && enemy->GetVictim() != m.p &&
             IdleReachOnApproach(m.p->GetPositionX(), m.p->GetPositionY(), enemy->GetPositionX(), enemy->GetPositionY()) >= 0;
     };
+    // A ranged DPS in a near-first encounter (RaidRules::rangedNearFirst) ranks an enemy past its spell range after every enemy inside it, and
+    // drops one past kRangedFarDrop for a near pick. naxx_kelthuzad af55 (1121) kt2af55 run 1: the Soldiers (ranged priority 6) are picked as
+    // they leave the alcoves 40-50 y off; the mages sat on them out of range, "classic_mage:auto_attack" 42 times against 9 nukes, cast_fail
+    // API_BEYOND_RANGE / OUT_OF_RANGE every few seconds, raid damage near 2,000 a second while the adds piled up on the tanks.
+    bool rangedNearFirst = false;
+    for (Unit* enemy : plan.enemies)
+        if (std::find(rules.rangedNearFirst.begin(), rules.rangedNearFirst.end(), enemy->GetEntry()) != rules.rangedNearFirst.end())
+            rangedNearFirst = true;
+    auto const rangedFar = [&](Member const& m, Unit* enemy, float reach)
+    {
+        return rangedNearFirst && Matches(Who::Ranged, m, plan.mainTank) && enemy->GetVictim() != m.p && m.p->GetExactDist2d(enemy) > reach;
+    };
     auto const bestFor = [&](Member const& m) -> Unit*
     {
         uint8_t const schools = MemberDamageSchools(m, plan.mainTank);
@@ -4725,6 +5149,7 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
         bool bestHurts = false;
         bool bestHeld = false;
         bool bestReach = false;
+        bool bestInRange = false;
         for (size_t i = 0; i < candidates.size(); ++i)
         {
             Unit* enemy = candidates[i];
@@ -4742,11 +5167,14 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
                 continue;
             bool const hurts = (schools & ~candidateAvoid[i]) != 0;
             bool const reach = !meleeOutOfReach(m, enemy);
+            bool const inRange = !rangedFar(m, enemy, kRangedNearReach);
             bool better = !best || (hurts && !bestHurts);
             if (!better && hurts == bestHurts)
             {
                 if (reach != bestReach)
                     better = reach;
+                else if (inRange != bestInRange)
+                    better = inRange;
                 else if (held != bestHeld)
                     better = held;
                 else if (priority != bestPriority)
@@ -4763,6 +5191,7 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
                 bestHurts = hurts;
                 bestHeld = held;
                 bestReach = reach;
+                bestInRange = inRange;
             }
         }
         return best;
@@ -4776,6 +5205,28 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
             continue;
         RaidOrder& o = it->second;
         o.forbidden_targets.insert(o.forbidden_targets.end(), forbiddenAll.begin(), forbiddenAll.end());
+        // An enemy no tank holds (RaidRules::noTank) is the DPS's, wherever it runs: while a fixed tank row holds, its tanks hit one only when
+        // it is on the tank or next to it. naxx_kelthuzad kt69a (1124, the camp script): the tanks' victims were Soldiers of the Frozen Wastes
+        // 14-50 y away (sent at random raiders, 2,000 health), so the tanks chased them off their slots (58 slot walks, most "NO PROGRESS,
+        // generator 5"), and the Abominations and Soul Weavers walked loose into the camp. Set here, in every pass: set in the tank spot step
+        // (kt69d), it was missing whenever an earlier step of the movement pass gave the tank a move, and the tank planner still handed far
+        // Soldiers to free tanks ("takes Soldier of the Frozen Wastes ... dist=42-56y why=nearest / loose_nearest", 13 of 38 slot walks).
+        // kt69g (script5): a Soldier sent at the tank itself was still its own (its victim was this tank), and the planner gave it to
+        // the tank 44-59 y out ("takes Soldier ... on Mctankwa dist=53y why=on_main_tank"), as it gave one sent this tick, before this
+        // pass listed it (20 of 31 slot walks had a Soldier as the tank's victim). Every one is off now, near or far, on the tank or not:
+        // the DPS kill them, and no_tank_off tells the planner before the list has the new ones.
+        // RaidRules::noTankWholeFight: row or not. naxx_kelthuzad kt76b (1125): the last Abomination died at about 330 s in phase 2, the row
+        // ended, and three tanks took a Soul Weaver each at once; the one Mctankwb held 21 y west of the camp (3695,-5101) faced it and the
+        // camp behind it, and its Wails of Souls killed 5 at 359 s and 13 at 363 s, 0-13 y from the camp.
+        bool const rowUp = std::any_of(rules.tankSpot.begin(), rules.tankSpot.end(),
+                                       [&](TankSpot const& row) { return row.fixed && !RowEnded(plan, row) && FixedRowUp(plan, row); });
+        if (m.tank && (rowUp || rules.noTankWholeFight))
+        {
+            o.no_tank_off = true;
+            for (Unit* enemy : plan.enemies)
+                if (enemy->IsAlive() && NoTank(plan.mapId, enemy->GetEntry()))
+                    o.forbidden_targets.push_back(enemy->GetGUID());
+        }
         if (!m.tank)
             o.forbidden_targets.insert(o.forbidden_targets.end(), forbiddenDps.begin(), forbiddenDps.end());
         if (Matches(Who::Melee, m, plan.mainTank))
@@ -4798,7 +5249,8 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
             // over, and the focus is its pick again once it walks out.
             if (!focus.IsEmpty())
                 for (Unit* enemy : candidates)
-                    if (enemy->GetGUID() == focus && !shieldForbids(m, enemy) && !meleeOutOfReach(m, enemy))
+                    if (enemy->GetGUID() == focus && !shieldForbids(m, enemy) && !meleeOutOfReach(m, enemy) &&
+                        !rangedFar(m, enemy, kRangedNearReach))
                         pick = enemy;
             if (!pick)
                 pick = bestFor(m);
@@ -4828,6 +5280,22 @@ void PublishTargets(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& orders,
                         }
                     }
             }
+            // A ranged member on an enemy far past its spell range leaves it for a pick inside it (rangedNearFirst), the kill focus too: the
+            // synchronized focus is most often a Soul Weaver still walking in from its alcove. The drop distance is above the pick's so a
+            // target walking in and out of range is not swapped back and forth.
+            if (pick && !rangedFar(m, pick, kRangedNearReach))
+                if (Unit* const victim = m.p->GetVictim(); victim && victim != pick &&
+                    rangedFar(m, victim, kRangedFarDrop))
+                {
+                    o.forbidden_targets.push_back(victim->GetGUID());
+                    uint32_t& at = g_lastOutOfReachLog[m.p->GetGUID().GetCounter()];
+                    if (getMSTime() - at >= 10000u)
+                    {
+                        at = getMSTime();
+                        TC_LOG_INFO("playerbot.v2.raid", "[raid_target] {} leaves {} {:.0f} y off for {} {:.0f} y off, inside its range",
+                                    m.p->GetName(), victim->GetName(), m.p->GetExactDist2d(victim), pick->GetName(), m.p->GetExactDist2d(pick));
+                    }
+                }
             // A member already on an enemy it cannot hurt leaves it while there is one it can: the fallback alone only steers a member
             // with no target.
             uint8_t const schools = MemberDamageSchools(m, plan.mainTank);
@@ -6414,8 +6882,10 @@ static void FillRaidRoles(uint64_t key, detail::Plan const& plan, uint32_t now_m
         b.guid = m.p->GetGUID().GetCounter();
         b.cls = m.p->GetClass();
         b.role = m.tank ? RosterRole::Tank : m.healer ? RosterRole::Healer : RosterRole::Dps;
-        // Humans and bots nobody owns keep what they have.
-        b.role_set = !m.bot || owners.GetOwner(b.guid).account_id == 0 || owners.DeclaredRole(b.guid) != Role::Unknown;
+        // Humans, bots nobody owns and a player's own character brought as a bot keep what they have.
+        WorldSession const* sess = m.p->GetSession();
+        bool const own_character = sess && !Services::Accounts().is_pool_account(sess->GetAccountId());
+        b.role_set = !m.bot || own_character || owners.GetOwner(b.guid).account_id == 0 || owners.DeclaredRole(b.guid) != Role::Unknown;
         roster.push_back(b);
         byGuid[b.guid] = m.p;
     }

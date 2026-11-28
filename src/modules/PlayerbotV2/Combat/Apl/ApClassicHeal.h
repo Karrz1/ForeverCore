@@ -266,8 +266,10 @@ inline bool InLos(BotSnapshotView const& s, ObjectGuid guid)
     return true;
 }
 
+// aura_due: what the patient's own periodic auras deal it before a slow heal lands (GroupMemberSummary::aura_damage_due), counted
+// whole with the swings (armour does not take it).
 inline Patient MakePatient(BotSnapshotView const& s, ObjectGuid guid, int64 hp, int64 max_hp,
-                           float x, float y, float z, bool tank)
+                           float x, float y, float z, bool tank, int64 aura_due = 0)
 {
     Patient p;
     p.guid   = guid;
@@ -279,7 +281,7 @@ inline Patient MakePatient(BotSnapshotView const& s, ObjectGuid guid, int64 hp, 
         return p;
     // Swings are pre-armour; a tank in plate (or bear form) takes roughly half of that.
     int64 const swings = IncomingMelee(s, guid, x, y, z);
-    p.incoming   = std::min<int64>(tank ? swings / 2 : swings, hp);
+    p.incoming   = std::min<int64>((tank ? swings / 2 : swings) + std::max<int64>(aura_due, 0), hp);
     p.actual_pct = int32(hp * 100 / max_hp);
     p.hp_pct     = int32((hp - p.incoming) * 100 / max_hp);
     return p;
@@ -289,11 +291,12 @@ inline Patient MakePatient(BotSnapshotView const& s, ObjectGuid guid, int64 hp, 
 inline Patient SelfPatient(BotSnapshotView const& s, GroupSnapshotView const& g)
 {
     bool tank = false;
+    int64 aura_due = 0;
     if (auto const* members = g.members())
         for (GroupMemberSummary const& m : *members)
-            if (m.guid == s.guid()) { tank = IsTank(s, m); break; }
+            if (m.guid == s.guid()) { tank = IsTank(s, m); aura_due = m.aura_damage_due; break; }
     float x, y, z; s.position(x, y, z);
-    return MakePatient(s, s.guid(), s.hp(), s.max_hp(), x, y, z, tank);
+    return MakePatient(s, s.guid(), s.hp(), s.max_hp(), x, y, z, tank, aura_due);
 }
 
 // Patient data for a specific unit (the bot or a group member).
@@ -305,7 +308,7 @@ inline Patient PatientFor(BotSnapshotView const& s, GroupSnapshotView const& g, 
     {
         for (GroupMemberSummary const& m : *members)
             if (m.guid == guid)
-                return MakePatient(s, m.guid, m.hp, m.max_hp, m.x, m.y, m.z, IsTank(s, m));
+                return MakePatient(s, m.guid, m.hp, m.max_hp, m.x, m.y, m.z, IsTank(s, m), m.aura_damage_due);
         // A member's pet (PickPatient pet case).
         for (GroupMemberSummary const& m : *members)
             if (m.pet_alive && m.pet_guid == guid)
@@ -714,7 +717,7 @@ inline Patient PickPatient(BotSnapshotView const& s, GroupSnapshotView const& g,
             bool const tank = IsTank(s, m);
             int32 const pct = m.hp_pct();
             if (!tank && pct >= kEmergencyPct && !InLos(s, m.guid)) continue;
-            Patient const mp = MakePatient(s, m.guid, m.hp, m.max_hp, m.x, m.y, m.z, tank);
+            Patient const mp = MakePatient(s, m.guid, m.hp, m.max_hp, m.x, m.y, m.z, tank, m.aura_damage_due);
             // A warlock's own Life Tap is intentional damage: not a reason for a heal until he is low (playtest, live MC 2026-10-10).
             if (raid && LifeTapSkip(m.cls == CLASS_WARLOCK, tank, mp.actual_pct, mp.incoming))
                 continue;

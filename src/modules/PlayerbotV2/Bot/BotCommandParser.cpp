@@ -123,6 +123,20 @@ void ApplyClassicRoleSpec(Player const* p, ::Playerbot::Role role)
 
 // An owner's `/setrole` on a companion is its declared role: stored with it (Role::Unknown clears) so a relog or
 // `.bot call` pins the same role again instead of re-inferring one from its talents.
+// The owner's standing orders on a companion ("loot all", "gather on") are stored with it, so a relog, `.bot call` or restart keeps them
+// (Alex Black Cat, RU general 11-21: an alt's gather and loot all were gone after every relog). Bots nobody owns are not written.
+void PersistOwnerOrders(Player const* p, ::Playerbot::BotAI const* ai)
+{
+    if (!p || !ai)
+        return;
+    ::Playerbot::BotId const id = p->GetGUID().GetCounter();
+    if (::Playerbot::Services::Owners().GetOwner(id).account_id == 0)
+        return;
+    using OR = ::Playerbot::OwnerRegistry;
+    uint8 const orders = (ai->loot_all() ? OR::kOwnerOrderLootAll : 0) | (ai->gather_ordered() ? OR::kOwnerOrderGather : 0);
+    ::Playerbot::Services::Owners().SaveOwnerOrders(id, orders);
+}
+
 void PersistDeclaredRole(Player const* p, ::Playerbot::Role role)
 {
     ::Playerbot::BotId const id = p->GetGUID().GetCounter();
@@ -1476,6 +1490,7 @@ bool OwnerWordOrder(Player* sender, Player* bot, std::string const& n)
             return true;
         bool const all = n != "loot";
         ai->set_loot_all(all);
+        PersistOwnerOrders(bot, ai);
         TC_LOG_INFO("playerbot.v2", "[owner_order] {} <- {}: loot {}", me, sender->GetName(), all ? "all" : "need-greed");
         if (MayAnswerGroupQuestion(bot))
             say(all ? me + ": looting everything, greys included, and rolling for myself"
@@ -2588,7 +2603,7 @@ bool BotCommandParser::ApplyLeadOrder(Player* sender, std::string const& line, c
                 reply = fmt::format("{} leads the raid now: it pulls pack by pack, waits for mana and for you, and stops before each boss for you to pull "
                                     "(or say 'go'). Say 'lead pause' to hold, 'lead off' to lead yourself.", name);
             else if (in_dungeon)
-                reply = fmt::format("{} leads the dungeon now: it pulls pack by pack and waits for mana and for you. Say 'lead pause' to hold, 'lead off' to lead yourself.", name);
+                reply = fmt::format("{} leads the dungeon now: it pulls pack by pack and waits for you, and before a boss for a healer low on mana. Say 'lead pause' to hold, 'lead off' to lead yourself.", name);
             else
                 reply = fmt::format("{} leads once you are inside a dungeon or a raid. Say 'lead off' to lead yourself.", name);
             break;
@@ -6003,6 +6018,7 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
         ai->set_aoe_preference(false);
         ai->set_aoe_denied(false);
         ai->set_gather_ordered(false);
+        PersistOwnerOrders(bot, ai);
         Push(bot, WhisperIntent{sender->GetName(),
             "Clearprefs: focus, role, follow_distance, verbose, aoe, gather reset."});
         return true;
@@ -6022,6 +6038,7 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
             ai->set_aoe_preference(false);
             ai->set_aoe_denied(false);
             ai->set_gather_ordered(false);
+            PersistOwnerOrders(p, ai);
         });
         Push(bot, WhisperIntent{sender->GetName(),
             fmt::format("Clearprefs_all: reset on {} bot(s).", changed)});
@@ -6118,7 +6135,7 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
         // gather on   — picks the herbs and ore veins near it as it follows you, with the gathering skills it has (GatheringRules.cpp),
         //               and skins what the group kills once you have looted it (LootDrainRules.cpp)
         // gather off  — leaves them alone again (the default)
-        // gather      — toggle. gather_all sets every bot of the group. Memory only; clearprefs turns it off.
+        // gather      — toggle. gather_all sets every bot of the group. Stored with a companion (PersistOwnerOrders); clearprefs turns it off.
         bool const all = cmd != "gather";
         BotAI* self_ai = Services::Registry().ai(bot->GetGUID().GetCounter());
         if (!self_ai)
@@ -6135,13 +6152,17 @@ bool BotCommandParser::DispatchSingleImpl(Player* sender, Player* bot, std::stri
             const uint32 changed = ForEachGroupBot(bot, [&](Player const* p)
             {
                 if (BotAI* ai = Services::Registry().ai(p->GetGUID().GetCounter()))
+                {
                     ai->set_gather_ordered(desired);
+                    PersistOwnerOrders(p, ai);
+                }
             });
             Push(bot, WhisperIntent{sender->GetName(),
                 desired ? fmt::format("Gather: ON for {} bot(s).", changed) : fmt::format("Gather: OFF for {} bot(s).", changed)});
             return true;
         }
         self_ai->set_gather_ordered(desired);
+        PersistOwnerOrders(bot, self_ai);
         std::string what;
         for (auto const& [skill, word] : { std::pair{ SKILL_HERBALISM, "herbs" }, std::pair{ SKILL_MINING, "ore" }, std::pair{ SKILL_SKINNING, "skins" } })
             if (bot->HasSkill(skill))

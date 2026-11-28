@@ -176,6 +176,21 @@ TEST_CASE("BotBridge: reply text becomes one safe chat line", "[BotBridge]")
     CHECK(cut == "При");
 }
 
+TEST_CASE("BotBridge: a speaker label a model copied from the talk goes", "[BotBridge]")
+{
+    std::vector<std::string> const names = { "Doriando", "Beyonce" };
+    CHECK(StripSpeakerLabel("Doriando: anyone up for wailing caverns", names) == "anyone up for wailing caverns");
+    CHECK(StripSpeakerLabel("[Doriando ]: blablabla", names) == "blablabla");   // celguar 11-21
+    CHECK(StripSpeakerLabel("<beyonce> : lol ok", names) == "lol ok");
+    CHECK(StripSpeakerLabel("Beyonce :", names) == "Beyonce :");                // nothing left: unchanged
+    CHECK(StripSpeakerLabel("note: bring water", names) == "note: bring water"); // not a speaker's name
+    CHECK(StripSpeakerLabel("time is 10:30", names) == "time is 10:30");
+    std::vector<std::string> const sp = TalkSpeakers("Doriando: hi\nBeyonce: hey there\nDoriando: sup\n");
+    REQUIRE(sp.size() == 2);
+    CHECK(sp[0] == "Doriando");
+    CHECK(sp[1] == "Beyonce");
+}
+
 TEST_CASE("BotBridge: file names and times are UTC", "[BotBridge]")
 {
     // 2026-11-08 10:20:05 UTC

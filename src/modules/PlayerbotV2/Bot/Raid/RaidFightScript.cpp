@@ -228,7 +228,8 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
 
     // Fight::heldFirst: the enemies a tank of the raid holds.
     std::vector<Unit*> held;
-    if (fight->heldFirst)
+    bool const anyTankAlive = std::any_of(plan.members.begin(), plan.members.end(), [](Member const& tm) { return tm.tank && tm.p->IsAlive(); });
+    if (fight->heldFirst || fight->heldOnly || fight->meleeHeldOnly)
         for (Unit* enemy : mine)
             if (Unit* v = enemy->GetVictim())
                 if (Player* vp = v->ToPlayer())
@@ -305,6 +306,27 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
             continue;
         }
 
+        // Fight::meleeOff: off limits for a melee DPS bot (see RaidFightScript.h, Kel'Thuzad).
+        if (fight->meleeOff && !m.ranged)
+            for (Unit* enemy : mine)
+                if (enemy->GetEntry() == fight->meleeOff)
+                    o.forbidden_targets.push_back(enemy->GetGUID());
+        // Fight::meleeCampReach: the melee DPS fight at the camp, beside the tanks and in the healers' reach; an add further out is met there.
+        // The tanks of the row go no further than its fetchMax (22 y) for an add that has reached nobody. naxx_kelthuzad kt71a (1125): an
+        // Abomination sent at Mcwarra was met by four melee 32-35 y north-east of the camp (3737-3744,-5081), at the alcove rim, with the four
+        // tanks at their slots holding nothing; its melee and Mortal Wound killed three of them in 2 s at 58-60 s, a Wail of Souls the fourth.
+        if (fight->meleeCampReach > 0.f && fight->campReach > 0.f && !m.ranged)
+            for (Unit* enemy : mine)
+                if (Dist2D(enemy->GetPositionX(), enemy->GetPositionY(), fight->campX, fight->campY) > fight->meleeCampReach)
+                    o.forbidden_targets.push_back(enemy->GetGUID());
+        // Fight::meleeHeldOnly: a later-rank add no tank holds is off limits for a melee DPS bot while a tank of the raid lives (see
+        // RaidFightScript.h, Kel'Thuzad). With every tank dead it is hit again: nobody else will take it off the raid.
+        if (fight->meleeHeldOnly && !m.ranged && anyTankAlive)
+            for (Unit* enemy : mine)
+                if (enemy->GetEntry() != fight->boss && enemy->GetEntry() != fight->untanked && Script::RankOf(*fight, enemy->GetEntry()) > 0 &&
+                    std::find(held.begin(), held.end(), enemy) == held.end())
+                    o.forbidden_targets.push_back(enemy->GetGUID());
+
         // Skull only: everything else of the fight, marked or sheeped or not, is off limits for this bot.
         if (fight->skullOnly)
             for (Unit* enemy : mine)
@@ -315,6 +337,22 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         // every enemy it can reach resists those, all its class's schools count again.
         uint8_t const allSchools = fight->schoolAware ? MemberDamageSchools(m, plan.mainTank) : uint8_t(0);
         uint8_t const mainSchools = fight->schoolAware ? MemberMainSchools(m, plan.mainTank) : uint8_t(0);
+        // Fight::firstRankSquad: this bot is one of the first <firstRankSquad> ranged DPS bots of the raid (plan.members is sorted by guid).
+        bool inSquad = false;
+        size_t squadIndex = 0;
+        if (fight->firstRankSquad && m.ranged)
+        {
+            size_t before = 0;
+            for (Member const& other : plan.members)
+            {
+                if (other.p == m.p)
+                    break;
+                if (other.bot && other.ranged)
+                    ++before;
+            }
+            inSquad = before < fight->firstRankSquad;
+            squadIndex = before;
+        }
         std::vector<Script::Enemy> view;
         view.reserve(mine.size());
         for (size_t i = 0; i < mine.size(); ++i)
@@ -330,6 +368,17 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
             e.eligible = enemy->IsAlive() && !forbidden && !(c && c->IsInEvadeMode()) && enemy->IsVisible() && !enemy->IsUninteractible() &&
                          !enemy->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
             e.held = std::find(held.begin(), held.end(), enemy) != held.end();
+            // Fight::firstRankSquad: the first rank is for the squad only (see RaidFightScript.h, Kel'Thuzad).
+            if (fight->firstRankSquad && e.eligible && !inSquad && Script::RankOf(*fight, e.entry) == 0)
+                e.eligible = false;
+            // Fight::heldOnly: after the first rank, only one a tank holds (see RaidFightScript.h, Kel'Thuzad).
+            if (fight->heldOnly && e.eligible && !e.held && enemy->GetEntry() != fight->boss && enemy->GetEntry() != fight->untanked &&
+                Script::RankOf(*fight, e.entry) > 0)
+                e.eligible = false;
+            // Fight::meleeFirstReach: a melee DPS bot takes a first-rank enemy only when it is next to it (see RaidFightScript.h, Kel'Thuzad).
+            if (fight->meleeFirstReach > 0.f && !m.ranged && e.eligible && Script::RankOf(*fight, e.entry) == 0 &&
+                !m.p->IsWithinDistInMap(enemy, fight->meleeFirstReach))
+                e.eligible = false;
             view.push_back(e);
         }
         // Before the camp filter, as before: a bot whose schools the camp's enemies all resist still finds one in its reach.
@@ -348,6 +397,7 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
         // Fight::campReach: only the enemies at the camp this bot can see, while there is one (see RaidFightScript.h, Nefarian).
         // Else the ones in its sight and spell reach (it is not sent walking: its post would walk it back), else every one.
         uint64_t const raidFocus = st.focus.IsEmpty() ? 0 : st.focus.GetCounter();
+        bool outOfReach = false;   // Fight::campHold: nothing in this bot's reach, it waits at its post
         if (fight->campReach > 0.f)
         {
             std::vector<bool> atCamp(view.size(), false), seen(view.size(), false);
@@ -364,6 +414,8 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
             if (anyAtCamp || anySeen)
                 for (size_t i = 0; i < view.size(); ++i)
                     view[i].eligible = anyAtCamp ? atCamp[i] : seen[i];
+            else if (fight->campHold)
+                outOfReach = true;
         }
         // The raid's focus is this bot's previous pick while it can take it; a bot that cannot keeps its own pick until that one dies.
         uint64_t previous = raidFocus;
@@ -377,6 +429,46 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
             if (!canTake)
                 if (auto own = g_ownPick.find(self); own != g_ownPick.end())
                     previous = own->second;
+        }
+        // Fight::campHold, nothing in reach: a bot that would wait for a far first-rank enemy (a Soldier at its alcove) takes an add of a
+        // later rank instead when there is one (a tanked Abomination), and walks to its reach of it. naxx_kelthuzad kt69k (1124): the
+        // Soldier squad (Mcmagea-e, Mclocka-c) waited 13-23 s at a time "raid:threat_hold / no target" while the tanks fought 21-41 y out;
+        // Mcmagea cast for 11 s of the 155 s pull (76/s).
+        if (outOfReach)
+        {
+            bool laterRank = false;
+            for (Script::Enemy const& e : view)
+                if (e.eligible && Script::RankOf(*fight, e.entry) > 0)
+                    laterRank = true;
+            if (laterRank)
+                for (Script::Enemy& e : view)
+                    if (Script::RankOf(*fight, e.entry) == 0)
+                        e.eligible = false;
+        }
+        // Fight::squadPerEnemy: the squad splits over the first rank, nearest the camp first, so the bots of the squad do not all shoot one
+        // Soldier (see RaidFightScript.h, Kel'Thuzad). The share is the raid's, the same list for every bot (alive, within campReach of the
+        // camp, by distance to it, then guid); a bot that cannot take its own share (out of its reach or sight) picks as before.
+        if (inSquad && fight->squadPerEnemy > 0)
+        {
+            std::vector<std::pair<float, size_t>> firsts;
+            for (size_t i = 0; i < mine.size(); ++i)
+                if (mine[i]->IsAlive() && Script::RankOf(*fight, view[i].entry) == 0)
+                {
+                    float const d = fight->campReach > 0.f ? Dist2D(mine[i]->GetPositionX(), mine[i]->GetPositionY(), fight->campX, fight->campY)
+                                                          : m.p->GetExactDist2d(mine[i]);
+                    if (fight->campReach <= 0.f || d <= fight->campReach)
+                        firsts.emplace_back(d, i);
+                }
+            std::sort(firsts.begin(), firsts.end(), [&](auto const& a, auto const& b)
+                      { return a.first != b.first ? a.first < b.first : view[a.second].guid < view[b.second].guid; });
+            if (firsts.size() > 1)
+            {
+                size_t const mineAt = firsts[(squadIndex / fight->squadPerEnemy) % firsts.size()].second;
+                if (view[mineAt].eligible)
+                    for (auto const& f : firsts)
+                        if (f.second != mineAt)
+                            view[f.second].eligible = false;
+            }
         }
         uint64_t const pick = Script::PickFocus(*fight, view.data(), view.size(), ownerMark.IsEmpty() ? 0 : ownerMark.GetCounter(), previous);
         if (fight->schoolAware)
@@ -402,6 +494,23 @@ void ApplyFightScript(Plan& plan, std::unordered_map<uint64_t, RaidOrder>& order
                 o.hold_target = ownerMark;
             }
             continue;   // nothing the script can name for this bot: the generic rules keep it
+        }
+        // Fight::campHold: the pick is out of this bot's reach. It holds on it at its post instead of walking out after it (see
+        // RaidFightScript.h, Kel'Thuzad), and its pick does not count for the raid's focus. Only for a first-rank pick (a Soldier still on
+        // its way in from an alcove): an add a tank holds is in the room, and the bot goes to its reach of it as usual. kt69j (1124): held
+        // for every pick, raid:threat_hold was 931 of 2,976 rule samples of the DPS bots (about 28 s a caster in a 146 s pull), while the
+        // tanks fought Abominations 41-45 y from the camp.
+        bool firstRankPick = false;
+        for (Script::Enemy const& e : view)
+            if (e.guid == pick && Script::RankOf(*fight, e.entry) == 0)
+                firstRankPick = true;
+        if (outOfReach && firstRankPick)
+        {
+            o.script_owns = true;
+            o.script_focus = focus;
+            o.fallback_target = focus;
+            o.hold_target = focus;
+            continue;
         }
 
         o.script_owns = true;

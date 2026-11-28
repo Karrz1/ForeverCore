@@ -119,6 +119,9 @@ private:
         uint32 dmg_last_ms = 0;
         // Mana % of each member when the pull started, for the [raid_dps] line.
         std::unordered_map<uint64, int32> start_mana;
+        // The damage dealers at the pull's start ("Mcmagea(Mag)"), so [raid_dps] also lists the ones dead by its end: the members of the
+        // last plan are the living ones only (naxx_kelthuzad kt69j: 2 of 24 listed).
+        std::unordered_map<uint64, std::string> dps_label;
     };
 
     // Raid tank -> mob assignment for one (group, map) bucket, the generic
@@ -277,6 +280,10 @@ private:
         uint8  replans = 0;                        // the spot was searched again (a mob saw it from where it stopped next)
         std::vector<ObjectGuid> mobs;              // the mobs still standing off
         uint32 no_spot_log_ms = 0;
+        // Mobs a plan ended on while they were still out there (the cap, or one that stopped with the spot in sight), and when: a plan
+        // does not start on them again for kSightPullSpentMs, so the tank's own rules go and fetch them (wc_full af69i: a Deviate
+        // Venomwing 50-60 y off held the group at the spot in 12 s plans, one after the other, for the last five minutes of the run).
+        std::unordered_map<uint64, uint32> spent;
     };
     std::unordered_map<uint64, SightPull> sight_pull_;
     uint32 last_plan_ms_ = 0;

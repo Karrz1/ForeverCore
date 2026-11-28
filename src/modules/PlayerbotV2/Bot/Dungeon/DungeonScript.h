@@ -64,6 +64,16 @@ struct DungeonAdvice
     // move ≥ N yards from allies (M+ Volcanic / Quaking aftershock,
     // raid debuffs that explode for AoE).
     std::vector<uint32_t> spread_on_self_auras;
+    // A harmful aura on a player that hurts the players next to its carrier, and a carrier who cannot walk off (confused, stunned,
+    // rooted): every other member keeps `radius` yards from the carrier while it lasts. Shaper's Terrace Cinder's Conflagration
+    // 1310512 confuses its carrier for 4 s and every second burns every ally within 5 y of the carrier for 300 (16806).
+    struct CarrierClearance { uint32_t aura; float radius; };
+    std::vector<CarrierClearance> keep_clear_of_carriers;
+    // A boss whose spell lands on one player and hurts every ally within `radius` yards of that player: while the group fights
+    // it, the ranged members and the healer stand at least `radius` yards from every other member (the melee and the tank stay
+    // on the boss). Shaper's Terrace Vitrix's Poison Shock 1312870 hits its target and everyone within 10 y of it for 1270-1470.
+    struct BossSplashSpread { uint32_t boss; float radius; };
+    std::vector<BossSplashSpread> spread_from_bosses;
     // Boss spell ids that, when seen mid-cast, require all bots to
     // stack on the boss / a designated target (raid stack-soaks).
     std::vector<uint32_t> stack_on_cast_spells;
@@ -305,6 +315,11 @@ public:
     // A zero-spawn boss that is NOT event-summoned is a DATA ERROR (wrong
     // entry id) and must be fixed in bosses[], never masked here.
     virtual std::vector<uint32_t> event_summoned_bosses() const { return {}; }
+
+    // Bosses of bosses[] that the instance script summons on the way (Majordomo after the eight runes, Ragnaros by Majordomo,
+    // Nefarian by Victor Nefarius): no creature row, still owed and killed for the clear. Only the smoketest's spawn check reads
+    // it (no_spawn is no data error for these). Unlike event_summoned_bosses() it does not loosen the dungeon's completion.
+    virtual std::vector<uint32_t> scripted_spawn_bosses() const { return {}; }
 
     // Doors (GO entries) of this dungeon that players open by hand although the door carries no lock that says so. A shut hand door
     // is normally known by its lock (BotSnapshotBuilder IsShutHandDoor: the Deadmines Heavy Doors' Quick Open). The Hall of Thanes'

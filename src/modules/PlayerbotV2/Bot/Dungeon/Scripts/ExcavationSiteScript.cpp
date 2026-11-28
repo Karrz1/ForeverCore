@@ -1,6 +1,6 @@
 // ExcavationSiteScript - Excavation Site: Wetlands (Forever, map 2998, levels 25-30).
 // Encounters (DungeonEncounter.db2): Saltspine, Shadetooth, Highland Horror, Relic Guardian (last). The Relic Guardian sleeps
-// uninteractible until someone uses the Archival Panel (classic_instance_excavation_site_wetlands.cpp).
+// uninteractible until someone uses the Archival Panel (classic_instance_excavation_site_wetlands.cpp); the tank uses it.
 //
 // Without a script the tank had no boss to walk to: it cleared every pack it could see, walking north away from Saltspine
 // (-3935,-2019) and never closer than about 100 y to him, until the priest was dry from 20 minutes of trash fights
@@ -26,14 +26,19 @@ public:
             260322,   // Saltspine
             260325,   // Shadetooth
             260808,   // Highland Horror
+            260326,   // Relic Guardian (last)
         };
-        // The Relic Guardian (260326) is left out: he cannot be attacked until the Archival Panel is used.
         // The waypoints are the boss spawns (world DB), index for index with the bosses above.
         a.progression_waypoints = {
             { -3935.1f, -2019.2f, 146.2f },   // Saltspine
             { -3826.9f, -1824.0f, 137.1f },   // Shadetooth
             { -3782.6f, -1634.0f, 134.0f },   // Highland Horror
+            { -3987.7f, -1917.2f, 163.2f },   // Relic Guardian
         };
+        // The Relic Guardian sleeps (uninteractible) until someone uses the Archival Panel 18 y from him, as players do. Walking to
+        // his waypoint brings the tank within reach of the panel, and idle:dungeon_use_gate_lever uses it while he is alive; he
+        // wakes and attacks whoever used it. Without this the bots stopped after the Highland Horror and the run never ended.
+        a.use_go_entries = { 640041 };   // Archival Panel
         return a;
     }
 };

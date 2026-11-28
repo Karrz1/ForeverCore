@@ -227,6 +227,9 @@ private:
     //     instance, then fire bots staggered 0-1500ms.
     //   - Hard expiry: drop the deferred entry if invite age > 80s (TC's
     //     90s INVITE_ACCEPT_WAIT_TIME minus a 10s safety margin).
+    //   - A human counts only while the invite is still open (or the human is inside): one who declines or lets it run out
+    //     no longer holds the bots, or the instance stays in preparation with every place invited and nobody inside
+    //     (Nick-A 11-24, bgfill-1124 on af69i: WSG 0/10 v 0/10 with 10/10 invited for minutes).
     struct PendingBgPort {
         uint32 created_at_ms;
         uint32 bg_instance_id;
@@ -237,7 +240,7 @@ private:
     std::vector<PendingBgPort> pending_bg_ports_;
     // Per-instance invite-state for human-first gating. Keyed by bg_instance_id.
     struct BgInviteState {
-        uint32 expected_humans = 0;
+        std::vector<ObjectGuid> invited_humans;   // humans invited to this instance; FireDueBgPorts drops the lapsed ones
         bool   any_human_seen = false;   // sticky once a human is detected in-bg
     };
     std::unordered_map<uint32, BgInviteState> bg_invite_state_;

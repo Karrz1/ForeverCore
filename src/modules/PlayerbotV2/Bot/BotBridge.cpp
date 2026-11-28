@@ -137,7 +137,8 @@ uint32      g_last_bad_warn_ms = 0;
 struct ChatAsk { BotId bot = 0; std::string sender; ObjectGuid sender_guid; bool sender_is_bot = false; std::string channel; uint32 asked_ms = 0;
                  uint64 talk_key = 0;         // a bot-to-bot talk line (AskTalk), kept for TakeTalk
                  std::vector<BotId> group;    // a group order (AskGroupOrder): the other bots that take the answer's action too
-                 uint32 deadline_ms = 0; };   // a raid line (AskRaidLine): an answer at or after this time is dropped (the fixed line was said)
+                 uint32 deadline_ms = 0;      // a raid line (AskRaidLine): an answer at or after this time is dropped (the fixed line was said)
+                 std::vector<std::string> speakers; };   // AskTalk: the speakers of the talk so far (StripSpeakerLabel)
 // Raid lines the program answered in time (AskRaidLine / RaidLineAnswered), by event id.
 std::unordered_set<uint64> g_raid_answered;
 // The group's part of a group order: each other bot runs the answer's action a moment after the first (HandleGroupFollowups).
@@ -1819,6 +1820,14 @@ void HandleReplies(ConfigReader::BridgeConfig const& cfg, uint32 now_ms)
             if (channel == "whisper" && to.empty())
                 to = ask.sender;
             g_chat.erase(it);
+            // The program labelled the line with a name, as the talk it was shown is written: the game names the speaker already.
+            if (!text.empty())
+            {
+                std::vector<std::string> names = ask.speakers;
+                names.push_back(bot_name);
+                names.push_back(ask.sender);
+                text = StripSpeakerLabel(text, names);
+            }
             if (auto pi = g_post_ask.find(r.reply_to); pi != g_post_ask.end())
             {
                 PostAsk const post = std::move(pi->second);
@@ -2575,7 +2584,9 @@ bool BotBridge::AskTalk(Player* bot, std::string const& scene, std::string const
     Write(e);
     if (g_chat.size() > 2048)
         g_chat.clear();
-    g_chat[e.id] = ChatAsk{ bot->GetGUID().GetCounter(), std::string(), ObjectGuid::Empty, false, "say", now_ms, key ? key : kNoTalkKey };
+    ChatAsk ask{ bot->GetGUID().GetCounter(), std::string(), ObjectGuid::Empty, false, "say", now_ms, key ? key : kNoTalkKey };
+    ask.speakers = TalkSpeakers(chat);
+    g_chat[e.id] = std::move(ask);
     g_talk_minute.push_back(now_ms);
     return true;
 }

@@ -341,6 +341,8 @@ public:
     float  threat_opening_lead_trash() const   { return threat_opening_lead_trash_; }
     uint32 threat_opening_wait_boss_ms() const { return threat_opening_wait_boss_ms_; }
     uint32 threat_opening_wait_trash_ms() const{ return threat_opening_wait_trash_ms_; }
+    // PlayerbotV2.Threat.PartyPullDelayMs: in a player-led group's fight the damage dealers open this long after it began (0: at once).
+    uint32 threat_party_pull_delay_ms() const  { return threat_party_pull_delay_ms_; }
 
     // Behaviour switches (Playerbot.Behavior.<Name>, default on = current behaviour). Each gate
     // makes its behaviour fall back to the previous simple path. Cached at load, so they are
@@ -702,6 +704,7 @@ private:
     float  threat_opening_lead_trash_    = 250.0f;
     uint32 threat_opening_wait_boss_ms_  = 6000;
     uint32 threat_opening_wait_trash_ms_ = 2000;
+    uint32 threat_party_pull_delay_ms_   = 2000;
 
     bool   bhv_owner_follow_hold_    = true;
     bool   bhv_fallback_             = true;

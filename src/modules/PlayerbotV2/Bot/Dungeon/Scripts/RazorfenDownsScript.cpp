@@ -87,7 +87,7 @@ public:
             { 2468.7f, 1006.8f, 23.8f },   // Glutton
             { 2466.6f, 671.4f, 63.5f },   // Mordresh Fire Eye
             { 2403.4f, 960.9f, 55.1f },   // Amnennar the Coldbringer
-            { 2413.0f, 1025.9f, 37.9f },   // Ragglesnout
+            { 2453.3f, 947.5f, 36.0f },   // Ragglesnout (his spawn; the old spot was 88 y off it)
         };
         return a;
     }

@@ -20,6 +20,13 @@ public:
     uint32_t  map_id() const override { return 2999; }
     char const* name() const override { return "ruinsoflordaeron"; }
 
+    std::vector<uint32_t> scripted_spawn_bosses() const override
+    {
+        return {
+            250631,   // The Abandoned: comes out of the statue (classic_instance_ruins_of_lordaeron)
+        };
+    }
+
     DungeonAdvice get_advice(BotSnapshotView const& /*s*/) const override
     {
         DungeonAdvice a;

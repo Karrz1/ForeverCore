@@ -561,18 +561,29 @@ std::vector<GrindSpot> const& GrindSpotsFor(bool alliance)
                 continue;
             if ((t->flags_extra & CREATURE_FLAG_EXTRA_CIVILIAN) || uint64(data.npcflag.value_or(t->npcflag)) != 0)
                 continue;
-            CreatureDifficulty const* cd = t->GetDifficulty(DIFFICULTY_NONE);
-            if (!cd)
-                continue;
-            Optional<ContentTuningLevels> lv = sDB2Manager.GetContentTuningData(cd->ContentTuningID, {});
-            if (!lv || lv->MinLevel <= 0)
+            // The level the creature spawns at, read as Creature::ApplyLevelScaling does: the Classic range (the spawn's own, then the
+            // entry's) first, ContentTuning only for a creature without one. The client's ContentTuning store has about a hundred rows
+            // and most Classic creatures have none in it: the index kept 347 of some 55,000 spawns and every leveling zone sat at the
+            // mob supply floor (ForeverCore issue #385, sqmagellan).
+            std::pair<uint8, uint8> const* classic = sObjectMgr->GetCreatureClassicSpawnLevel(spawn_id);
+            if (!classic)
+                classic = sObjectMgr->GetCreatureClassicLevel(data.id);
+            uint32 level = 0;
+            if (classic)
+                level = (uint32(classic->first) + std::max<uint32>(classic->first, classic->second)) / 2;
+            else if (CreatureDifficulty const* cd = t->GetDifficulty(DIFFICULTY_NONE))
+            {
+                Optional<ContentTuningLevels> lv = sDB2Manager.GetContentTuningData(cd->ContentTuningID, {});
+                if (lv && lv->MinLevel > 0)
+                    level = uint32((lv->MinLevel + std::max<int>(lv->MinLevel, lv->MaxLevel)) / 2);
+            }
+            if (!level)
                 continue;
             FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(t->faction);
             if (!ft)
                 continue;
             ++mobs;
-            GrindSample smp{ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(),
-                uint32((lv->MinLevel + std::max<int>(lv->MinLevel, lv->MaxLevel)) / 2) };
+            GrindSample smp{ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), level };
             for (int side = 0; side < 2; ++side)
                 if (ft_side[side] && (ft->IsHostileTo(ft_side[side]) || ft_side[side]->IsHostileTo(ft)))
                     samples[side].push_back(smp);

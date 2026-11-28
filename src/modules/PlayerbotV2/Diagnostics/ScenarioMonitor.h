@@ -56,9 +56,10 @@ struct ScenarioSample
     bool deep_water = false;               // over water deeper than its height (BotMovement::SwimLevel)
     bool head_under = false;               // its head is under the water (LIQUID_MAP_UNDER_WATER)
     bool swim_flag = false;                // it has the swimming movement flag
+    bool mana_hold = false;                // a leading tank that told the group "waiting for mana" this second (BotAI::tank_lead_said)
 };
 
-enum class ScenarioFailKind : std::uint8_t { Idle, Stray, OutOfBounds, WrongMap, HealerOom, Death, GroupStalled, Wipe, Timeout, SetupFailed, GroupBroken, BossReset, DpsHold, HealerNoRest, SupportMissing, GroupIdle, FollowLost, Water, BossSkipped };
+enum class ScenarioFailKind : std::uint8_t { Idle, Stray, OutOfBounds, WrongMap, HealerOom, Death, GroupStalled, Wipe, Timeout, SetupFailed, GroupBroken, BossReset, DpsHold, HealerNoRest, SupportMissing, GroupIdle, FollowLost, Water, BossSkipped, ManaHold };
 
 inline char const* ToString(ScenarioFailKind k)
 {
@@ -83,6 +84,7 @@ inline char const* ToString(ScenarioFailKind k)
         case ScenarioFailKind::FollowLost:   return "follow_lost";
         case ScenarioFailKind::Water:        return "water";
         case ScenarioFailKind::BossSkipped:  return "boss_skipped";
+        case ScenarioFailKind::ManaHold:     return "mana_hold";
     }
     return "?";
 }
@@ -134,6 +136,7 @@ struct ScenarioLimits
     float recover_mana_pct = 40.f;
     std::uint32_t rest_ms = 90000;                   // a healer under pull_ready_mana_pct this long out of a fight is not drinking back
     float pull_ready_mana_pct = 75.f;               // the tank waits for its healer to reach this (Classic::kPullReadyHealerManaPct)
+    bool no_mana_hold = false;                      // a tank holding a trash pull for mana fails the run (ScenarioDef::tank_lead)
     float stray_yards = 70.f;
     std::uint32_t stray_ms = 20000;
     float oom_pct = 10.f;
@@ -323,7 +326,13 @@ public:
             {
                 b.anchor_x = s.x; b.anchor_y = s.y; b.anchor_ms = now_ms; b.has_anchor = true; b.idle_reported = false;
             }
-            else if (!b.idle_reported && now_ms - b.anchor_ms >= limits_.idle_ms && SomeoneElseWalking(samples, s.id, now_ms))
+            // The clock runs only while someone else walks: a squad standing together (the tank too) is waiting, for a scripted
+            // door, a patrol or an event, and the group_stalled rule judges that wait. Counted from the start of a shared wait,
+            // the moment the tank set off again read as a bot left standing (sfk_full af59: the four stood 60 s with the tank
+            // while Ashcrombe walked to the Courtyard Door, "stood 68 s while the group moved on" one second after the door opened).
+            else if (!SomeoneElseWalking(samples, s.id, now_ms))
+                b.anchor_ms = now_ms;
+            else if (!b.idle_reported && now_ms - b.anchor_ms >= limits_.idle_ms)
             {
                 b.idle_reported = true;
                 Fail(ScenarioFailKind::Idle, s.name, "stood " + std::to_string((now_ms - b.anchor_ms) / 1000u) + " s at " + Pos(s) + " while the group moved on", now_ms);
@@ -399,6 +408,12 @@ public:
                 b.oom_reported = false;
             }
 
+            // a leading tank that holds a trash pull for mana: a player's five-man does not stop for it.
+            if (limits_.no_mana_hold && s.mana_hold && !b.mana_hold_reported)
+            {
+                b.mana_hold_reported = true;
+                Fail(ScenarioFailKind::ManaHold, s.name, "the leading tank holds the pull for mana (\"waiting for mana\")", now_ms);
+            }
             // healer that does not rest: below the tank's pull-ready mana, out of a fight, for rest_ms. The squad waits for it (that is
             // not idle, above), so a healer that never drinks is reported here and not as the tank's idleness.
             if (s.role == ScenarioRoleKind::Healer && !s.in_combat && !any_combat && s.mana_pct >= 0.f && s.mana_pct < limits_.pull_ready_mana_pct)
@@ -611,6 +626,7 @@ private:
         std::uint32_t rest_since_ms = 0;
         bool rest_active = false;
         bool rest_reported = false;
+        bool mana_hold_reported = false;
         bool oob_reported = false;
         bool wrong_map_reported = false;
         bool died = false;   // dead at some point of this run: where it stands afterwards (a graveyard, a spirit healer) is its death's doing

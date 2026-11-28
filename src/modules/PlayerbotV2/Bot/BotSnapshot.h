@@ -371,6 +371,12 @@ struct NearbyUnit
     // action). It runs to the nearest friend within CreatureFamilyFleeAssistanceRadius and calls assistance there, which brings
     // that friend's pack (SM 2026-10-30: Scarlet mobs flee at 15 % and turned 2-3 mob pulls into 8). A feared mob is not one.
     bool       seeks_help = false;
+    // creature_formations (FormationMgr): the spawn id of the formation's leader, 0 = in none; and whether this mob going into combat
+    // brings others of it (CreatureGroup::MemberEngagingTarget: the leader calls its members with FLAG_MEMBERS_ASSIST_LEADER, a member
+    // calls the leader with FLAG_LEADER_ASSISTS_MEMBER). Crowd control on such a mob is a pull of its formation (lbrs_full af59: the Polymorph on Scarshield
+    // Legionnaire 182 brought 181 and 179 onto the mage before the tank had pulled).
+    uint64     formation_leader = 0;
+    bool       engage_calls_formation = false;
     // UNIT_FLAG_UNINTERACTIBLE (0x02000000, the old NOT_SELECTABLE): players
     // cannot select/target the unit, and Unit::IsValidAttackTarget rejects it —
     // so a bot can NEVER acquire it as a victim. Invisible "stalker" / trigger
@@ -386,6 +392,10 @@ struct NearbyUnit
     // Set from BOTH the live unit flag and the creature_template flag (mirrors
     // is_pacified: a static template flag may not be applied to the live unit).
     bool       untargetable = false;
+    // Attackers only (combat.attackers): Unit::IsValidAttackTarget from the bot, read by the builder while no map updates. False
+    // for an attacker the bot can see and reach but never damage (an IMMUNE_TO_PC event creature): the false-combat escape counts
+    // it as immune instead of looking the unit up from a bot worker (State_Idle). Other unit lists leave it true.
+    bool       valid_attack_target = true;
     // Creature-only: Creature::CanNotReachTarget() — the mob's OWN
     // ChaseMovementGenerator reports it cannot path to its current target
     // (!isInAccessiblePlaceFor / PATHFIND_NOPATH, maintained per-tick by TC).
@@ -1047,6 +1057,9 @@ struct LfgState
     bool   in_dungeon = false;
     // True when an LFG vote-to-kick is active in the bot's group.
     bool   vote_kick_active = false;
+    // True once LFGMgr has the run finished (LFG_STATE_FINISHED_DUNGEON: the final encounter of the matched dungeon is done).
+    // With in_dungeon it tells a finder group apart from a party made by hand. Set under the same gate as in_dungeon.
+    bool   finished_dungeon = false;
 
     void reset() { *this = LfgState{}; }
 };
@@ -1416,6 +1429,10 @@ struct CombatTargetsState
     // The victim stands in a liquid that burns a player (tar, lava: BotMovement::LiquidHurts at its spot). A melee bot does not follow it
     // in (State_InCombat chase_blocked): shapers_full af51, the rogue chased an Ironhide Ravasaur into the Tar Pits and died there.
     bool                    victim_in_damaging_liquid = false;
+    // A dry spot inside the bot's melee reach of such a victim, reached by a dry path (BotSnapshotBuilder LiquidVictimBankSpot): the
+    // bank a melee bot walks to and swings from (Ragnaros, who never leaves his lava). Unset when the bot is in reach already or none.
+    bool                    victim_bank_known = false;
+    float                   victim_bank_x = 0.0f, victim_bank_y = 0.0f, victim_bank_z = 0.0f;
     ObjectGuid              current_target;
     // True only when current_target resolves to a LIVE unit the bot could
     // legally attack (IsValidAttackTarget on the world thread). Autonomy
@@ -1472,6 +1489,8 @@ struct CombatTargetsState
         victim_reach = 0.0f;
         victim_group_target = false;
         victim_in_damaging_liquid = false;
+        victim_bank_known = false;
+        victim_bank_x = victim_bank_y = victim_bank_z = 0.0f;
         current_target = ObjectGuid::Empty;
         current_target_hostile = false;
         attackers.clear();
@@ -1627,6 +1646,14 @@ struct NearbyObject
     // A shut door whose lock takes a key this bot carries (Lock.db2 LOCK_KEY_ITEM: the Gordok Courtyard and Inner Doors in Dire Maul):
     // the key's item entry, 0 for any other object. Such a door is in the list as a hand_door too, for this bot only.
     uint32     key_item      = 0;
+    // A shut door whose lock this bot opens with a spell of its own: the lock has a skill case (Lockpicking for Pick Lock) and the bot's
+    // skill reaches it (Alcaz Prison's Maximum Security Door 649547, lock 4295: Lockpicking 250 or the Overseer's Keyring; on live a
+    // rogue picked it, 26 Nov). For this bot only, like key_item; such a door is in the list as a hand_door too.
+    bool       pick_lock     = false;
+    // DOOR only: its facing in radians (the way through the door runs along it, (cos o, sin o)) and whether it shuts by itself after
+    // a use (template autoClose: Alcaz Prison's Prison Gates, 3 s). Such a door each bot opens for itself (idle:dungeon_open_hand_door).
+    float      o             = 0.f;
+    bool       auto_close    = false;
     // CHEST (type 3) only: one the bot's dungeon lists as holding a door key (DungeonScript::key_chests), spawned and not yet opened.
     bool       key_chest     = false;
     // RITUAL (type 18) without an owner (the Altar of the Keepers / of Archaedas in Uldaman, the Blackrock Altar in UBRS): true when
@@ -1701,6 +1728,9 @@ struct EnvironmentState
     bool  transport_is_ship    = false;
     bool  is_underwater        = false;
     float water_surface_z      = 0.0f;
+    // The server's breath timer (Player::HandleDrowning): ms of breath left, counting down while the head is under water and back up
+    // ten times as fast above it; -1 when it is not running (full, water breathing, dead).
+    int32 breath_left_ms       = -1;
     bool  is_in_damaging_liquid = false;
     // Also set in a liquid that burns (tar, lava, is_in_damaging_liquid), wherever the bot is: idle:flee_damaging_liquid and the combat
     // step-out walk to it. A random 25 y heading from the middle of the Tar Pits ended in tar again and the move gate refused it (af51).
@@ -1763,6 +1793,26 @@ struct DungeonExecState
     float      inside_entrance_x = 0.f;
     float      inside_entrance_y = 0.f;
     float      inside_entrance_z = 0.f;
+
+    // The creatures the dungeon rules look for, collected by the builder (BuildDungeonScan) while no map is updating. The rules run on
+    // the bot workers, and a grid walk there races the map thread that moves creatures between cells: the af65 worldserver crashed
+    // (23 Nov, drowned_full) inside the catch-up boss scan's Cell::VisitAllObjects. Positions are the build's.
+    struct ScanUnit
+    {
+        ObjectGuid guid;
+        uint32     entry = 0;
+        float      x = 0.f, y = 0.f, z = 0.f;
+        bool       fightable = false;   // bosses: attackable now, or hostile and asleep until a player comes near
+        bool       in_los = false;      // bosses within kScanLosYd: in the bot's line of sight
+        bool       in_combat = false;
+    };
+    static constexpr float kScanBossYd    = 500.0f;   // the whole dungeon, as the boss scans always looked
+    static constexpr float kScanHostileYd = 150.0f;   // the tank's next-pack scan
+    static constexpr float kScanLosYd     = 40.0f;
+    // Alive creatures of the dungeon's boss list and of its portal hops (the boss beyond, the ones that open it) within kScanBossYd.
+    std::vector<ScanUnit> scan_bosses;
+    // Alive creatures within kScanHostileYd the bot may attack, not critters, totems or companion pets.
+    std::vector<ScanUnit> scan_hostiles;
 
     void reset() { *this = DungeonExecState{}; }
 };
@@ -2806,9 +2856,16 @@ struct BotSnapshot
     // The owner is in the bot's group: the bot is a companion and does what its owner's party does, not world-bot
     // errands (questing, vendors, gathering, travel). See IdleRuleRegistry::tick.
     bool owner_in_group = false;
+    // The player who leads the bot (the owner in its group, else the player who commands it) is in the water, on the bot's map and
+    // within kLeaderWaterYd: the bot swims with him, as a party member does. The ways out of the water for a bot on its own
+    // (idle:water_escape, idle:swim_stuck) leave it be (Discord 2026-11-22, Egod: bots in the water stood and watched).
+    bool leader_in_water = false;
     // The character is a real player's own (not on a bot pool account): an alt summoned into the party (`.playerbot summon`, the
     // add-on). The free upkeep meant for the server's bots (the gold floor and the free repair, Bot/AlwaysBuffs.h) leaves it out.
     bool players_own_character = false;
+    // The character is played from a game client (a self bot, .playerbot self) or is a player-led scenario's stand-in
+    // (Scenario::PlaysAsHuman): the bot logic drives a person's character, so it never hands its group to "the human" in it.
+    bool plays_as_human = false;
     // The bot is in a group with a player who controls it although it has no owner in that group: a world bot the player invited
     // (or a companion whose owner is not in the group). Same duty as a companion: it does what the group does, no errands, and the
     // controller's orders reach it. controller_guid is that player (the group leader when human, else the first human member).
@@ -3126,6 +3183,7 @@ struct BotSnapshot
         owner_guid = ObjectGuid::Empty;
         owner_in_group = false;
         players_own_character = false;
+        plays_as_human = false;
         led_by_player = false;
         controller_guid = ObjectGuid::Empty;
         no_tag_stance = false;

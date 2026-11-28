@@ -83,6 +83,7 @@
 #include "PlayerbotMovement.h"  // BotMovement::SehSafeCalculatePath (tile-race guard)
 #include "PlayerbotAPI.h"       // PathBudget::HasBudget (dungeon scan gating)
 #include <algorithm>
+#include <optional>
 #include <cstring>
 #include <bit>
 #include <cmath>
@@ -123,14 +124,37 @@ static bool RecipeFocusNear(BotSnapshotView const& s, uint32 spell_id)
     return false;
 }
 
+// The trade tool a station recipe is cast with, by skill line — the same prop the
+// town-errand show puts in the hand. Zero means the skill has no hand tool.
+static uint32 SkillupToolEntry(uint16 skill_line_id)
+{
+    switch (skill_line_id)
+    {
+        case 164: return 5956;   // Blacksmith Hammer
+        case 202: return 6219;   // Arclight Spanner
+        case 186: return 2901;   // Mining Pick (smelting)
+        default:  return 0;
+    }
+}
+
 // The mana wait before a pull. A party with a player in it has none (playtest 2026-10-15: the player watches the mana); a raid keeps it,
 // and so does a group of bots alone, where nobody else would hold the pull for the healer's drink (deadmines_full n57: the priest
-// went into every fight at 1-5 % mana). With the tank leading the dungeon ("lead on") the tank holds it, the player's own mana too:
-// the player follows and no longer watches the pulls.
-static bool PullManaGate(BotSnapshotView const& s, BotAI const& ai, GroupSnapshotView const& g)
+// went into every fight at 1-5 % mana). The tank leading a player's five-man ("lead on") has none on trash either, as a group of
+// players plays: the lead mode (2026-11-14) brought the wait back with the 90 % party mark and the tank said "waiting for mana" at
+// nearly every pack (GitHub #23, 2026-11-22; the owner: "like in retail, like if you were playing with people"). Only before a boss
+// does the leading tank wait, for a healer under the mark his bots drink at (PullHealerManaMark).
+// The healer mana the tank's pull waits for. Leading a player's five-man ("lead on"), the mark his bots drink at
+// (Classic::kLedDrinkBelowManaPct): a healer above it does not sit down, so a higher mark only stands the group still.
+static int64 PullHealerManaMark(BotSnapshotView const& s, BotAI const& ai)
+{
+    if (!s.is_in_raid() && ai.tank_leads_here(s))
+        return Classic::kLedDrinkBelowManaPct;
+    return Classic::PullReadyHealerManaPct(s);
+}
+
+static bool PullManaGate(BotSnapshotView const& s, BotAI const& /*ai*/, GroupSnapshotView const& g)
 {
     if (s.is_in_raid()) return true;
-    if (ai.tank_leads_here(s)) return true;
     auto const* members = g.members();
     if (!members) return false;
     for (auto const& m : *members)
@@ -845,6 +869,17 @@ bool MaintainAutoEquipUpgrades(BotSnapshotView const& s, BotAI& ai,
         // Defense-in-depth: builder clamps equip_slot to <19, but indexing
         // equipped[19+] is UB (bag slots are 30-33) — never walk past it.
         if (dst >= raw.inventory.equipped.size()) continue;
+        // A station errand's tool show owns the main hand for the visit — the smith's
+        // hammer is the prop. Don't undo the swap mid-show; EndErrand restores the kit.
+        // Bound it by linger_until: a bot carried off mid-show (party invite, combat)
+        // keeps the latched flag with no errand running — the expiry lifts the gate and
+        // this very rule puts the real weapon back on, hammer to the bags.
+        auto const& te = ai.town_errand();
+        // tool_guid != 0 covers acquisition too: a kit swap in flight would otherwise get
+        // ping-ponged back out by this very rule before the confirm ever sees the hand.
+        if (dst == EQUIPMENT_SLOT_MAINHAND &&
+            (((te.tool_in_hand || te.tool_guid != 0) && int32_t(te.linger_until_ms - s.published_at_ms()) > 0) ||
+             ai.station_prop_out(s.published_at_ms()))) continue;
         if (it.item_level == 0)    continue;
         if (it.quality == 0)       continue;
         // Per-entry retry throttle (shared with idle:equip_upgrade). When the
@@ -978,6 +1013,10 @@ bool MaintainBagUpgrade(BotSnapshotView const& s, BotAI& ai,
 bool MaintainContextTalents(BotSnapshotView const& s, BotAI& ai,
                             BotIntentEmitter& emit)
 {
+    // A player's own character keeps the talents its player bought (none of the three talent rules touch it; an owner's "talents"
+    // order still does). Each summon is a new bot logic, so this rule re-bought the build of the pinned spec over the player's own on
+    // every summon (RU general 11-21, Alex Black Cat: a protection paladin and a discipline priest re-talented each time).
+    if (s.raw().players_own_character) return false;
     if (s.in_combat()) return false;
     if (s.is_casting()) return false;
     auto const& raw = s.raw();
@@ -1019,6 +1058,7 @@ bool MaintainContextTalents(BotSnapshotView const& s, BotAI& ai,
 bool MaintainStarterTalents(BotSnapshotView const& s, BotAI& ai,
                             BotIntentEmitter& emit)
 {
+    if (s.raw().players_own_character) return false;   // its player's talents (MaintainContextTalents)
     if (s.in_combat()) return false;
     if (s.is_casting()) return false;
     // Specs + talents start at L10 (retail): below that there is no trait
@@ -1053,6 +1093,7 @@ bool MaintainStarterTalents(BotSnapshotView const& s, BotAI& ai,
 bool MaintainStarterTalentsExtend(BotSnapshotView const& s, BotAI& ai,
                                   BotIntentEmitter& emit)
 {
+    if (s.raw().players_own_character) return false;   // its player's talents (MaintainContextTalents)
     if (s.in_combat()) return false;
     if (s.is_casting()) return false;
     if (!s.is_starter_build()) return false;
@@ -1423,6 +1464,7 @@ static bool DungeonTargetReachableAndStep(Player* self, float tx, float ty,
 // DungeonTargetReachableAndStep, whose PathGenerator call shape it copies.
 struct DungeonDetourVerdict;
 static DungeonDetourVerdict DungeonTankDetour(Player* tank, float tx, float ty, float tz);
+static DungeonDetourVerdict DungeonWalkDetourFrom(Player* pather, float sx, float sy, float sz, float tx, float ty, float tz);
 static bool DungeonDetourExcessive(DungeonDetourVerdict const& v);
 // Forward declaration: scalar-out wrapper around DungeonTankDetour +
 // DungeonDetourExcessive (2026-07-02, Task 3) for callers positioned ahead
@@ -1434,6 +1476,9 @@ static bool DungeonDetourExcessive(DungeonDetourVerdict const& v);
 static bool DungeonTankDetourExcessiveVerbose(Player* tank, float tx, float ty, float tz,
                                               float& out_beeline, float& out_path_len,
                                               float& out_ratio, bool& out_complete);
+static bool DungeonWalkDetourExcessiveVerboseFrom(Player* pather, float sx, float sy, float sz, float tx, float ty, float tz,
+                                                  float& out_beeline, float& out_path_len,
+                                                  float& out_ratio, bool& out_complete);
 // Forward declaration: rule (-1) at the top of DungeonCombatPositioning recovers
 // an off-mesh-stranded dungeon bot WHILE IN COMBAT (the idle DungeonDispatch nudge
 // can't run when the FSM has routed the bot to State_InCombat). Definition further
@@ -1974,10 +2019,37 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
                         s.name(), walking_to_hop ? "still a walk away" : "stalled", uint32(dist_to_exit));
         ai.set_cross_fight_yield(true);
         ai.set_dungeon_cross(tgx, tgy, tgz, now_ms + 12000);   // keep the commitment for after the fight
+        // The stall clocks do not run through the fight: a fight longer than 10 s left the episode clock over its cap, and the
+        // first tick out of combat set the bot down at the exit at once, however far the fight had carried it from the crossing
+        // (sfk_full 21 Nov: the tank went 85 y in one step to Razorclaw and left the group behind).
+        ai.cross_episode_reset();
+        ai.cross_hold_reset();
+        ai.cross_frozen_reset();
+        ai.cross_window_reset();
         ai.set_last_rule_fired("dungeon_offmesh_cross_yield_fight");
         return false;
     }
     const bool can_teleport = !s.in_combat() && !s.is_casting();
+    // A set-down finishes a hop the bot stands at. An exit further off than a hop is long is walked to, and one out of the
+    // group's reach is given up (the advance plans the way again with the group).
+    // A nav-link hop is given up only further off than its link is long, from the mouth's radius: The Shaper's Terrace's landing
+    // ledge link is 66 y long, and with a flat 40 y the tank gave up its fall on the first tick, every tick, and walked off the ledge
+    // onto a lip 6 y down (shapers_full af81, 25 Nov).
+    constexpr float kCrossRelocateMaxYd = 25.0f;
+    constexpr float kCrossGiveUpYd      = 40.0f;
+    float const give_up_yd = std::max(kCrossGiveUpYd, ai.dungeon_cross_link_len() + 15.0f);
+    if (can_teleport && dist_to_exit > give_up_yd)
+    {
+        TC_LOG_INFO("playerbot.v2", "[dungeon_cross] {} gives up its crossing: the exit ({:.1f},{:.1f},{:.1f}) is {} y away",
+                    s.name(), tgx, tgy, tgz, uint32(dist_to_exit));
+        ai.clear_dungeon_cross();
+        ai.cross_episode_reset();
+        ai.cross_hold_reset();
+        ai.cross_frozen_reset();
+        ai.cross_window_reset();
+        return false;
+    }
+    const bool can_relocate = can_teleport && dist_to_exit <= kCrossRelocateMaxYd;
     if (!can_teleport)
     {
         if (cross_episode > kCrossEpisodeMs) ai.cross_episode_reset();
@@ -1985,9 +2057,10 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
         if (cross_frozen > kCrossFrozenMs)   ai.cross_frozen_reset();
         ai.cross_window_reset();   // stale baseline must not insta-trip post-combat
     }
-    if (can_teleport &&
+    if (can_relocate &&
         cross_episode > kCrossEpisodeMs && Playerbot::PathBudget::HasBudget(now_ms))
     {
+        TC_LOG_INFO("playerbot.v2", "[dungeon_cross] {} is set down at the exit ({:.1f},{:.1f},{:.1f}), {} y away", s.name(), tgx, tgy, tgz, uint32(dist_to_exit));
         emit.near_teleport_to(tgx, tgy, tgz, s.raw().position.o);
         ai.clear_dungeon_cross();
         ai.cross_hold_reset();
@@ -1996,9 +2069,10 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
         ai.set_last_rule_fired("dungeon_offmesh_cross_relocate_episode");
         return true;
     }
-    if (can_teleport &&
+    if (can_relocate &&
         hold_stuck > kCrossStuckMs && Playerbot::PathBudget::HasBudget(now_ms))
     {
+        TC_LOG_INFO("playerbot.v2", "[dungeon_cross] {} is set down at the exit ({:.1f},{:.1f},{:.1f}), {} y away", s.name(), tgx, tgy, tgz, uint32(dist_to_exit));
         emit.near_teleport_to(tgx, tgy, tgz, s.raw().position.o);
         ai.clear_dungeon_cross();
         ai.cross_hold_reset();
@@ -2016,8 +2090,9 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
     // bot in place). Force-complete the committed crossing onto its far exit — a real
     // navmesh poly on solid ground (same primitive/semantics as the stale-spline
     // relocate above; the off-mesh hop is an instantaneous jump, not a content skip).
-    if (can_teleport && cross_frozen > kCrossFrozenMs)   // constant hoisted above
+    if (can_relocate && cross_frozen > kCrossFrozenMs)   // constant hoisted above
     {
+        TC_LOG_INFO("playerbot.v2", "[dungeon_cross] {} is set down at the exit ({:.1f},{:.1f},{:.1f}), {} y away", s.name(), tgx, tgy, tgz, uint32(dist_to_exit));
         emit.near_teleport_to(tgx, tgy, tgz, s.raw().position.o);
         ai.clear_dungeon_cross();
         ai.cross_hold_reset();
@@ -2036,8 +2111,9 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
     // it jitters within it. Force-complete onto the exit (same primitive/semantics
     // as the relocates above; the off-mesh hop is an instantaneous jump). dist>6
     // here always (past the landed check) so the detector ticks every honored frame.
-    if (can_teleport && ai.cross_window_noprogress(dist_to_exit, now_ms, 8000u, 9.0f))
+    if (can_relocate && ai.cross_window_noprogress(dist_to_exit, now_ms, 8000u, 9.0f))
     {
+        TC_LOG_INFO("playerbot.v2", "[dungeon_cross] {} is set down at the exit ({:.1f},{:.1f},{:.1f}), {} y away", s.name(), tgx, tgy, tgz, uint32(dist_to_exit));
         emit.near_teleport_to(tgx, tgy, tgz, s.raw().position.o);
         ai.clear_dungeon_cross();
         ai.cross_hold_reset();
@@ -2063,7 +2139,7 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
     // SKIPPED for a DIRECT (nav-link) crossing: NOPATH toward the exit is EXPECTED
     // across a real navmesh split — the straight no-pathfind spline below handles it,
     // and relocating here would replace the intended walk with a teleport.
-    if (can_teleport && !s.is_moving() && !ai.dungeon_cross_direct() &&
+    if (can_relocate && !s.is_moving() && !ai.dungeon_cross_direct() &&
         Playerbot::PathBudget::HasBudget(now_ms))
     {
         if (Player* self = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
@@ -2073,7 +2149,8 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
             PathType const pt = pg.GetPathType();
             if (pt & (PATHFIND_NOPATH | PATHFIND_FARFROMPOLY))
             {
-                emit.near_teleport_to(tgx, tgy, tgz, s.raw().position.o);
+                TC_LOG_INFO("playerbot.v2", "[dungeon_cross] {} is set down at the exit ({:.1f},{:.1f},{:.1f}), {} y away", s.name(), tgx, tgy, tgz, uint32(dist_to_exit));
+        emit.near_teleport_to(tgx, tgy, tgz, s.raw().position.o);
                 ai.clear_dungeon_cross();
                 ai.cross_hold_reset();
                 ai.set_last_rule_fired("dungeon_offmesh_cross_relocate");
@@ -2091,9 +2168,10 @@ bool DungeonHonorCross(BotSnapshotView const& s, BotAI& ai,
     // MovePoint spline — a pathfound move toward the far side of a real navmesh
     // split would NoPath and refuse (see MoveToIntent::direct).
     ai.set_dungeon_cross(tgx, tgy, tgz, now_ms + 12000);
-    emit.move_to(tgx, tgy, tgz, /*run=*/true, ai.dungeon_cross_direct());
-    ai.set_last_rule_fired(ai.dungeon_cross_direct() ? "dungeon_navlink_cross_hold"
-                                                     : "dungeon_offmesh_cross_hold");
+    emit.move_to(tgx, tgy, tgz, /*run=*/true, ai.dungeon_cross_direct(), /*drop=*/ai.dungeon_cross_drop());
+    ai.set_last_rule_fired(ai.dungeon_cross_drop()   ? "dungeon_navlink_cross_fall"
+                           : ai.dungeon_cross_direct() ? "dungeon_navlink_cross_hold"
+                                                       : "dungeon_offmesh_cross_hold");
     return true;
 }
 
@@ -2153,31 +2231,13 @@ static bool DungeonTryUseGateGo(BotSnapshotView const& s, BotAI& ai,
         if (!advice.bosses.empty())
         {
             bool boss_near_lever = false;
-            if (Player* scanner = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
+            // An alive listed boss within 40 y of the lever (the builder's scan_bosses; no grid walk on this thread).
+            for (auto const& b : s.raw().dungeon_exec.scan_bosses)
             {
-                struct AliveBossNearGo
-                {
-                    std::vector<uint32_t> const& entries;
-                    float gx, gy, gz, r2;
-                    bool operator()(Creature* c) const
-                    {
-                        if (!c || !c->IsAlive()) return false;
-                        for (uint32_t e : entries)
-                            if (c->GetEntry() == e)
-                            {
-                                const float ex = c->GetPositionX() - gx;
-                                const float ey = c->GetPositionY() - gy;
-                                const float ez = c->GetPositionZ() - gz;
-                                return ex*ex + ey*ey + ez*ez <= r2;
-                            }
-                        return false;
-                    }
-                };
-                std::list<Creature*> bfound;
-                AliveBossNearGo bchk{advice.bosses, go.x, go.y, go.z, 40.0f * 40.0f};
-                Trinity::CreatureListSearcher<AliveBossNearGo> bsr(scanner, bfound, bchk);
-                Cell::VisitAllObjects(scanner, bsr, 80.0f);
-                boss_near_lever = !bfound.empty();
+                if (std::find(advice.bosses.begin(), advice.bosses.end(), b.entry) == advice.bosses.end())
+                    continue;
+                const float ex = b.x - go.x, ey = b.y - go.y, ez = b.z - go.z;
+                if (ex * ex + ey * ey + ez * ez <= 40.0f * 40.0f) { boss_near_lever = true; break; }
             }
             // Latch the sighting through the caged boss's scan flicker. SFK
             // Baron Ashbury (a throne vehicle behind the closed Cell Door 18934)
@@ -2276,28 +2336,112 @@ static bool DungeonTryUseGateGo(BotSnapshotView const& s, BotAI& ai,
 // path for the whole group. He clicks from the spot itself, not on the way to it: af39 clicked from the snapshot 6 y out while still
 // running in, the door stayed shut, and the one click per 5 min left him at it for the rest of the run. A door still shut 5 s after
 // a click is clicked again (BotAI DungeonHandDoor lockout); the refusals his route met at the shut door are forgotten with the click.
+// A door the dungeon's route goes through is opened from farther off: the route's crumbs on either side of it can be consumed before
+// the tank is within kHandDoorReachYd, and the next crumb, past the shut door, has no path. hot_full af61 (22 Nov): the tank stood
+// 120 s at (297.8,-5.4), 15.5 y from the Vault Door 645393, every path to the crumb past it NoPath, and the run stalled.
 static constexpr float kHandDoorReachYd = 12.0f;   // the tank stood 6-7 y from each Heavy Door when his path ended there
 static constexpr float kHandDoorFrontYd = 2.5f;    // the spot he clicks from, this far from the door's centre on his side
 static constexpr float kHandDoorUseYd   = 1.0f;    // he clicks standing on that spot (the door's interaction reach is 5 y past its model)
+static constexpr float kHandDoorRouteReachYd = 30.0f;
+static constexpr float kHandDoorOnRouteYd    = 5.0f;   // the door's centre this close to a crumb-to-crumb leg: the route goes through it
+
+// Whether a leg of the dungeon's route passes through the door at (x, y, z).
+static bool HandDoorOnRoute(std::vector<DungeonAdvice::ProgressionPoint> const& route, float x, float y, float z)
+{
+    for (size_t i = 1; i < route.size(); ++i)
+    {
+        auto const& a = route[i - 1];
+        auto const& b = route[i];
+        if (std::fabs(a.z - z) > 6.0f && std::fabs(b.z - z) > 6.0f)
+            continue;
+        float const lx = b.x - a.x, ly = b.y - a.y;
+        float const l2 = lx * lx + ly * ly;
+        float t = l2 > 0.01f ? ((x - a.x) * lx + (y - a.y) * ly) / l2 : 0.f;
+        t = std::clamp(t, 0.f, 1.f);
+        float const ex = a.x + lx * t - x, ey = a.y + ly * t - y;
+        if (ex * ex + ey * ey <= kHandDoorOnRouteYd * kHandDoorOnRouteYd)
+            return true;
+    }
+    return false;
+}
+
+// Whether (ax, ay) and (bx, by) are on the two sides of a door: the way through it runs along its facing (NearbyObject::o).
+static bool AcrossDoor(BotSnapshot::NearbyObject const& go, float ax, float ay, float bx, float by)
+{
+    float const nx = std::cos(go.o), ny = std::sin(go.o);
+    float const da = (ax - go.x) * nx + (ay - go.y) * ny;
+    float const db = (bx - go.x) * nx + (by - go.y) * ny;
+    return (da < 0.f) != (db < 0.f);
+}
 
 // A door that opens only to a key (NearbyObject::key_item: Dire Maul North's Gordok Courtyard and Inner Doors) is opened by the bot
 // that carries the key, whatever its role: the key goes to whoever looted it, and the tank's route ends at the shut door with the
-// party beside him. The bot uses the key on the door from the same spot, as a player's right-click does.
-static bool DungeonOpenHandDoor(BotSnapshotView const& s, BotAI& ai, BotIntentEmitter& emit, uint32 now_ms, bool tank)
+// party beside him. The bot uses the key on the door from the same spot, as a player's right-click does. A door whose lock takes
+// Lockpicking (NearbyObject::pick_lock: Alcaz Prison's Maximum Security Door) is opened the same way by the bot that has the skill,
+// the rogue, with Pick Lock (API::use_game_object casts it; 5 s, and the bot holds still for it), as Karrz's rogue did on live.
+// A door that shuts by itself (NearbyObject::auto_close: Alcaz Prison's Prison Gate 649552, shut again 3 s after a use) does not stay
+// open for the party behind the tank: on live every player of the group opened it for himself (capture 26 Nov: eight opens in 2 min).
+// The tank opens it only while the crumb he walks to lies beyond it (once through, the shut gate behind him is not his business), and
+// each other bot opens it when it stands at it with the tank on the far side.
+static bool DungeonOpenHandDoor(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const& g, BotIntentEmitter& emit,
+                                DungeonAdvice const& advice, uint32 now_ms, bool tank)
 {
     if (s.in_combat())
         return false;
+    auto const& objects = s.raw().world_objects.nearby_objects;
+    // Picking the lock: hold still until the cast ends (a move breaks it).
+    if (s.is_casting() && !s.current_cast_object().IsEmpty())
+        for (auto const& go : objects)
+            if (go.guid == s.current_cast_object() && go.pick_lock)
+            {
+                ai.set_last_rule_fired("idle:dungeon_pick_lock");
+                return true;
+            }
     float sx = 0.f, sy = 0.f, sz = 0.f;
     s.position(sx, sy, sz);
-    for (auto const& go : s.raw().world_objects.nearby_objects)
+    for (auto const& go : objects)
     {
         if (!go.hand_door)
             continue;
-        if (!tank && go.key_item == 0)
-            continue;
+        bool const own = go.key_item != 0 || go.pick_lock;   // a door only this bot opens: its key or its skill
         float const dx = sx - go.x, dy = sy - go.y;
         float const d = std::sqrt(dx * dx + dy * dy);
-        if (d > kHandDoorReachYd || std::fabs(sz - go.z) > 6.0f)
+        if (d > kHandDoorRouteReachYd || std::fabs(sz - go.z) > 6.0f)
+            continue;
+        if (go.auto_close && !own)
+        {
+            if (tank)
+            {
+                int32_t const cur = ai.dungeon_route_wp(s.map_id());
+                if (cur < 0 || cur >= int32_t(advice.route_waypoints.size()))
+                    continue;
+                auto const& wp = advice.route_waypoints[size_t(cur)];
+                if (!AcrossDoor(go, sx, sy, wp.x, wp.y))
+                    continue;
+            }
+            else
+            {
+                if (d > kHandDoorReachYd)
+                    continue;
+                GroupMemberSummary const* lead = nullptr;
+                if (auto const* members = g.members())
+                    for (GroupMemberSummary const& m : *members)
+                        if (m.guid == s.group_tank() && m.online && m.map_id == s.map_id())
+                            lead = &m;
+                if (!lead || !AcrossDoor(go, sx, sy, lead->x, lead->y))
+                    continue;
+            }
+        }
+        else if (!tank && !own)
+            continue;
+        // Past kHandDoorReachYd only a door on the route, or, in a dungeon with no route (boss spots only), a door this bot owns with
+        // a boss spot beyond it: stratud_full (fullruns-1127) stalled 120 s with the tank 15.5 y from the Service Entrance Gate
+        // (175368, lock 879: the Key to the City he carries), Barthilas and the whole Undead wing on the far side, as his path to
+        // them ended short of the shut gate.
+        if (d > kHandDoorReachYd && !HandDoorOnRoute(advice.route_waypoints, go.x, go.y, go.z) &&
+            !(own && advice.route_waypoints.empty() &&
+              std::any_of(advice.progression_waypoints.begin(), advice.progression_waypoints.end(),
+                          [&](DungeonAdvice::ProgressionPoint const& p) { return AcrossDoor(go, sx, sy, p.x, p.y); })))
             continue;
         uint64 const go_low = go.guid.GetCounter();
         if (ai.action_recently_tried(BotAI::ActionKind::DungeonHandDoor, go_low, now_ms))
@@ -2318,8 +2462,8 @@ static bool DungeonOpenHandDoor(BotSnapshotView const& s, BotAI& ai, BotIntentEm
         ai.note_action_retry(BotAI::ActionKind::DungeonHandDoor, go_low, now_ms);
         ai.clear_move_refusals();
         ai.set_last_rule_fired("idle:dungeon_open_hand_door");
-        TC_LOG_INFO("playerbot.v2", "[hand_door] {} opens entry={} guid={} at ({:.1f},{:.1f},{:.1f}) d={:.1f} key={}",
-                    s.name(), go.entry, go_low, go.x, go.y, go.z, d, go.key_item);
+        TC_LOG_INFO("playerbot.v2", "[hand_door] {} opens entry={} guid={} at ({:.1f},{:.1f},{:.1f}) d={:.1f} key={} pick={} auto_close={}",
+                    s.name(), go.entry, go_low, go.x, go.y, go.z, d, go.key_item, int(go.pick_lock), int(go.auto_close));
         return true;
     }
     return false;
@@ -2386,29 +2530,13 @@ static bool DungeonTryPortalHop(BotSnapshotView const& s, BotAI& ai, BotIntentEm
 
         Player* self = ObjectAccessor::FindConnectedPlayer(s.raw().guid);
         if (!self) continue;
-        // The boss beyond must still be alive and every boss that opens the portal dead: one map-wide scan (the instance is small;
-        // the same 500 y reach as the boss-priority advance).
-        struct HopBossCheck
-        {
-            DungeonAdvice::PortalHop const& hop;
-            bool operator()(Creature* c) const
-            {
-                if (!c || !c->IsAlive()) return false;
-                if (c->GetEntry() == hop.boss_entry) return true;
-                for (uint32_t e : hop.opened_by)
-                    if (c->GetEntry() == e) return true;
-                return false;
-            }
-        };
-        std::list<Creature*> found;
-        HopBossCheck chk{hop};
-        Trinity::CreatureListSearcher<HopBossCheck> searcher(self, found, chk);
-        Cell::VisitAllObjects(self, searcher, 500.0f);
+        // The boss beyond must still be alive and every boss that opens the portal dead: the builder's scan_bosses (500 y, the same
+        // reach as the boss-priority advance).
         bool beyond_alive = false, opener_alive = false;
-        for (Creature* c : found)
+        for (auto const& c : s.raw().dungeon_exec.scan_bosses)
         {
-            if (c->GetEntry() == hop.boss_entry) beyond_alive = true;
-            else opener_alive = true;
+            if (c.entry == hop.boss_entry) beyond_alive = true;
+            else if (std::find(hop.opened_by.begin(), hop.opened_by.end(), c.entry) != hop.opened_by.end()) opener_alive = true;
         }
         if (!beyond_alive || opener_alive) continue;
 
@@ -2483,6 +2611,8 @@ static bool DungeonTryDoorTalk(BotSnapshotView const& s, BotAI& ai, BotIntentEmi
             if (!is_npc && !is_boss) opener_alive = true;
         }
         if (!npc || !beyond_alive || opener_alive) continue;
+        // A creature that speaks to one faction only is the other's enemy (Shadowfang Keep's two prisoners): nothing to say to it.
+        if (self->IsValidAttackTarget(npc)) continue;
         // A talk that waits for a door: the door must stand open (Bly after the End Door Weegli blows).
         if (talk.after_door)
         {
@@ -2879,12 +3009,18 @@ static float PackAggroReach(BotSnapshotView const& s, NearbyUnit const& u)
 // false. With `ai`, also skip what idle:tank_pull_next refuses to pull (the
 // opener give-up shield, a refused StartAttack, a mob crowd-controlled by an
 // ally), so a mob the pull will never take cannot hold the advance forever.
+// A boss is told by its flags or the dungeon's tactics table (IsKnownBossUnit,
+// as the pull tells it): a five-man boss carries no boss flag (the loader
+// strips it), only its tactics entry, and held as a pack it stopped the very
+// advance and boss approach that would have opened it (rfd_full af58:
+// Mordresh Fire Eye 26 y off, "advance yields to the pull" every 3 s, the
+// pull refusing him as a boss, nobody moved for 120 s).
 static bool UnpulledPackMob(BotSnapshotView const& s, NearbyUnit const& u, DungeonAdvice const* advice,
                             bool need_los, BotAI const* ai, uint32 now_ms)
 {
     if (u.hp <= 0 || u.is_player || u.untargetable || u.is_pacified || u.no_xp_kill) return false;
     if (!u.victim.IsEmpty() || u.unit_in_combat) return false;
-    if (Classic::IsBossUnit(u)) return false;
+    if (IsKnownBossUnit(s.map_id(), u)) return false;
     if (need_los && !u.in_los) return false;
     if (advice)
         for (uint32_t ie : advice->ignore_entries)
@@ -4693,15 +4829,27 @@ static std::mutex g_pull_spot_mu;
 struct PullSpotWalk { uint64 pack = 0; uint32 since = 0; uint32 last = 0; };
 static std::unordered_map<uint64, PullSpotWalk> g_pull_spot_walk;
 constexpr uint32 kPullSpotGapMs = 10000u;
-// A listed boss the bot can fight now: alive, and a valid attack target for it. A boss that stands immune or unselectable until an
-// event the bots do not run is not the next pull: with it in the boss scans the tank walked up to it and "pulled" it every 30 s
-// while the attack never took (the snapshot has no such enemy). eea74327b3 uldaman_revelosh: Baelog (6906, the Lost Dwarves) at
-// 23 y in sight, 120 s group_stalled; b3ca0b4b67 st_mijan: Weaver (5720), whom the Classic troll-guard event frees, 120 s stalled.
-// Left out of the scans, the owed-boss waiver (8 s at its waypoint, unsighted) moves the route on, and a boss that turns
-// attackable is back in the scans and owed again.
-static bool BossFightable(Player const* origin, Creature const* c)
+// The earliest boss of `bosses` (authored in encounter order) the bot can fight now within `range` yards: the builder's scan_bosses
+// (DungeonExecState::ScanUnit, collected while no map updates; the rules run on the bot workers, where a grid walk races the map
+// thread). A boss that stands immune or unselectable until an event the bots do not run is not fightable (BotSnapshotBuilder
+// BossFightable), so it is no pull; a boss asleep until a player comes near (Rath'mael 250657) is.
+static DungeonExecState::ScanUnit const* EarliestFightableBoss(BotSnapshotView const& s, std::vector<uint32_t> const& bosses,
+                                                               float range, int* idx_out = nullptr)
 {
-    return c && c->IsAlive() && origin->IsValidAttackTarget(c);
+    float sx, sy, sz; s.position(sx, sy, sz);
+    auto const& found = s.raw().dungeon_exec.scan_bosses;
+    for (int bi = 0; bi < static_cast<int>(bosses.size()); ++bi)
+        for (auto const& u : found)
+        {
+            if (!u.fightable || u.entry != bosses[bi])
+                continue;
+            const float dx = u.x - sx, dy = u.y - sy, dz = u.z - sz;
+            if (dx * dx + dy * dy + dz * dz > range * range)
+                continue;
+            if (idx_out) *idx_out = bi;
+            return &u;
+        }
+    return nullptr;
 }
 static uint32 PullSpotWalkFor(ObjectGuid tank, uint64 pack, uint32 now_ms)
 {
@@ -4982,6 +5130,35 @@ static bool RaidFrontalConeStep(BotSnapshotView const& s, BotAI& ai, GroupSnapsh
     return false;
 }
 
+bool BreathDue(BotSnapshotView const& s, BotAI& ai)
+{
+    bool const was = ai.breath_refilling();
+    bool const up = s.is_alive() && ai.needs_air(s.breath_left_ms());
+    if (up != was)
+    {
+        float bx, by, bz; s.position(bx, by, bz);
+        if (up)
+            TC_LOG_INFO("playerbot.v2", "[breath] {} goes up for air: {} ms of breath left at z {:.1f} (surface {:.1f}){}", s.name(),
+                s.breath_left_ms(), bz, s.water_surface_z(), s.in_combat() ? ", in a fight" : "");
+        else
+            TC_LOG_INFO("playerbot.v2", "[breath] {} has its breath back at z {:.1f}", s.name(), bz);
+    }
+    return up;
+}
+
+bool SurfaceForAir(BotSnapshotView const& s, BotAI& ai, BotIntentEmitter& emit, char const* rule)
+{
+    if (!BreathDue(s, ai))
+        return false;
+    float bx, by, bz; s.position(bx, by, bz);
+    if (s.is_underwater() && s.water_surface_z() != 0.0f && bz < s.water_surface_z() - 0.5f)
+        emit.move_to(bx, by, s.water_surface_z() + 0.5f, /*run*/ true);
+    else if (s.is_moving())
+        emit.stop_movement();   // head out: it stays up until the bar is full (3.5 s from 25 s left), not straight back down
+    ai.set_last_rule_fired(rule);
+    return true;
+}
+
 bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                               GroupSnapshotView const& g,
                               BotIntentEmitter& emit,
@@ -5003,20 +5180,13 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
     // the idle dispatch AND the top of DispatchInCombat, so re-admitting the
     // surface move HERE makes it preempt all positioning/advance/combat — drowning
     // kills regardless of combat state, so it must run first. Surfaces in place
-    // (same XY, just above the water line); the bot then swims the surface instead
-    // of sinking. Mirrors SurvivalRules SurfaceToBreatheGate/Fire. (Latent-bug fix
+    // (same XY, just above the water line). On the server's breath timer, like
+    // idle:surface_to_breathe (SurfaceForAir): it used to lift every submerged bot
+    // at once, whatever breath it had left. (Latent-bug fix
     // found chasing the Deadmines harbor wall — which turned out NOT to be water,
     // but this is still correct for any future water dungeon.)
-    if (s.is_underwater() && s.water_surface_z() != 0.0f)
-    {
-        float sbx, sby, sbz; s.position(sbx, sby, sbz);
-        if (sbz < s.water_surface_z() - 0.5f)
-        {
-            emit.move_to(sbx, sby, s.water_surface_z() + 0.5f, /*run=*/true);
-            ai.set_last_rule_fired("idle:dungeon_surface_to_breathe");
-            return true;
-        }
-    }
+    if (SurfaceForAir(s, ai, emit, "idle:dungeon_surface_to_breathe"))
+        return true;
 
     // SURVIVAL PREEMPT — REPAIR BROKEN GEAR (2026-06-29). A self-repair rule
     // already exists, but it sits at the FAR TAIL of the dungeon idle dispatch
@@ -5078,7 +5248,7 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
         DungeonEnterAreaTriggers(s, ai, emit, advice, now_ms);
         if (tank && DungeonOpenKeyChest(s, ai, emit, now_ms))
             return true;
-        if (DungeonOpenHandDoor(s, ai, emit, now_ms, tank))
+        if (DungeonOpenHandDoor(s, ai, g, emit, advice, now_ms, tank))
             return true;
         if (DungeonTryKeyUse(s, ai, emit, advice, now_ms, tank))
             return true;
@@ -5121,6 +5291,203 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
     // movement; a second call in the same tick is a no-op (probe pacing).
     if (RaidHazardStepOut(s, ai, g, emit))
         return true;
+
+    // (-0.55) Keep clear of a carrier (DungeonAdvice::keep_clear_of_carriers): a member carrying an aura that hurts whoever stands
+    // next to it, and cannot walk off itself. shapers_full af61 (22 Nov): all five stood within 5 y of Cinder, his Conflagration
+    // 1310512 confused one of them for 4 s, every second burned every ally within 5 y of that one for 300, and the mage died at
+    // 8% health. Everyone else steps out to radius + 2 y on the line away from the carrier; the carrier is left to it.
+    if (!advice.keep_clear_of_carriers.empty() && g.exists() && !s.is_rooted() && !HeldByOwner(ai, s))
+    {
+        bool self_carries = false;
+        for (auto const& rule : advice.keep_clear_of_carriers)
+            if (s.has_aura(rule.aura)) { self_carries = true; break; }
+        auto const* cmems = g.members();
+        if (!self_carries && cmems)
+        {
+            float kx, ky, kz; s.position(kx, ky, kz);
+            GroupMemberSummary const* carrier = nullptr;
+            float carrier_r = 0.f, carrier_d2 = 0.f;
+            uint32 carrier_aura = 0;
+            for (auto const& m : *cmems)
+            {
+                if (m.guid == s.guid() || !m.online || !m.is_alive || m.map_id != s.map_id())
+                    continue;
+                for (auto const& rule : advice.keep_clear_of_carriers)
+                {
+                    bool carries = false;
+                    for (auto const& d : m.debuffs)
+                        if (d.spell_id == rule.aura) { carries = true; break; }
+                    if (!carries)
+                        continue;
+                    float const cdx = kx - m.x, cdy = ky - m.y;
+                    float const d2 = cdx * cdx + cdy * cdy;
+                    if (d2 < rule.radius * rule.radius && (!carrier || d2 < carrier_d2))
+                    { carrier = &m; carrier_r = rule.radius; carrier_d2 = d2; carrier_aura = rule.aura; }
+                }
+            }
+            if (carrier)
+            {
+                float ax = kx - carrier->x, ay = ky - carrier->y;
+                float alen = std::sqrt(ax * ax + ay * ay);
+                if (alen < 0.5f)
+                {
+                    // On top of the carrier: out on the side away from what it fights (the bot's target), else any side.
+                    ax = 1.f; ay = 0.f; alen = 1.f;
+                    if (NearbyUnit const* foe = s.target_info() ? s.target_info() : s.victim_info())
+                    {
+                        float const fx = carrier->x - foe->x, fy = carrier->y - foe->y, fl = std::sqrt(fx * fx + fy * fy);
+                        if (fl > 0.5f) { ax = fx; ay = fy; alen = fl; }
+                    }
+                }
+                float const out = carrier_r + 2.0f;
+                float const tx = carrier->x + ax / alen * out, ty = carrier->y + ay / alen * out;
+                emit.move_to(tx, ty, kz, /*run=*/true);
+                static std::mutex s_clearLogMu;
+                static std::unordered_map<uint64, uint32> s_clearLogAt;
+                {
+                    std::lock_guard<std::mutex> lk(s_clearLogMu);
+                    uint32& at = s_clearLogAt[s.guid().GetCounter()];
+                    if (at == 0 || now_ms - at >= 3000u)
+                    {
+                        at = now_ms ? now_ms : 1u;
+                        TC_LOG_INFO("playerbot.v2", "[carrier_clear] {} steps {:.1f} y clear of a member carrying {} ({:.1f} y from it) -> ({:.1f},{:.1f})",
+                                    s.name(), out, carrier_aura, std::sqrt(carrier_d2), tx, ty);
+                    }
+                }
+                ai.set_last_rule_fired("dungeon:keep_clear_of_carrier");
+                return true;
+            }
+        }
+    }
+
+    // (-0.5) Spread from a boss's splash (DungeonAdvice::spread_from_bosses): the boss's spell lands on one player and hurts every
+    // ally within the radius of that player. shapers_full af63 (23 Nov): Vitrix's Poison Shock 1312870 hit the priest at 6.5 y and
+    // the mage at 10.1 y from him for 1269 and 1470 in one cast, after the priest had healed the whole stack through every cast
+    // before it (out of mana at 1790 s). The ranged members and the healer stand on a ring round the boss, radius + 2 y from every
+    // other member and from the spots the others are walking to; the tank and the melee stay on the boss.
+    if (!advice.spread_from_bosses.empty() && s.in_combat() && g.exists() && !s.is_rooted() && !HeldByOwner(ai, s) &&
+        InstanceRangedOrHealer(s, ai))
+    {
+        NearbyUnit const* sboss = nullptr;
+        float sradius = 0.f;
+        for (auto const* list : { &s.raw().combat.attackers, &s.raw().combat.nearby_enemies })
+        {
+            for (NearbyUnit const& u : *list)
+            {
+                if (u.hp <= 0)
+                    continue;
+                for (auto const& rule : advice.spread_from_bosses)
+                    if (u.entry == rule.boss) { sboss = &u; sradius = rule.radius; break; }
+                if (sboss) break;
+            }
+            if (sboss) break;
+        }
+        auto const* smems = g.members();
+        Player* sself = sboss && smems ? ObjectAccessor::FindConnectedPlayer(s.raw().guid) : nullptr;
+        if (sself)
+        {
+            // Where each bot of the group is walking to for the spread, so two of them do not pick the same patch of the ring.
+            struct SpreadSpot { float x = 0.f, y = 0.f; uint32 ms = 0; uint64 group = 0; };
+            static std::mutex s_spreadMu;
+            static std::unordered_map<uint64, SpreadSpot> s_spreadSpots;
+            constexpr uint32 kSpotKeepMs = 6000u;
+            uint64 const gkey = s.group_guid().GetCounter();
+            uint64 const me = s.guid().GetCounter();
+            float sx, sy, sz; s.position(sx, sy, sz);
+            float const keep = sradius + 2.0f;
+            std::vector<std::pair<float, float>> others;   // the other members' spots: where they stand, and where they are going
+            for (auto const& m : *smems)
+                if (m.guid != s.guid() && m.online && m.is_alive && m.map_id == s.map_id())
+                    others.emplace_back(m.x, m.y);
+            SpreadSpot mine;
+            {
+                std::lock_guard<std::mutex> lk(s_spreadMu);
+                for (auto const& [who, spot] : s_spreadSpots)
+                {
+                    if (spot.group != gkey || now_ms - spot.ms >= kSpotKeepMs)
+                        continue;
+                    if (who == me) mine = spot;
+                    else others.emplace_back(spot.x, spot.y);
+                }
+            }
+            auto clear_of_others = [&](float x, float y, float need) {
+                for (auto const& [ox, oy] : others)
+                    if ((x - ox) * (x - ox) + (y - oy) * (y - oy) < need * need)
+                        return false;
+                return true;
+            };
+            // Standing clear now (the radius itself, so a member passing 1 y too near does not set off a walk): nothing to do. A spot
+            // still being walked to that is still clear is kept, so the bot does not swap spots on every tick of the walk.
+            bool const here_clear = clear_of_others(sx, sy, sradius);
+            bool const spot_kept = mine.ms != 0 && clear_of_others(mine.x, mine.y, keep) &&
+                (mine.x - sx) * (mine.x - sx) + (mine.y - sy) * (mine.y - sy) > 2.0f * 2.0f;
+            if (!here_clear && !spot_kept)
+            {
+                // The ring: 16 bearings at three distances from the boss, inside every class's spell range of it (30 y less the
+                // margin), nearest to the bot first; the first that is clear of the others, has ground near the boss's level, is in
+                // sight of the boss and can be walked to is taken.
+                struct Cand { float x, y, d2; };
+                std::vector<Cand> cands;
+                float const rings[] = { std::max(keep + 2.0f, 14.0f), 20.0f, 25.0f };
+                for (float r : rings)
+                    for (int k = 0; k < 16; ++k)
+                    {
+                        float const a = float(k) * 0.39269908f;   // pi / 8
+                        float const cx = sboss->x + r * std::cos(a), cy = sboss->y + r * std::sin(a);
+                        if (!clear_of_others(cx, cy, keep))
+                            continue;
+                        cands.push_back({ cx, cy, (cx - sx) * (cx - sx) + (cy - sy) * (cy - sy) });
+                    }
+                std::sort(cands.begin(), cands.end(), [](Cand const& a, Cand const& b) { return a.d2 < b.d2; });
+                int tries = 0;
+                for (Cand const& c : cands)
+                {
+                    if (++tries > 6)
+                        break;
+                    float floor_z = 0.f;
+                    if (!BotMovement::ProbeGround(sself, c.x, c.y, sboss->z + 2.0f, floor_z) || std::fabs(floor_z - sboss->z) > 4.0f)
+                        continue;
+                    if (!BotMovement::LineIsClear(sself, c.x, c.y, floor_z + 1.5f, sboss->x, sboss->y, sboss->z + 1.5f))
+                        continue;
+                    G3D::Vector3 step;
+                    if (!DungeonTargetReachableAndStep(sself, c.x, c.y, floor_z, 30.0f, step))
+                        continue;
+                    {
+                        std::lock_guard<std::mutex> lk(s_spreadMu);
+                        s_spreadSpots[me] = { c.x, c.y, now_ms ? now_ms : 1u, gkey };
+                    }
+                    emit.move_to(step.x, step.y, step.z, /*run=*/true);
+                    static std::mutex s_spreadLogMu;
+                    static std::unordered_map<uint64, uint32> s_spreadLogAt;
+                    {
+                        std::lock_guard<std::mutex> lk(s_spreadLogMu);
+                        uint32& at = s_spreadLogAt[me];
+                        if (at == 0 || now_ms - at >= 3000u)
+                        {
+                            at = now_ms ? now_ms : 1u;
+                            TC_LOG_INFO("playerbot.v2", "[boss_spread] {} spreads from {} ({:.0f} y splash): ({:.1f},{:.1f}) -> ({:.1f},{:.1f}), "
+                                        "{:.1f} y from the boss", s.name(), sboss->entry, sradius, sx, sy, c.x, c.y,
+                                        std::sqrt((c.x - sboss->x) * (c.x - sboss->x) + (c.y - sboss->y) * (c.y - sboss->y)));
+                        }
+                    }
+                    ai.set_last_rule_fired("dungeon:spread_from_boss");
+                    return true;
+                }
+            }
+            else if (!here_clear && spot_kept)
+            {
+                G3D::Vector3 step;
+                float floor_z = sz;
+                BotMovement::ProbeGround(sself, mine.x, mine.y, sboss->z + 2.0f, floor_z);
+                if (DungeonTargetReachableAndStep(sself, mine.x, mine.y, floor_z, 30.0f, step))
+                {
+                    emit.move_to(step.x, step.y, step.z, /*run=*/true);
+                    ai.set_last_rule_fired("dungeon:spread_from_boss");
+                    return true;
+                }
+            }
+        }
+    }
 
     // (-0.4) Dungeon FALSE-COMBAT escape — LAST-RESORT safety net. The whole COHERED
     // group can be held InCombat indefinitely by attackers with NO seedable victim
@@ -5194,10 +5561,10 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
             // single residual/re-introduced mis-authored faction can never again
             // pin the whole group InCombat with nothing killable. Checked before
             // the (expensive) reachability probe so immune attackers short-circuit.
-            if (self_seed)
-                if (Unit* au = ObjectAccessor::GetUnit(*self_seed, a.guid))
-                    if (!self_seed->IsValidAttackTarget(au))
-                        { immune_present = true; continue; }
+            // The builder reads IsValidAttackTarget (NearbyUnit::valid_attack_target): this rule runs on a bot worker, where
+            // looking the unit up in the map's object store races the map thread.
+            if (!a.valid_attack_target)
+                { immune_present = true; continue; }
             if (self_seed)
             {
                 G3D::Vector3 _seed_step;
@@ -5409,12 +5776,12 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                         bool const probe_due =
                             now_ms - ai.untankable_probe_last_ms() >= 3000u;
                         if (!trivially_close && probe_due)
-                        if (Player* tkp = ObjectAccessor::FindConnectedPlayer(tk->guid))
+                        if (Player* selfp = ObjectAccessor::FindConnectedPlayer(s.guid()))
                         {
                             ai.touch_untankable_probe(now_ms);
                             float dv_beeline = 0.f, dv_path_len = 0.f, dv_ratio = 0.f;
                             bool  dv_complete = false;
-                            if (DungeonTankDetourExcessiveVerbose(tkp, vu->x, vu->y, vu->z,
+                            if (DungeonWalkDetourExcessiveVerboseFrom(selfp, tk->x, tk->y, tk->z, vu->x, vu->y, vu->z,
                                                                   dv_beeline, dv_path_len,
                                                                   dv_ratio, dv_complete))
                             {
@@ -5476,33 +5843,20 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
     {
         if (Player* self_pb = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
         {
-            struct PushBossCheck
-            {
-                Player const* origin;
-                std::vector<uint32_t> const& entries;
-                float range;
-                bool operator()(Creature* c) const
-                {
-                    if (!BossFightable(origin, c)) return false;
-                    for (uint32_t e : entries)
-                        if (c->GetEntry() == e)
-                            return origin->IsWithinDistInMap(c, range);
-                    return false;
-                }
-            };
             // Commit range: only push in-combat when the boss is genuinely close.
             // The long OOC approach (waypoints / idle boss-nav) covers the rest.
+            // The builder's scan_bosses: no grid walk on this thread (see DungeonExecState::ScanUnit).
             constexpr float kPbScanR = 150.0f;
-            std::list<Creature*> pb_cre;
-            PushBossCheck pb_chk{self_pb, advice.bosses, kPbScanR};
-            Trinity::CreatureListSearcher<PushBossCheck> pb_search(self_pb, pb_cre, pb_chk);
-            Cell::VisitAllObjects(self_pb, pb_search, kPbScanR);
-            Creature* pb_boss = nullptr;
+            float pbsx, pbsy, pbsz; s.position(pbsx, pbsy, pbsz);
+            DungeonExecState::ScanUnit const* pb_boss = nullptr;
             int pb_idx = -1;
             for (int bi = 0; bi < static_cast<int>(advice.bosses.size()) && !pb_boss; ++bi)
-                for (Creature* bc : pb_cre)
-                    if (bc && bc->GetEntry() == advice.bosses[bi] && bc->IsAlive())
-                    { pb_boss = bc; pb_idx = bi; break; }
+                for (auto const& bc : s.raw().dungeon_exec.scan_bosses)
+                {
+                    const float ux = bc.x - pbsx, uy = bc.y - pbsy, uz = bc.z - pbsz;
+                    if (bc.fightable && bc.entry == advice.bosses[bi] && ux * ux + uy * uy + uz * uz <= kPbScanR * kPbScanR)
+                    { pb_boss = &bc; pb_idx = bi; break; }
+                }
             // Only the boss the tank owes, as the boss navigator below has it (bosses[bosses_done_count], raised by the owed-boss
             // waiver). A later boss in the scan while the owed one is out of it is the navigator's case: it walks to the owed boss's
             // waypoint and waives it there. Pushing to the later boss here pulled the tank the other way on every other tick
@@ -5520,7 +5874,7 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                 {
                     if (RaidLogDue(RaidLogKey(s, RaidLogKind::Los) ^ 0x6f776564u, now_ms, 10000u))
                         TC_LOG_INFO("playerbot.v2", "[boss_push] {} no push to boss {} (idx {}): owed boss idx {} (entry {}) is not in sight",
-                                    s.name(), pb_boss->GetEntry(), pb_idx, pb_owed, advice.bosses[pb_owed]);
+                                    s.name(), pb_boss->entry, pb_idx, pb_owed, advice.bosses[pb_owed]);
                     pb_boss = nullptr;
                 }
             }
@@ -5528,9 +5882,9 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
             {
                 if (s.is_in_raid())
                     Classic::NoteBossPullWait(s.group_guid());   // the healers drink to the boss mark while the tank waits
-                const float pbx = pb_boss->GetPositionX();
-                const float pby = pb_boss->GetPositionY();
-                const float pbz = pb_boss->GetPositionZ();
+                const float pbx = pb_boss->x;
+                const float pby = pb_boss->y;
+                const float pbz = pb_boss->z;
                 float sx0, sy0, sz0; s.position(sx0, sy0, sz0);
                 const float ddx = pbx - sx0, ddy = pby - sy0, ddz = pbz - sz0;
                 const float bd2 = ddx * ddx + ddy * ddy + ddz * ddz;
@@ -5576,7 +5930,9 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                         const float mdx = m.x - sx0, mdy = m.y - sy0;
                         const float d2 = mdx * mdx + mdy * mdy;
                         if (d2 < healer_d2) healer_d2 = d2;
-                        if (PullManaGate(s, ai, g) && m.max_mana > 0 && int64(m.mana) * 100 < int64(m.max_mana) * Classic::PullReadyHealerManaPct(s))
+                        // Before a boss the leading tank of a player's five-man waits for a dry healer too (PullManaGate has no trash wait there).
+                        if ((PullManaGate(s, ai, g) || ai.tank_leads_here(s)) && m.max_mana > 0 &&
+                            int64(m.mana) * 100 < int64(m.max_mana) * PullHealerManaMark(s, ai))
                         {
                             healer_dry = true;
                             healer_dry_name = m.name;
@@ -5627,7 +5983,7 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                 int near_hostiles = 0;
                 for (auto const& u : s.raw().combat.nearby_enemies)
                 {
-                    if (u.hp <= 0 || u.no_xp_kill || u.is_pacified || Classic::IsBossUnit(u) || u.untargetable)
+                    if (u.hp <= 0 || u.no_xp_kill || u.is_pacified || IsKnownBossUnit(s.map_id(), u) || u.untargetable)
                         continue;
                     bool ign = false;
                     for (uint32_t ie : advice.ignore_entries)
@@ -5643,23 +5999,23 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                 // the gauntlet (no trigger units there), so no pull-pacing change.
                 const bool pack_clear = s.fightable_attackers_count() < 3 &&
                                         near_hostiles < 4 && s.hp_pct() > 35;
-                if (bd2 <= kPbEngageR2 && self_pb->IsWithinLOSInMap(pb_boss))
+                if (bd2 <= kPbEngageR2 && pb_boss->in_los)
                 {
                     // On top of the boss: pull it (start the encounter) — but only
                     // with the healer in range so the tank isn't soloing the open.
                     // When the healer lags it falls through and holds near the boss
                     // until heals arrive, then pulls.
                     // Only a hold: with the tank already in a fight nothing is being pulled, and the line read as a pull below the mark.
-                    if (healer_dry && !s.in_combat() && s.victim() != pb_boss->GetGUID() && ai.tank_diag_due(now_ms))
+                    if (healer_dry && !s.in_combat() && s.victim() != pb_boss->guid && ai.tank_diag_due(now_ms))
                         TC_LOG_INFO("playerbot.v2", "[pull_gate] {} holds the boss pull: healer {} at {}% mana (needs {}%); the tank is {:.0f}y from the boss",
-                                    s.name(), healer_dry_name, healer_dry_pct, Classic::PullReadyHealerManaPct(s), std::sqrt(bd2));
+                                    s.name(), healer_dry_name, healer_dry_pct, PullHealerManaMark(s, ai), std::sqrt(bd2));
                     // One start_attack per lockout window: with the trash already on the group the victim is not the boss on
                     // any tick, so the pull re-fired every tick (deadmines_full run 9: 42 "pulls the boss" lines) and fought
                     // the loose-mob pick-up for the tank's victim.
-                    uint64 const pull_key = pb_boss->GetGUID().GetCounter();
+                    uint64 const pull_key = pb_boss->guid.GetCounter();
                     // The mana users' wait: at most kBossDpsDrinkCapMs from the first tick the tank stood at the boss.
                     bool dps_wait = false;
-                    if (boss_dps_dry && s.victim() != pb_boss->GetGUID())
+                    if (boss_dps_dry && s.victim() != pb_boss->guid)
                     {
                         constexpr uint32 kBossDpsDrinkCapMs = 60000;
                         static std::mutex boss_wait_mu;
@@ -5677,7 +6033,7 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                     // The hold is made away from the boss: standing at its door (deadmines_full@sneed: 4-5 y from the Shredder, "holds the boss
                     // pull" while the fight went on) keeps the group in combat range, and nobody can sit and drink there. The tank walks back
                     // to the dry healer, out of the room, and the advance stays shut until she is above the mark (healer_in_adv).
-                    if (healer_dry && !s.in_combat() && s.victim() != pb_boss->GetGUID())
+                    if (healer_dry && !s.in_combat() && s.victim() != pb_boss->guid)
                     {
                         const float bx = healer_dry_x - sx0, by = healer_dry_y - sy0;
                         if (bx * bx + by * by > 8.0f * 8.0f && emit.move_to(healer_dry_x, healer_dry_y, healer_dry_z, /*run*/ false))
@@ -5692,22 +6048,22 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                     // A boss not yet in the fight is pulled once the trash on the tank is dead, not on top of it: sfk_rethilgore RC3,
                     // the tank pulled Rethilgore three times with a Whitescalp and a Bleak Worg still on it, the boss came in at 18:08:23
                     // with both adds alive, and the priest went from 100 % to 28 % mana in 30 s (healer_oom at 110 s and 134 s).
-                    const bool trash_on_tank = !pb_boss->IsInCombat() && s.fightable_attackers_count() > 0;
-                    if (trash_on_tank && healer_in_pull && s.victim() != pb_boss->GetGUID() && ai.tank_diag_due(now_ms))
+                    const bool trash_on_tank = !pb_boss->in_combat && s.fightable_attackers_count() > 0;
+                    if (trash_on_tank && healer_in_pull && s.victim() != pb_boss->guid && ai.tank_diag_due(now_ms))
                         TC_LOG_INFO("playerbot.v2", "[pull_gate] {} holds the boss pull: {} mob(s) still on the tank",
                                     s.name(), s.fightable_attackers_count());
                     // Raid lead: the boss is the player's to pull (LeadHoldsBossPull).
-                    if (healer_in_pull && !dps_wait && !trash_on_tank && s.victim() != pb_boss->GetGUID() &&
-                        LeadHoldsBossPull(s, ai, emit, pb_boss->GetGUID(), now_ms))
+                    if (healer_in_pull && !dps_wait && !trash_on_tank && s.victim() != pb_boss->guid &&
+                        LeadHoldsBossPull(s, ai, emit, pb_boss->guid, now_ms))
                         return true;
-                    if (healer_in_pull && !dps_wait && !trash_on_tank && s.victim() != pb_boss->GetGUID() &&
+                    if (healer_in_pull && !dps_wait && !trash_on_tank && s.victim() != pb_boss->guid &&
                         !ai.action_recently_tried(BotAI::ActionKind::PveTargetSwitch, pull_key, now_ms) &&
-                        emit.start_attack(pb_boss->GetGUID()))
+                        emit.start_attack(pb_boss->guid))
                     {
                         ai.note_action_retry(BotAI::ActionKind::PveTargetSwitch, pull_key, now_ms);
                         TC_LOG_INFO("playerbot.v2", "[pull_gate] {} pulls the boss: {} healer in range, healer mana {}%",
                                     s.name(), have_healer ? "a" : "no", healer_min_pct > 100 ? -1 : healer_min_pct);
-                        ai.note_engage(pb_boss->GetGUID(), now_ms);
+                        ai.note_engage(pb_boss->guid, now_ms);
                         ai.set_last_rule_fired("idle:dungeon_combat_pull_boss");
                         return true;
                     }
@@ -5916,36 +6272,11 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
         {
             if (Player* self_w = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
             {
-                struct WideBossCheck
-                {
-                    Player const* origin;
-                    std::vector<uint32_t> const& entries;
-                    float range;
-                    bool operator()(Creature* c) const
-                    {
-                        if (!BossFightable(origin, c)) return false;
-                        for (uint32_t e : entries)
-                            if (c->GetEntry() == e)
-                                return origin->IsWithinDistInMap(c, range);
-                        return false;
-                    }
-                };
                 constexpr float kWideScanR = 500.0f;   // whole-dungeon
                 constexpr float kWedgeStep = 20.0f;     // matches kMaxAdvanceStep
-                std::list<Creature*> wcre;
-                WideBossCheck wchk{self_w, advice.bosses, kWideScanR};
-                Trinity::CreatureListSearcher<WideBossCheck> wsearch(self_w, wcre, wchk);
-                Cell::VisitAllObjects(self_w, wsearch, kWideScanR);
                 // Earliest live boss in progression order (advice.bosses authored
-                // in encounter order) — never skip ahead to a later boss.
-                Creature* wboss = nullptr;
-                for (uint32_t bentry : advice.bosses)
-                {
-                    for (Creature* bc : wcre)
-                        if (bc && bc->GetEntry() == bentry && bc->IsAlive())
-                        { wboss = bc; break; }
-                    if (wboss) break;
-                }
+                // in encounter order), never skipping ahead to a later boss.
+                DungeonExecState::ScanUnit const* wboss = EarliestFightableBoss(s, advice.bosses, kWideScanR);
                 if (wboss)
                 {
                     float wsx, wsy, wsz; s.position(wsx, wsy, wsz);
@@ -6088,9 +6419,9 @@ bool DungeonCombatPositioning(BotSnapshotView const& s, BotAI& ai,
                         (!harbor_floor || s.fightable_attackers_count() == 0);
                     if (!harbor_hold && (ghost_push || segmented_push))
                     {
-                        const float wbx = wboss->GetPositionX();
-                        const float wby = wboss->GetPositionY();
-                        const float wbz = wboss->GetPositionZ();
+                        const float wbx = wboss->x;
+                        const float wby = wboss->y;
+                        const float wbz = wboss->z;
                         // Incremental off-mesh-aware progress step (idle navigator's
                         // far-boss tier). The net-progress gate inside the helper
                         // keeps this INERT at a true navmesh disconnect.
@@ -7633,27 +7964,50 @@ static bool DungeonNavLinkHop(Player* self, G3D::Vector3& step_out, bool* step_i
         End const ends[2] = { { l.ax, l.ay, l.az, l.bx, l.by, l.bz },
                               { l.bx, l.by, l.bz, l.ax, l.ay, l.az } };
         int const n = l.bidirectional ? 2 : 1;
+        // The bot hops from the mouth it stands at: the end nearer to it, and only when the far end is further off than that
+        // mouth. A link shorter than its radius has the bot inside both mouths' radius (WC's Serpentis cliff link 1: its ends
+        // are 10.6 y apart, radius 12): the first end in the row won, and a bot standing on the far end "hopped" to where it
+        // stood, which spent its hop cooldown, and never crossed (wc_full chain69b, 23 Nov: the four behind the tank hopped
+        // (-289.1,3.2)->(-288.2,-6.2) standing at (-288.2,-6.2), then followed incomplete paths away; the run stalled).
+        int   from = -1;
+        float from_d2 = 0.f;
         for (int d = 0; d < n; ++d)
         {
             const float dx = sx - ends[d].x, dy = sy - ends[d].y, dz = sz - ends[d].z;
-            if (dx*dx + dy*dy + dz*dz > l.radius * l.radius) continue;
-            if (!Playerbot::Services::Dungeons().TryClaimLinkHop(
-                    self->GetGUID().GetCounter(), l.id, now_ms))
-                continue;
-            if (Playerbot::BotAI* ai = Playerbot::Services::Registry().ai(
-                    self->GetGUID().GetCounter()))
-            {
-                ai->set_dungeon_cross(ends[d].ox, ends[d].oy, ends[d].oz, now_ms + 12000);
-                ai->set_dungeon_cross_direct(true);
-            }
-            step_out = G3D::Vector3(ends[d].ox, ends[d].oy, ends[d].oz);
-            *step_is_offmesh = true;
-            TC_LOG_INFO("playerbot.v2",
-                "[nav_link] {} hop link {} reason={} ({:.1f},{:.1f},{:.1f})->({:.1f},{:.1f},{:.1f})",
-                self->GetName(), l.id, reason, ends[d].x, ends[d].y, ends[d].z,
-                ends[d].ox, ends[d].oy, ends[d].oz);
-            return true;
+            const float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 > l.radius * l.radius) continue;
+            if (from < 0 || d2 < from_d2) { from = d; from_d2 = d2; }
         }
+        if (from >= 0)
+        {
+            const float fx = sx - ends[from].ox, fy = sy - ends[from].oy, fz = sz - ends[from].oz;
+            if (fx*fx + fy*fy + fz*fz <= from_d2)
+                from = -1;   // already at (or beyond) the far end: no crossing to make from here
+        }
+        if (from < 0)
+            continue;
+        End const& e = ends[from];
+        if (!Playerbot::Services::Dungeons().TryClaimLinkHop(
+                self->GetGUID().GetCounter(), l.id, now_ms))
+            continue;
+        if (Playerbot::BotAI* ai = Playerbot::Services::Registry().ai(
+                self->GetGUID().GetCounter()))
+        {
+            ai->set_dungeon_cross(e.ox, e.oy, e.oz, now_ms + 12000);
+            ai->set_dungeon_cross_direct(true);
+            // A one-way link that goes down a long way is a jump off a ledge: the bot falls it (a jump spline under gravity), as a
+            // player does. The Shaper's Terrace lands players on a ledge 54 y over a pool; a straight walk to the pool took 9 s
+            // through the air. A short one-way step down (WC's serpentine ledge, 14 y) keeps the straight move it was verified with.
+            constexpr float kLinkFallMinDrop = 20.0f;
+            ai->set_dungeon_cross_drop(!l.bidirectional && e.z - e.oz >= kLinkFallMinDrop);
+            ai->set_dungeon_cross_link_len(std::sqrt((e.ox - e.x) * (e.ox - e.x) + (e.oy - e.y) * (e.oy - e.y) + (e.oz - e.z) * (e.oz - e.z)));
+        }
+        step_out = G3D::Vector3(e.ox, e.oy, e.oz);
+        *step_is_offmesh = true;
+        TC_LOG_INFO("playerbot.v2",
+            "[nav_link] {} hop link {} reason={} ({:.1f},{:.1f},{:.1f})->({:.1f},{:.1f},{:.1f})",
+            self->GetName(), l.id, reason, e.x, e.y, e.z, e.ox, e.oy, e.oz);
+        return true;
     }
     return false;
 }
@@ -7721,13 +8075,17 @@ static bool DungeonTargetReachableAndStep(Player* self, float tx, float ty, floa
         self->GetPositionY() > -560.0f && self->GetPositionY() < -500.0f;
     auto gapLog = [&](char const* where, float sx, float sy, float sz, bool off)
     {
-        if (!gapDbg) return;
+        // Any map: an off-mesh step more than 30 y from the bot, which the caller commits as a crossing (sfk_full af59: a crossing to
+        // Razorclaw's spot 135 y off, and nothing said which branch made it).
+        const float fx = sx - self->GetPositionX(), fy = sy - self->GetPositionY(), fz = sz - self->GetPositionZ();
+        bool const far_off = off && fx * fx + fy * fy + fz * fz > 30.0f * 30.0f;
+        if (!gapDbg && !far_off) return;
         static uint32 s_gms = 0; const uint32 gn = GameTime::GetGameTimeMS();
         if (gn - s_gms < 1000u) return; s_gms = gn;
         TC_LOG_INFO("playerbot.v2",
-            "[gap_step] {} ret={} t=0x{:X} step=({:.1f},{:.1f},{:.1f}) off={} "
+            "[gap_step] {} ret={} t=0x{:X} pts={} step=({:.1f},{:.1f},{:.1f}) off={} "
             "self=({:.1f},{:.1f},{:.1f}) tgt=({:.1f},{:.1f},{:.1f})",
-            self->GetName(), where, uint32(t), sx, sy, sz, off,
+            self->GetName(), where, uint32(t), pg.GetPath().size(), sx, sy, sz, off,
             self->GetPositionX(), self->GetPositionY(), self->GetPositionZ(), tx, ty, tz);
     };
     // Why a dungeon step was refused, once per bot per 5 s: the path type, its points and where it ended. sfk_rethilgore (0.1.26
@@ -7876,7 +8234,12 @@ static bool DungeonTargetReachableAndStep(Player* self, float tx, float ty, floa
     // step to the Glutton, 165 y off down the hill, came back as such a line, and the tank walked the whole hill
     // under dungeon_offmesh_cross_hold, a crossing that never yields to a fight while it moves, and died to the ghouls behind it in
     // 23 s without a swing. Only a path over the navmesh has jumps in it.
-    const bool meshPath = !(t & PATHFIND_NOT_USING_PATH);
+    // The same holds for a path of only its two ends: over the navmesh a path breaks at every polygon portal and the smoothing
+    // steps it every few yards, so a two-point path longer than a step is a straight line drawn without the mesh, whatever its
+    // type bits. SFK courtyard (two navmesh floors 3.7 y apart, sfk_rethilgore 0.1.26 RC10: every path there came back as a
+    // straight line): such a line from the floor pocket at (-241.8,2124.7) to Razorclaw's spot, 135 y off, is the likeliest source of
+    // the af59 crossing that ran to (-202.6,2258.0) and set the tank down there; the far-step line above shows it next run.
+    const bool meshPath = !(t & PATHFIND_NOT_USING_PATH) && pts.size() > 2;
     for (size_t i = 1; i < pts.size(); ++i)
     {
         const float segx = pts[i].x - pts[i-1].x;
@@ -7911,7 +8274,7 @@ static bool DungeonTargetReachableAndStep(Player* self, float tx, float ty, floa
         // unchanged: ANY > 15y smoothed segment is an off-mesh jump. Either signal
         // flags the crossing and returns its far vertex.
         constexpr float kOffMeshJumpYards = 15.0f;
-        if (meshPath && (seg > kOffMeshJumpYards || segOffMesh))
+        if ((meshPath && seg > kOffMeshJumpYards) || segOffMesh)   // the generator's own off-mesh landing counts on any path
         {
             if (step_is_offmesh) *step_is_offmesh = true;
             step_out = G3D::Vector3(pts[i].x, pts[i].y, pts[i].z);
@@ -7996,8 +8359,19 @@ struct DungeonDetourVerdict
 static DungeonDetourVerdict DungeonTankDetour(Player* tank,
                                               float tx, float ty, float tz)
 {
-    DungeonDetourVerdict v;
     if (!tank || !tank->IsInWorld())
+        return DungeonDetourVerdict{};
+    return DungeonWalkDetourFrom(tank, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), tx, ty, tz);
+}
+
+// The walk from (sx,sy,sz) to the target on `pather`'s map. Another member's walk is measured with the caller's own Player
+// (its own tick's object, the same instance) from where that member stands in the group summary: the live Player of
+// another bot belongs to that bot's tick, and its map can have changed since the summary was taken.
+static DungeonDetourVerdict DungeonWalkDetourFrom(Player* pather, float sx, float sy, float sz,
+                                                  float tx, float ty, float tz)
+{
+    DungeonDetourVerdict v;
+    if (!pather || !pather->IsInWorld())
         return v;
     // Same guard the wedge watchdog uses (and this file's own
     // DungeonTargetReachableAndStep just above). Honest scope (final-review
@@ -8011,12 +8385,11 @@ static DungeonDetourVerdict DungeonTankDetour(Player* tank,
     if (!Playerbot::PathBudget::HasBudget(GameTime::GetGameTimeMS()))
         return v;
 
-    float sx = tank->GetPositionX(), sy = tank->GetPositionY(), sz = tank->GetPositionZ();
     float const dx = tx - sx, dy = ty - sy, dz = tz - sz;
     v.beeline = std::sqrt(dx * dx + dy * dy + dz * dz);
 
-    PathGenerator pg(tank);
-    v.ran = BotMovement::SehSafeCalculatePath(pg, tx, ty, tz);
+    PathGenerator pg(pather);
+    v.ran = BotMovement::SehSafeCalculatePathFrom(pg, sx, sy, sz, tx, ty, tz);
     PathType const pt = pg.GetPathType();
     v.computed = true;
     v.type = uint32(pt);
@@ -8062,6 +8435,19 @@ static bool DungeonTankDetourExcessiveVerbose(Player* tank, float tx, float ty, 
     return DungeonDetourExcessive(v);
 }
 
+// The same for another member's walk, measured on the caller's own Player from that member's spot (DungeonWalkDetourFrom).
+static bool DungeonWalkDetourExcessiveVerboseFrom(Player* pather, float sx, float sy, float sz, float tx, float ty, float tz,
+                                                  float& out_beeline, float& out_path_len,
+                                                  float& out_ratio, bool& out_complete)
+{
+    DungeonDetourVerdict const v = DungeonWalkDetourFrom(pather, sx, sy, sz, tx, ty, tz);
+    out_beeline  = v.beeline;
+    out_path_len = v.path_len;
+    out_ratio    = v.ratio;
+    out_complete = v.complete;
+    return DungeonDetourExcessive(v);
+}
+
 // ── Off-mesh recovery for a stranded dungeon bot ──────────────────────────────
 // A bot that lands OFF the navmesh in a bridge gap (Deadmines Gap-1: the z51 hole
 // at ~(-213,-537) over genuine void, srcpoly=0) can path nowhere — every move_to
@@ -8075,10 +8461,15 @@ static bool DungeonTankDetourExcessiveVerbose(Player* tank, float tx, float ty, 
 // carries the bot across the few yards of void to the solid poly even though no
 // ground spans the gap (a spline does not fall mid-flight) — the next tick then
 // re-paths from real mesh. No-op for any on-mesh bot (the FARFROMPOLY gate).
+// A bot ON the mesh, but on a scrap of it that no path leaves (BotMovement::MeshIslandExit: a few polygons of a slope Recast kept
+// apart from the floor), walks the yard or two off it straight, as it walked on. blackmaw_full af61 (22 Nov): the tank ended a
+// fight on 6 polygons of the slope at (3589.1,3348.0,274.2), every path from there ended on their edge 6 y away, and the group
+// stood 120 s (group_stalled). A crossing under way (dungeon_cross) lands where it lands and is left alone.
 static bool DungeonNudgeOntoMesh(Player* self, BotIntentEmitter& emit, BotAI& ai)
 {
     if (!self) return false;
-    if (!Playerbot::PathBudget::HasBudget(GameTime::GetGameTimeMS()))
+    uint32 const nudge_now = GameTime::GetGameTimeMS();
+    if (!Playerbot::PathBudget::HasBudget(nudge_now))
         return false;
     Position on_mesh;
     if (!BotMovement::NearestNavPoint(self, self->GetPositionX(), self->GetPositionY(),
@@ -8094,7 +8485,35 @@ static bool DungeonNudgeOntoMesh(Player* self, BotIntentEmitter& emit, BotAI& ai
         BotMovement::SehSafeCalculatePath(pg, on_mesh.GetPositionX(),
                                           on_mesh.GetPositionY(), on_mesh.GetPositionZ());
         if (!(pg.GetPathType() & PATHFIND_FARFROMPOLY))
-            return false;   // on-mesh — nothing to recover
+        {
+            // On the mesh: on a scrap of it?
+            if (ai.dungeon_cross_active(nudge_now) || self->isMoving())
+                return false;
+            constexpr float kIslandStepYd = 8.0f;   // blackmaw: the floor 5.9 y from the scrap
+            Position off_scrap;
+            int scrap_polys = 0;
+            if (!BotMovement::MeshIslandExit(self, kIslandStepYd, off_scrap, &scrap_polys))
+                return false;   // on-mesh — nothing to recover
+            emit.move_to(off_scrap.GetPositionX(), off_scrap.GetPositionY(), off_scrap.GetPositionZ(),
+                         /*run=*/true, /*direct=*/true);
+            static std::mutex s_scrapLogMu;
+            static std::unordered_map<uint64, uint32> s_scrapLogAt;
+            {
+                std::lock_guard<std::mutex> lk(s_scrapLogMu);
+                uint32& at = s_scrapLogAt[self->GetGUID().GetCounter()];
+                if (at == 0 || nudge_now - at >= 5000u)
+                {
+                    at = nudge_now ? nudge_now : 1u;
+                    TC_LOG_INFO("playerbot.v2",
+                        "[mesh_scrap] {} stands on a scrap of navmesh ({} polygons) at ({:.1f},{:.1f},{:.1f}) map {}: walks {:.1f} y off it to ({:.1f},{:.1f},{:.1f})",
+                        self->GetName(), scrap_polys, self->GetPositionX(), self->GetPositionY(), self->GetPositionZ(),
+                        self->GetMapId(), self->GetExactDist2d(off_scrap.GetPositionX(), off_scrap.GetPositionY()),
+                        off_scrap.GetPositionX(), off_scrap.GetPositionY(), off_scrap.GetPositionZ());
+                }
+            }
+            ai.set_last_rule_fired("idle:dungeon_mesh_scrap_step");
+            return true;
+        }
     }
     emit.move_to(on_mesh.GetPositionX(), on_mesh.GetPositionY(),
                  on_mesh.GetPositionZ(), /*run=*/true);
@@ -8693,6 +9112,54 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                 for (auto const& m : *mems)
                     if (!m.is_bot && m.online && m.map_id == s.map_id())
                     { human_in_instance = true; break; }
+        bool const run_done_with_player = s.dungeon_complete() && human_in_instance;
+        // A finder run that a player is in ends like a player's own: once the dungeon is done, each bot in turn says goodbye in
+        // party chat, hearths and leaves the group (Karrz, 2026-11-24: "once the raid is completed, I would like the bots to leave,
+        // to just start hearthing out, to make it look real"). Finder run = LFGMgr has the bot in the matched dungeon or done with
+        // it; a party the player made by hand keeps its bots (they follow and fight until the player says otherwise). Turns are
+        // spread 4-24 s apart by bot id, so they leave one by one. Playerbot.Dungeon.FinderGoodbye (default 1) turns it off.
+        static bool const finder_goodbye_on = sConfigMgr->GetBoolDefault("Playerbot.Dungeon.FinderGoodbye", true);
+        BotAI::FinderGoodbye& goodbye = ai.finder_goodbye();
+        if (!s.dungeon_complete())
+            goodbye = {};
+        else if (finder_goodbye_on && human_in_instance && g.exists() &&
+                 (s.lfg_in_dungeon() || s.lfg_finished_dungeon()) &&
+                 !s.in_combat() && !s.is_casting() && !ai.holding_position(now_ms))
+        {
+            uint32 const inst = s.raw().position.instance_id;
+            if (goodbye.map != s.map_id() || goodbye.instance != inst)
+            {
+                uint32 const turn_ms = 4000u + (uint32(ai.bot_id()) * 2654435761u >> 8) % 20000u;
+                goodbye = { s.map_id(), inst, (now_ms ? now_ms : 1u) + turn_ms, 0 };
+                TC_LOG_INFO("playerbot.v2", "[finder_goodbye] {} dungeon {} done with a player in the group: goodbye in {} s",
+                    s.name(), s.map_id(), turn_ms / 1000u);
+            }
+            if (goodbye.stage == 0 && now_ms >= goodbye.at_ms)
+            {
+                char const* phrases[] = { "thanks for the run, all", "ty all, gg", "gg, thanks", "thanks all, take care",
+                                          "nice run, thanks", "ty for the group" };
+                emit.say(phrases[uint32(ai.bot_id()) % (sizeof(phrases) / sizeof(phrases[0]))]);
+                goodbye.stage = 1;
+                goodbye.at_ms = now_ms + 2500u;
+                ai.set_last_rule_fired("idle:finder_goodbye_say");
+                return true;
+            }
+            if (goodbye.stage == 1 && now_ms >= goodbye.at_ms)
+            {
+                // The hearth carries the bot out; leaving the group in the same tick ends its part in the run whether the
+                // hearth is ready or not (without one the instance sends a bot that left the group out on its own).
+                bool const hearth = s.can_hearth();
+                if (hearth)
+                    emit.hearth();
+                emit.group_leave();
+                ai.set_dungeon_run_mode(BotAI::DungeonRunMode::Off);
+                goodbye.stage = 2;
+                TC_LOG_INFO("playerbot.v2", "[finder_goodbye] {} leaves the group{}", s.name(), hearth ? " and hearths" : " (no hearth ready)");
+                ai.set_last_rule_fired("idle:finder_goodbye_leave");
+                return true;
+            }
+        }
+
         // Not under an owner Hold / Stay: a bot told to hold its spot does not leave the instance (zg_thekal 2026-10-20: the tank
         // hearthed from the landing in the tick between the scenario Hold lapsing at the order time and its renewal by the mana wait,
         // after the trash clearing had killed Hakkar and marked the raid's final encounter done).
@@ -8798,11 +9265,14 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
             // through to idle:dungeon_regroup_follow_tank and rejoins the group.
             bool cc_cohered = true;
             bool tank_fighting = false;   // the script list is for mobs before the pull, not once the tank is in a fight
+            ObjectGuid cc_tank;           // whose walk decides if an idle mob of the list is a pull at all (below)
+            float cc_tank_x = 0.f, cc_tank_y = 0.f, cc_tank_z = 0.f;   // where it stands (the group summary)
             if (GroupMemberSummary const* cctk = GroupAnchorTank(s, ai, g))
                 if (cctk->online && cctk->guid != s.guid() &&
                     cctk->map_id == s.map_id())
                 {
                     tank_fighting = cctk->in_combat;
+                    if (cctk->is_alive) { cc_tank = cctk->guid; cc_tank_x = cctk->x; cc_tank_y = cctk->y; cc_tank_z = cctk->z; }
                     float ccx, ccy, ccz; s.position(ccx, ccy, ccz);
                     const float ex = cctk->x - ccx, ey = cctk->y - ccy, ez = cctk->z - ccz;
                     // 22y MUST match the regroup_follow_tank trigger (>22y, line
@@ -8911,14 +9381,52 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                         for (uint32_t e : advice.cc_priority_entries)
                             if (e == u.entry) { c.in_priority_list = true; break; }
                         c.is_kill_focus = !kill_focus.IsEmpty() && u.guid == kill_focus;
+                        c.tank_cannot_pull = !u.unit_in_combat && u.victim.IsEmpty() &&
+                            ai.pack_pull_gate().Get(u.guid.GetCounter(), now_ms) == PackPullGate::Verdict::Gated;
                         cands.push_back(c);
                         cand_guids.push_back(u.guid);
                         cand_spells.push_back(sp);
                     }
                     // The group's kill focus (the most dangerous engaged caster of the list) first, else the first eligible add
                     // (Bot/CcPick.h).
-                    if (size_t const at = PickCcTarget(cands); at != kNoCcTarget)
+                    // Crowd control on an idle mob pulls its pack, so an idle pick must be a mob the tank can walk to: the
+                    // tank's pack stop passes by a pack it can only reach the long way round (PackPullGate.h), and a sheep on
+                    // one brings it to the group with nobody to hold it (lbrs_full af58: the mage on the ledge sheeped 9240, 13 y
+                    // below and a 210 y walk for the tank; the pack came up, the tank went down after it into two more and the
+                    // priest died). The tank's walk is measured as the pack stop measures it, at most once per verdict window
+                    // per mob (the caster's own PackPullGate), and an unmeasured walk never holds the cast (fail-open).
+                    // The walk is measured on the caster's own Player from the tank's spot in the group summary, never on the
+                    // tank's live Player, which belongs to the tank's own tick.
+                    Player* const cc_self_p = !cc_tank.IsEmpty() && Services::Config().pull_gate_enabled()
+                        ? ObjectAccessor::FindConnectedPlayer(s.guid()) : nullptr;
+                    for (int tries = 0; tries < 4 && pick.IsEmpty(); ++tries)
                     {
+                        size_t const at = PickCcTarget(cands);
+                        if (at == kNoCcTarget)
+                            break;
+                        NearbyUnit const* pu = nullptr;
+                        for (auto const& u : s.raw().combat.nearby_enemies)
+                            if (u.guid == cand_guids[at]) { pu = &u; break; }
+                        uint64 const low = cand_guids[at].GetCounter();
+                        if (pu && cc_self_p && !pu->unit_in_combat && pu->victim.IsEmpty() &&
+                            ai.pack_pull_gate().Get(low, now_ms) == PackPullGate::Verdict::Unknown)
+                        {
+                            DungeonDetourVerdict const dv =
+                                DungeonWalkDetourFrom(cc_self_p, cc_tank_x, cc_tank_y, cc_tank_z, pu->x, pu->y, pu->z);
+                            if (dv.computed)
+                            {
+                                bool const gated = DungeonDetourExcessive(dv);
+                                ai.pack_pull_gate().Note(low, gated, now_ms);
+                                if (gated)
+                                {
+                                    TC_LOG_INFO("playerbot.v2",
+                                        "[pull_gate] SKIP rule=auto_cc bot={} entry {} ({}): beeline={:.1f} path={:.1f} ratio={:.2f} complete={}",
+                                        s.name(), pu->entry, low, dv.beeline, dv.path_len, dv.ratio, dv.complete ? 1 : 0);
+                                    cands[at].tank_cannot_pull = true;
+                                    continue;
+                                }
+                            }
+                        }
                         pick = cand_guids[at];
                         cc = cand_spells[at];
                     }
@@ -8936,7 +9444,7 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                 // reach from here", so the tank's 8 s wait ran out with nobody walking in (smlibrary_loksey 0.1.28b: "the held mob 13
                 // was not held after 8105 ms", five mobs came at once).
                 PrePullCc::Request pr;
-                if (!moon.IsEmpty() && PrePullCc::Get(s.group_guid().GetCounter(), now_ms, pr) && !pr.done_ms && pr.mob == moon &&
+                if (!moon.IsEmpty() && PrePullCc::Get(s.group_guid().GetCounter(), now_ms, pr) && !pr.done_ms && !pr.on_pull && pr.mob == moon &&
                     pr.caster_low == s.guid().GetCounter())
                     for (auto const& u : s.raw().combat.nearby_enemies)
                     {
@@ -9671,7 +10179,7 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
         const int   ready_hp_pct  = tight_engage ? 85 : 70;
         // Shared with the drink rules (ClassicUpkeep.h): a grouped healer in an
         // instance starts drinking below this, so it never holds the pull dry.
-        const int64 kReadyHealerManaPct = Classic::PullReadyHealerManaPct(s);
+        const int64 kReadyHealerManaPct = PullHealerManaMark(s, ai);
         const float ready_other_y = tight_engage ? 25.0f : 50.0f;
         // "Tank leads" ("lead on" / "lead pause"; BotAI::TankLead): what the leading tank waits for, for its word to the group below
         // (nullptr: not held for a reason the player can act on).
@@ -10175,40 +10683,14 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
             {
                 // Earliest live boss in progression order (advice.bosses is
                 // authored in encounter order), whole-dungeon scan radius.
-                struct CatchupBossCheck
-                {
-                    Player const* origin;
-                    std::vector<uint32_t> const& entries;
-                    float range;
-                    bool operator()(Creature* c) const
-                    {
-                        if (!BossFightable(origin, c)) return false;
-                        for (uint32_t e : entries)
-                            if (c->GetEntry() == e)
-                                return origin->IsWithinDistInMap(c, range);
-                        return false;
-                    }
-                };
                 constexpr float kCuScanR = 500.0f;
-                std::list<Creature*> cu_bcre;
-                CatchupBossCheck cu_chk{self_cu, advice.bosses, kCuScanR};
-                Trinity::CreatureListSearcher<CatchupBossCheck> cu_search(
-                    self_cu, cu_bcre, cu_chk);
-                Cell::VisitAllObjects(self_cu, cu_search, kCuScanR);
-                Creature* cu_boss = nullptr;
-                for (uint32_t be : advice.bosses)
-                {
-                    for (Creature* bc : cu_bcre)
-                        if (bc && bc->GetEntry() == be && bc->IsAlive())
-                        { cu_boss = bc; break; }
-                    if (cu_boss) break;
-                }
+                DungeonExecState::ScanUnit const* cu_boss = EarliestFightableBoss(s, advice.bosses, kCuScanR);
                 if (cu_boss)
                 {
                     float tcx, tcy, tcz; s.position(tcx, tcy, tcz);
-                    const float cbx = cu_boss->GetPositionX();
-                    const float cby = cu_boss->GetPositionY();
-                    const float cbz = cu_boss->GetPositionZ();
+                    const float cbx = cu_boss->x;
+                    const float cby = cu_boss->y;
+                    const float cbz = cu_boss->z;
                     // 2D progress toward the boss: who has advanced furthest down
                     // the corridor. The boss sits on the z19 floor while the tank
                     // is on a z51 ledge — vertical separation must NOT count as
@@ -10266,7 +10748,7 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                                 TC_LOG_INFO("playerbot.v2",
                                     "[tank_catchup] {} boss={} tank_dist={:.1f} "
                                     "fwd_dist={:.1f} via={}",
-                                    s.name(), cu_boss->GetEntry(),
+                                    s.name(), cu_boss->entry,
                                     std::sqrt(tank_db2), std::sqrt(fwd_db2), via);
                             ai.set_last_rule_fired("idle:dungeon_tank_catchup_boss");
                             return true;
@@ -10292,6 +10774,10 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
             !pve_off_tank &&
             s.is_in_dungeon() &&
             !s.is_encounter_in_progress() &&
+            // The run is done and a player is in the group: the tank no longer leads to trash; the player says what else is
+            // cleared (alcaz af70c, 2026-11-24: after Blazeroar the tank walked 70 y back across the prison to pull a pack it had
+            // passed, and Karrz read it as the run going somewhere else).
+            !run_done_with_player &&
             // G-P1a: mirror tank_pull_next's gates so a paused or phase-locked
             // tank doesn't keep marching the group into the next pack — a real
             // tank stops when the leader says "wait"/"inc" and never advances
@@ -10665,6 +11151,11 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                 // each hop short enough for followers to track without stranding
                 // on a harbor z-transition.
                 constexpr float kMaxAdvanceStep = 20.0f;
+                // Off the mesh, or on a scrap of it no path leaves: back onto the floor first, or every advance below is refused
+                // from where he stands (blackmaw_full af61: 120 s on a 6-polygon scrap of the slope after a fight).
+                if (Player* self_nm = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
+                    if (DungeonNudgeOntoMesh(self_nm, emit, ai))
+                        return true;
                 // Diagnostic accumulators — filled by each advance branch;
                 // reported once in the [tank_adv_diag] NO-TARGET log below.
                 int    diag_s150_cand    = 0;
@@ -10741,40 +11232,12 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                         // Glubtok's spot, Helix reach=0, never reaching the foundry
                         // approach where Helix becomes reach=1). Beyond this, defer.
                         constexpr float kBossApproachR  = 30.0f;
-                        struct BossEntryCheck
-                        {
-                            Player const* origin;
-                            std::vector<uint32_t> const& entries;
-                            float range;
-                            // Every LIVING boss of the list, fightable or not: a boss that cannot be fought yet (the Unbound
-                            // Spirit of Blackmaw Hold until Elder Bramblesnap's ritual has run) is still there, so it is owed and
-                            // must not be waived; only a fightable one is a target (the pick below).
-                            bool operator()(Creature* c) const
-                            {
-                                if (!c || !c->IsAlive()) return false;
-                                for (uint32_t e : entries)
-                                    if (c->GetEntry() == e)
-                                        return origin->IsWithinDistInMap(c, range);
-                                return false;
-                            }
-                        };
-                        std::list<Creature*> bcre;
-                        BossEntryCheck bchk{self_be, advice.bosses, kBossScanR};
-                        Trinity::CreatureListSearcher<BossEntryCheck> bsearch(self_be, bcre, bchk);
-                        Cell::VisitAllObjects(self_be, bsearch, kBossScanR);
-
                         // Commit to the EARLIEST live boss in progression order
                         // (advice.bosses is authored in encounter order). Once
                         // chosen, never skip ahead to a later boss this tick.
-                        Creature* boss_target = nullptr;
                         int       found_idx = -1;
-                        for (int bi = 0; bi < static_cast<int>(advice.bosses.size()); ++bi)
-                        {
-                            for (Creature* bc : bcre)
-                                if (bc && bc->GetEntry() == advice.bosses[bi] && BossFightable(self_be, bc))
-                                { boss_target = bc; found_idx = bi; break; }
-                            if (boss_target) break;
-                        }
+                        DungeonExecState::ScanUnit const* boss_target =
+                            EarliestFightableBoss(s, advice.bosses, kBossScanR, &found_idx);
                         // Boss-target hysteresis (SFK Baron Ashbury flicker,
                         // 2026-07-25). The earliest UN-KILLED boss is
                         // bosses[bosses_done_count]; it is definitionally alive, so
@@ -10815,8 +11278,8 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                         auto owed_alive_in_scan = [&](int idx) -> bool
                         {
                             if (idx < 0 || idx >= static_cast<int>(advice.bosses.size())) return false;
-                            for (Creature* bc : bcre)
-                                if (bc && bc->GetEntry() == advice.bosses[idx]) return true;
+                            for (auto const& bc : s.raw().dungeon_exec.scan_bosses)
+                                if (bc.entry == advice.bosses[idx]) return true;
                             return false;
                         };
                         // No fightable boss within the scan while a boss is still owed: the owed boss and every later one
@@ -10885,11 +11348,11 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             // cell ledge (z73.8). DISABLE engage (null creature) so we
                             // never pull the stand-in; once the tank closes and the caged
                             // boss enters scan, found_idx == done_idx restores the live pull.
-                            Creature* engage_target = boss_target;
-                            const uint32 nav_entry = boss_target ? boss_target->GetEntry() : advice.bosses[done_idx];
-                            float btx = boss_target ? boss_target->GetPositionX() : 0.f;
-                            float bty = boss_target ? boss_target->GetPositionY() : 0.f;
-                            float btz = boss_target ? boss_target->GetPositionZ() : 0.f;
+                            DungeonExecState::ScanUnit const* engage_target = boss_target;
+                            const uint32 nav_entry = boss_target ? boss_target->entry : advice.bosses[done_idx];
+                            float btx = boss_target ? boss_target->x : 0.f;
+                            float bty = boss_target ? boss_target->y : 0.f;
+                            float btz = boss_target ? boss_target->z : 0.f;
                             if ((!boss_target || found_idx > done_idx) && done_idx >= 0 && done_idx <
                                 static_cast<int>(advice.progression_waypoints.size()))
                             {
@@ -10897,6 +11360,10 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                                 btx = wp.x; bty = wp.y; btz = wp.z;
                                 engage_target = nullptr;
                             }
+                            // The boss the tank goes for: the live one it can engage, or the owed one whose waypoint it steers to
+                            // (logs and the boss-headway watch; boss_target may be a later stand-in).
+                            uint32 const owed_entry = engage_target ? engage_target->entry
+                                : (done_idx >= 0 && done_idx < static_cast<int>(advice.bosses.size()) ? uint32(advice.bosses[done_idx]) : 0u);
                             adv_have_boss = true;
                             adv_boss_x = btx;
                             adv_boss_y = bty;
@@ -10906,7 +11373,7 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             const float bdz = btz - bz_adv;
                             const float bd2 = bdx*bdx + bdy*bdy + bdz*bdz;
                             const bool  in_los =
-                                engage_target && self_be->IsWithinLOSInMap(engage_target);
+                                engage_target && engage_target->in_los;
                             G3D::Vector3 boss_step;
                             bool boss_step_offmesh = false;
                             const bool reachable = DungeonTargetReachableAndStep(
@@ -10987,12 +11454,12 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             if (engage_target && bd2 <= kBossEngageR2 && in_los)
                             {
                                 // Raid lead: the tank stands here until the player pulls or says "go" (LeadHoldsBossPull).
-                                if (LeadHoldsBossPull(s, ai, emit, engage_target->GetGUID(), now_ms))
+                                if (LeadHoldsBossPull(s, ai, emit, engage_target->guid, now_ms))
                                     return true;
                                 // Pull: stationary boss, chasing can't overshoot.
-                                if (!emit.start_attack(engage_target->GetGUID()))
+                                if (!emit.start_attack(engage_target->guid))
                                     return false;
-                                ai.note_engage(engage_target->GetGUID(), now_ms);
+                                ai.note_engage(engage_target->guid, now_ms);
                                 ai.set_last_rule_fired("idle:dungeon_engage_boss");
                                 return true;
                             }
@@ -11009,7 +11476,24 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             {
                                 uint32 const stuck_ms = ai.stride_note(s.map_id(), boss_step.x, boss_step.y, boss_step.z,
                                                                        bx_adv, by_adv, bz_adv, now_ms);
-                                if (stuck_ms >= BotAI::kStrideStallMs)
+                                // And toward the boss itself: a dead end entered and left by turns restarts the step watch
+                                // (BotAI::stride_boss_note). Measured to the point the tank steers to (btx, bty, btz): the owed
+                                // boss's waypoint while a later boss stands in for it, never the stand-in, which is not where the
+                                // tank is going (and is not there at all when the owed boss is out of the scan: exc_full af69i
+                                // crashed on boss_target->entry here).
+                                uint32 const boss_stuck_ms = ai.stride_boss_note(s.map_id(), owed_entry, bx_adv, by_adv, bz_adv,
+                                                                                 btx, bty, btz, now_ms);
+                                if (boss_stuck_ms >= BotAI::kStrideBossStallMs)
+                                {
+                                    stride_dead = true;
+                                    ai.note_move_refused(boss_step.x, boss_step.y, boss_step.z, now_ms);
+                                    TC_LOG_INFO("playerbot.v2",
+                                        "[boss_nav] {} boss={} strides got no closer than {:.1f} y in {} ms (now {:.1f} y, step "
+                                        "({:.1f},{:.1f},{:.1f})): stride refused, the route and the other steps take over",
+                                        s.name(), owed_entry, ai.stride_boss_best(), boss_stuck_ms, std::sqrt(bd2),
+                                        boss_step.x, boss_step.y, boss_step.z);
+                                }
+                                else if (stuck_ms >= BotAI::kStrideStallMs)
                                 {
                                     stride_dead = true;
                                     ai.note_move_refused(boss_step.x, boss_step.y, boss_step.z, now_ms);
@@ -11822,6 +12306,7 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                     if (u.guid == ai.last_engage_target() &&
                         now_ms - ai.last_engage_at_ms() < ai.last_engage_shield_ms()) continue;
                     if (ai.start_attack_recently_refused(u.guid.GetCounter(), now_ms)) continue;
+                    if (ai.pack_pull_gate().Get(u.guid.GetCounter(), now_ms) == PackPullGate::Verdict::Gated) continue;   // as tank_pull_next
                     const float dx = u.x - bx_adv;
                     const float dy = u.y - by_adv;
                     const float dz = u.z - bz_adv;
@@ -11981,13 +12466,9 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                 {
                     if (Player* self = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
                     {
-                        constexpr float kTrashScanRadius = 150.0f;
-                        std::list<Unit*> hostiles;
-                        Trinity::AnyUnfriendlyUnitInObjectRangeCheck chk(
-                            self, self, kTrashScanRadius);
-                        Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck>
-                            searcher(self, hostiles, chk);
-                        Cell::VisitAllObjects(self, searcher, kTrashScanRadius);
+                        // The builder's scan_hostiles (DungeonExecState::kScanHostileYd = 150 y): alive creatures the bot may
+                        // attack, not critters, totems or companion pets. No grid walk on this thread.
+                        auto const& hostiles = s.raw().dungeon_exec.scan_hostiles;
 
                         // Pick the NEAREST hostile Detour can actually walk to.
                         // Cell::VisitAllObjects is a 2D GRID scan — it returns
@@ -11997,22 +12478,17 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                         // a real walkable path; if none is reachable we leave nearest
                         // null and fall through to boss/waypoint progression. The
                         // path test runs only until the first reachable hit.
-                        std::vector<std::pair<float, Unit*>> cand;
+                        std::vector<std::pair<float, DungeonExecState::ScanUnit const*>> cand;
                         cand.reserve(hostiles.size());
-                        for (Unit* u : hostiles)
+                        for (DungeonExecState::ScanUnit const& hu : hostiles)
                         {
-                            if (!u || !u->IsAlive()) continue;
-                            if (u->IsCritter() || u->IsTotem()) continue;
-                            if (u->GetCreatureType() == CREATURE_TYPE_NON_COMBAT_PET)
-                                continue;
-                            if (!self->IsValidAttackTarget(u)) continue;
+                            DungeonExecState::ScanUnit const* u = &hu;
                             // Skip per-dungeon environmental encounter objects.
                             {
                                 bool env_ignored = false;
-                                if (Creature const* c = u->ToCreature())
-                                    for (uint32_t ie : advice.ignore_entries)
-                                        if (ie == c->GetEntry())
-                                        { env_ignored = true; break; }
+                                for (uint32_t ie : advice.ignore_entries)
+                                    if (ie == u->entry)
+                                    { env_ignored = true; break; }
                                 if (env_ignored) continue;
                             }
                             // Directional: skip BACKWARD trash (farther from the boss
@@ -12023,36 +12499,36 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             // Gap-1 NE oscillation to the crime scene, 2026-06-26).
                             if (adv_have_boss)
                             {
-                                const float cbx = adv_boss_x - u->GetPositionX();
-                                const float cby = adv_boss_y - u->GetPositionY();
+                                const float cbx = adv_boss_x - u->x;
+                                const float cby = adv_boss_y - u->y;
                                 const float tbx = adv_boss_x - bx_adv;
                                 const float tby = adv_boss_y - by_adv;
                                 if (cbx*cbx + cby*cby > tbx*tbx + tby*tby + 15.0f*15.0f)
                                     continue;
                             }
-                            const float dxu = u->GetPositionX() - bx_adv;
-                            const float dyu = u->GetPositionY() - by_adv;
-                            const float dzu = u->GetPositionZ() - bz_adv;
+                            const float dxu = u->x - bx_adv;
+                            const float dyu = u->y - by_adv;
+                            const float dzu = u->z - bz_adv;
                             cand.emplace_back(dxu * dxu + dyu * dyu + dzu * dzu, u);
                         }
                         std::sort(cand.begin(), cand.end(),
                                   [](auto const& a, auto const& b) { return a.first < b.first; });
                         G3D::Vector3 scan_step;
-                        Unit* nearest = nullptr;
+                        DungeonExecState::ScanUnit const* nearest = nullptr;
                         for (auto const& cu : cand)
                         {
                             if (DungeonTargetReachableAndStep(
                                     self,
-                                    cu.second->GetPositionX(),
-                                    cu.second->GetPositionY(),
-                                    cu.second->GetPositionZ(),
+                                    cu.second->x,
+                                    cu.second->y,
+                                    cu.second->z,
                                     kMaxAdvanceStep, scan_step))
                             { nearest = cu.second; break; }
                         }
                         diag_s150_cand  = (int)cand.size();
                         diag_s150_reach = nearest != nullptr;
                         if (!cand.empty())
-                            diag_s150_first = cand.front().second->GetEntry();
+                            diag_s150_first = cand.front().second->entry;
                         if (nearest)
                         {
                             // Use the navmesh path's own waypoints (scan_step)
@@ -12098,36 +12574,17 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                     if (Player* self = ObjectAccessor::FindConnectedPlayer(s.raw().guid))
                     {
                         constexpr float kBossScanRadius = 500.0f;
-                        Creature* next_boss = nullptr;
-                        // Perf 2026-05-22: was M× Cell::VisitAllObjects
-                        // (one per boss entry). 1000 bots × 5Hz × M=5
-                        // bosses = 25K 500y grid walks/sec. Replaced
-                        // with a single visit + inline entry-set
-                        // membership check. Same correctness; M× CPU
-                        // win. The match check is hot — pass entries
-                        // by reference and break on first hit.
-                        struct AliveBossEntryCheck
+                        DungeonExecState::ScanUnit const* next_boss = nullptr;
+                        // The builder's scan_bosses (DungeonExecState::ScanUnit): no grid walk on this thread.
+                        float nbx, nby, nbz; s.position(nbx, nby, nbz);
+                        std::vector<DungeonExecState::ScanUnit const*> creatures;
+                        for (auto const& u : s.raw().dungeon_exec.scan_bosses)
                         {
-                            Player const* origin;
-                            std::vector<uint32_t> const& entries;
-                            float range;
-                            AliveBossEntryCheck(Player const* o, std::vector<uint32_t> const& e, float r)
-                                : origin(o), entries(e), range(r) {}
-                            bool operator()(Creature* c) const
-                            {
-                                if (!BossFightable(origin, c)) return false;
-                                bool match = false;
-                                for (uint32_t e : entries)
-                                    if (c->GetEntry() == e) { match = true; break; }
-                                if (!match) return false;
-                                return origin->IsWithinDistInMap(c, range);
-                            }
-                        };
-                        std::list<Creature*> creatures;
-                        AliveBossEntryCheck chk(self, advice.bosses, kBossScanRadius);
-                        Trinity::CreatureListSearcher<AliveBossEntryCheck>
-                            searcher(self, creatures, chk);
-                        Cell::VisitAllObjects(self, searcher, kBossScanRadius);
+                            const float dx = u.x - nbx, dy = u.y - nby, dz = u.z - nbz;
+                            if (u.fightable && dx * dx + dy * dy + dz * dz <= kBossScanRadius * kBossScanRadius &&
+                                std::find(advice.bosses.begin(), advice.bosses.end(), u.entry) != advice.bosses.end())
+                                creatures.push_back(&u);
+                        }
                         // Pick the EARLIEST boss in progression order (advice.bosses
                         // is authored in the instance's encounter order) that has a
                         // live creature Detour can actually WALK to — NOT
@@ -12147,11 +12604,11 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             static_cast<int>(ai.dungeon_owed_floor(self->GetMapId(), s.raw().dungeon_exec.bosses_done_count)));
                         for (int bi = 0; bi < static_cast<int>(advice.bosses.size()); ++bi)
                         {
-                            for (Creature* c : creatures)
-                                if (c && c->GetEntry() == advice.bosses[bi] &&
+                            for (DungeonExecState::ScanUnit const* c : creatures)
+                                if (c->entry == advice.bosses[bi] &&
                                     DungeonTargetReachableAndStep(
                                         self,
-                                        c->GetPositionX(), c->GetPositionY(), c->GetPositionZ(),
+                                        c->x, c->y, c->z,
                                         kMaxAdvanceStep, boss_step))
                                 { next_boss = c; next_boss_idx = bi; break; }
                             if (next_boss) break;
@@ -12171,6 +12628,37 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             emit.move_to(boss_step.x, boss_step.y, boss_step.z,
                                          /*run=*/true);
                             ai.set_last_rule_fired("idle:dungeon_tank_advance_boss");
+                            return true;
+                        }
+                    }
+                }
+
+                // A dungeon with a route: the last-resort step is the route's next crumb, never the boss waypoint straight. The
+                // boss waypoint's straight path can run the other way from the route (drowned_full af70c 2026-11-25: after Deathless
+                // Marrow the route goes north round the flooded quarter to the Primeval Elemental, the navmesh path to its spawn goes
+                // south; for the last 1400 s of the run the tank stepped north on the route, then south on this fallback, between
+                // y 3036 and 3054, and the group stood. Every navigator above declined on the in-between ticks).
+                if (!close_target && !far_target && !advice.route_waypoints.empty())
+                {
+                    int32_t const rcur = ai.dungeon_route_wp(s.map_id());
+                    if (rcur >= 0)
+                    {
+                        size_t const ni = std::min(size_t(rcur) + 1, advice.route_waypoints.size() - 1);
+                        auto const& rw = advice.route_waypoints[ni];
+                        const float dxr = rw.x - bx_adv, dyr = rw.y - by_adv, dzr = rw.z - bz_adv;
+                        const float dr = std::sqrt(dxr * dxr + dyr * dyr + dzr * dzr);
+                        if (dr > 3.0f)
+                        {
+                            G3D::Vector3 rstep;
+                            Player* rself = ObjectAccessor::FindConnectedPlayer(s.raw().guid);
+                            if (rself && DungeonTargetReachableAndStep(rself, rw.x, rw.y, rw.z, kMaxAdvanceStep, rstep))
+                                emit.move_to(rstep.x, rstep.y, rstep.z, /*run=*/true);
+                            else if (dr > kMaxAdvanceStep)
+                                emit.move_to(bx_adv + dxr * (kMaxAdvanceStep / dr), by_adv + dyr * (kMaxAdvanceStep / dr),
+                                             bz_adv + dzr * (kMaxAdvanceStep / dr), /*run=*/true);
+                            else
+                                emit.move_to(rw.x, rw.y, rw.z, /*run=*/true);
+                            ai.set_last_rule_fired("idle:dungeon_tank_route_fallback");
                             return true;
                         }
                     }
@@ -12524,12 +13012,12 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                 if (Services::Config().pull_gate_enabled())
                 {
                     if (!pick.IsEmpty() && dtk->online && dtk->is_alive && dtk->map_id == s.map_id())
-                        if (Player* tkp = ObjectAccessor::FindConnectedPlayer(dtk->guid))
+                        if (Player* selfp = ObjectAccessor::FindConnectedPlayer(s.guid()))
                             for (auto const& u : s.raw().combat.nearby_enemies)
                             {
                                 if (u.guid != pick) continue;
                                 DungeonDetourVerdict const dv =
-                                    DungeonTankDetour(tkp, u.x, u.y, u.z);
+                                    DungeonWalkDetourFrom(selfp, dtk->x, dtk->y, dtk->z, u.x, u.y, u.z);
                                 if (DungeonDetourExcessive(dv))
                                 {
                                     ai.note_engage(pick, s.published_at_ms(), 15000u);
@@ -12554,12 +13042,12 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                     // [detour] READ-ONLY stage (Task 1): measure, log, never block.
                     // Kept alive so diagnosis survives the kill switch.
                     if (!pick.IsEmpty() && dtk->online && dtk->is_alive && dtk->map_id == s.map_id())
-                        if (Player* tkp = ObjectAccessor::FindConnectedPlayer(dtk->guid))
+                        if (Player* selfp = ObjectAccessor::FindConnectedPlayer(s.guid()))
                             for (auto const& u : s.raw().combat.nearby_enemies)
                             {
                                 if (u.guid != pick) continue;
                                 DungeonDetourVerdict const dv =
-                                    DungeonTankDetour(tkp, u.x, u.y, u.z);
+                                    DungeonWalkDetourFrom(selfp, dtk->x, dtk->y, dtk->z, u.x, u.y, u.z);
                                 static uint32 s_detour_dbg_focus_ms = 0;
                                 uint32 const dnow = s.published_at_ms();
                                 if (dv.computed && dnow - s_detour_dbg_focus_ms > 1500u)
@@ -12658,10 +13146,10 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             bool gated = false;
                             if (GroupMemberSummary const* tk2 = g.tank())
                                 if (tk2->online && tk2->is_alive && tk2->map_id == s.map_id())
-                                    if (Player* tkp = ObjectAccessor::FindConnectedPlayer(tk2->guid))
+                                    if (Player* selfp = ObjectAccessor::FindConnectedPlayer(s.guid()))
                                     {
                                         DungeonDetourVerdict const dv =
-                                            DungeonTankDetour(tkp, u.x, u.y, u.z);
+                                            DungeonWalkDetourFrom(selfp, tk2->x, tk2->y, tk2->z, u.x, u.y, u.z);
                                         if (DungeonDetourExcessive(dv))
                                         {
                                             ai.note_engage(u.guid, s.published_at_ms(), 15000u);
@@ -12687,10 +13175,10 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             // block. Kept alive so diagnosis survives the kill switch.
                             if (GroupMemberSummary const* tk2 = g.tank())
                                 if (tk2->online && tk2->is_alive && tk2->map_id == s.map_id())
-                                    if (Player* tkp = ObjectAccessor::FindConnectedPlayer(tk2->guid))
+                                    if (Player* selfp = ObjectAccessor::FindConnectedPlayer(s.guid()))
                                     {
                                         DungeonDetourVerdict const dv =
-                                            DungeonTankDetour(tkp, u.x, u.y, u.z);
+                                            DungeonWalkDetourFrom(selfp, tk2->x, tk2->y, tk2->z, u.x, u.y, u.z);
                                         static uint32 s_detour_dbg_dps_ms = 0;
                                         uint32 const dnow = s.published_at_ms();
                                         if (dv.computed && dnow - s_detour_dbg_dps_ms > 1500u)
@@ -12727,6 +13215,7 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
         // wraps a full encounter-context check.
         if (s.is_alive() && !s.is_casting() && !s.in_combat() &&
             ai.effective_role(s) == Role::Tank &&
+            !run_done_with_player &&   // see the tank advance: after the last boss the player picks any more pulls
             // PvE-coordinator gate: only the designated MAIN tank starts
             // pulls (raid off-tanks follow + taunt-swap; a 5-man's
             // second tank-spec member acts as DPS). See pve_off_tank
@@ -12843,6 +13332,10 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                     // anyway; skipping here prevents selecting it as `best` and
                     // hitting the failed-start_attack return-false path every tick.
                     if (ai.start_attack_recently_refused(u.guid.GetCounter(), now_ms)) continue;
+                    // A pack the pull-back order found it could not pull from here (no opener spot, or an opener that never woke it:
+                    // PrologueRules' pull-back) is passed by, as the advance passes it (UnpulledPackMob). Without this the pull took the
+                    // same mob behind the Shadowfang courtyard wall four times running (sfk_full af70c).
+                    if (ai.pack_pull_gate().Get(u.guid.GetCounter(), now_ms) == PackPullGate::Verdict::Gated) continue;
                     // Real tanks pull what they can SEE. The 40y enemy scan
                     // returns mobs through dungeon walls; opening on one
                     // wedges the whole party into "not in line of sight"
@@ -13050,10 +13543,21 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                                 for (auto const& m : *mems)
                                     if (m.online && m.is_alive && m.is_bot && m.cls == CLASS_MAGE && m.level >= 8 && m.map_id == s.map_id())
                                     { mage = &m; break; }
-                            if (mage && PrePullCc::Open(s.group_guid().GetCounter(), cc_mob->guid, mage->guid.GetCounter(), now_ms))
+                            // A mob whose formation comes into the fight with it: the Polymorph on it is the pull, with the tank not
+                            // yet in it. lbrs_full af59 (t=11 s): the mage stepped up level with the tank and sheeped Scarshield
+                            // Legionnaire 182; its formation (181, 179) ran at the mage, the tank had 5 rage and its Taunt went on
+                            // cooldown on the first, the healer was still walking up from the landing, and the mage died. Such a mob
+                            // is held "on the pull": the tank pulls, the mage sheeps it in the fight as it runs in.
+                            bool linked = false;
+                            if (cc_mob->engage_calls_formation && cc_mob->formation_leader)
+                                for (NearbyUnit const* o : idle_mobs)
+                                    if (o != cc_mob && o->hp > 0 && !o->is_cc_locked && o->formation_leader == cc_mob->formation_leader)
+                                    { linked = true; break; }
+                            if (mage && PrePullCc::Open(s.group_guid().GetCounter(), cc_mob->guid, mage->guid.GetCounter(), now_ms, linked))
                             {
-                                TC_LOG_INFO("playerbot.v2", "[raid_pull] {} asks {} to hold entry {} ({}) before the pull: {} mobs in the pack (18y of the target, chained 10y)",
-                                    s.name(), mage->name, cc_mob->entry, cc_mob->guid.GetCounter(), pack_n);
+                                TC_LOG_INFO("playerbot.v2", "[raid_pull] {} asks {} to hold entry {} ({}) {}: {} mobs in the pack (18y of the target, chained 10y)",
+                                    s.name(), mage->name, cc_mob->entry, cc_mob->guid.GetCounter(),
+                                    linked ? "on the pull, its formation comes with it" : "before the pull", pack_n);
                                 // The wait is a wait where the tank stands. The advance this pull pre-empted can still have a
                                 // spline running: alcaz_full af46-2 (t=616 s) asked for the moon on pack 26 while the boss walk
                                 // carried the tank on east, past the pack and onto Ca'zass 27 y away; she, her pack and its
@@ -13065,7 +13569,22 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                             }
                         }
                         bool precc_wait = false;
-                        if (have_pcc && !pcc.done_ms)
+                        // On the pull: the wait is only for the moon to go on (so the DPS leave the mob be), then the tank pulls.
+                        if (have_pcc && !pcc.done_ms && pcc.on_pull)
+                        {
+                            bool mob_alive = false;
+                            for (auto const& u : s.raw().combat.nearby_enemies)
+                                if (u.guid == pcc.mob) { mob_alive = u.hp > 0; break; }
+                            uint32 const waited_ms = uint32(now_ms - pcc.requested_ms);
+                            if (mob_alive && pcc.state == PrePullCc::State::Pending && waited_ms < PrePullCc::kMarkWaitMs)
+                                precc_wait = true;
+                            else if (ai.last_rule_fired() != nullptr && std::string_view(ai.last_rule_fired()) == "idle:tank_precc_wait")
+                                TC_LOG_INFO("playerbot.v2", "[raid_pull] {} pulls: {} holds {} in the fight ({} after {} ms)", s.name(),
+                                    pcc.caster_low, pcc.mob.GetCounter(),
+                                    pcc.state == PrePullCc::State::Marked ? "marked" : pcc.state == PrePullCc::State::Refused ? "refused" : "not marked",
+                                    waited_ms);
+                        }
+                        else if (have_pcc && !pcc.done_ms)
                         {
                             bool held = false;
                             bool mob_alive = false;
@@ -13345,7 +13864,8 @@ bool DungeonDispatch(BotSnapshotView const& s, BotAI& ai,
                     // drinks like his other bots (OocRecoveryPick / Classic::LedMaySitDown), below kLedDrinkBelowManaPct, to full, and not
                     // while he walks on. The pull-gate mark (90 % in a party) started a drink at 74-85 % at every stop and the next step
                     // stood her up: 15 drinks and four members held on healer_mana in one Wailing Caverns run, which timed out (0.1.26 RC2).
-                    bool const led = s.in_group() && s.is_led_by_player() && !ai.tank_leads_here(s);   // "lead on": the pull gate's pace
+                    // "lead on" in a five-man too (LedRest, GitHub #23); a raid under the lead keeps the pull gate's pace.
+                    bool const led = s.in_group() && s.is_led_by_player() && (!ai.tank_leads_here(s) || !s.is_in_raid());
                     bool const led_may_sit = !led || Classic::LedMaySitDown({ Classic::IsDrinking(s), ai.since_rest_broken_ms(now_ms),
                                                                               ai.since_anchor_moved_ms(now_ms) });
                     if (hdx * hdx + hdy * hdy + hdz * hdz <= 45.0f * 45.0f && led_may_sit)
@@ -21603,6 +22123,30 @@ bool AutoactDispatch(BotSnapshotView const& s, BotAI& ai,
             }
             if (best_spell != 0)
             {
+                // The station prop: a recipe that needs a focus is cast at the station with the
+                // trade's tool in the hand — same look as the town-errand smith. The swap puts
+                // the real weapon in the tool's bag slot; the upgrade rule leaves the hand alone
+                // while the cast run is live (station_prop_out), then restores the weapon after.
+                // The draw is hold-free: the 3 s idle resheath cleans the pose up itself when the
+                // casts stop, so nothing here can wedge the sheath or the swap suppression.
+                if (SpellInfo const* fsi = sSpellMgr->GetSpellInfo(best_spell, DIFFICULTY_NONE);
+                    fsi && fsi->RequiresSpellFocus)
+                {
+                    RecipeMeta const* fm = FindRecipeMeta(best_spell);
+                    uint32 const tool = fm ? SkillupToolEntry(fm->skill_line_id) : 0;
+                    if (tool)
+                    {
+                        bool have = s.raw().inventory.equipped.size() > EQUIPMENT_SLOT_MAINHAND &&
+                                    s.raw().inventory.equipped[EQUIPMENT_SLOT_MAINHAND].entry == tool;
+                        if (!have)
+                            for (auto const& it : s.raw().inventory.bag_items)
+                                if (it.entry == tool) { have = emit.equip_item(it.bag, it.slot, EQUIPMENT_SLOT_MAINHAND); break; }
+                        if (!have && s.bag_free_slots() >= 1)
+                            emit.give_item(tool);
+                        emit.set_sheath(SHEATH_STATE_MELEE, 0);
+                        ai.station_prop_extend(s.published_at_ms());
+                    }
+                }
                 emit.cast(best_spell);
                 ai.set_last_rule_fired("idle:craft_skillup");
                 return true;
@@ -22336,6 +22880,10 @@ void DispatchIdle(BotAI& ai,
             auto& te = ai.town_errand();
             if (te.place) ::Playerbot::V2::TownErrand::Spots::Get().Release(te.place, s.guid().GetCounter());
             if (te.key) te.recent.add(te.key);
+            // EndErrand doesn't run on this abort: put away a drawn tool and clear a
+            // looping work emote or the dropped show follows the bot around town.
+            if (te.work_emote) emit.perform_emote(EMOTE_STATE_NONE);
+            if (te.tool_in_hand) emit.set_sheath(SHEATH_STATE_UNARMED);
             te.Clear();
             ::Playerbot::V2::TownLife::Counters().idle_town.fetch_add(1, std::memory_order_relaxed);
             TC_LOG_INFO("playerbot.v2", "[idle] bot={} lvl={} map={} zone={} stationary {}s last_rule={} strikes={} -> new errand",

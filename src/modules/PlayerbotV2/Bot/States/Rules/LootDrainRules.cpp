@@ -157,7 +157,16 @@ bool LootDrainFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&
                 Creature* c = ObjectAccessor::GetCreature(*p, q.front());
                 if (!c || !c->IsInWorld()) { q.pop_front(); continue; }
                 // Led by a player: a corpse with nothing of the bot's quest on it is the player's, never walked to.
-                if (quest_only && !HasPendingQuestLoot(p, c) && !(skin_for_player && SkinnableForBot(p, c))) { q.pop_front(); continue; }
+                if (quest_only && !HasPendingQuestLoot(p, c) && !(skin_for_player && SkinnableForBot(p, c)))
+                {
+                    // Say so when it is a quest drop of the bot's that it leaves to the player (row 308): the corpse is dropped from the
+                    // queue without a walk or a loot call, so nothing else in the log shows the bot had a share in it.
+                    if (uint32 const left = QuestLootLeftForPlayer(p, c->GetLootForPlayer(p)))
+                        TC_LOG_INFO("playerbot.v2", "[loot_quest] {} corpse={} leaves item {} for the player (one for the group, he needs it)",
+                                    s.name(), c->GetGUID().GetCounter(), left);
+                    q.pop_front();
+                    continue;
+                }
                 const float dx = c->GetPositionX() - bx;
                 const float dy = c->GetPositionY() - by;
                 const float dz = c->GetPositionZ() - bz;

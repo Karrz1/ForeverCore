@@ -119,7 +119,9 @@ bool SoakTravelFire(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const
 bool SwimStuckGate(BotSnapshotView const& s, BotAI& ai, GroupSnapshotView const&, uint32)
 {
     const uint32 swim_now_ms = s.published_at_ms();
-    ai.update_swim_state(s.is_swimming(), swim_now_ms);
+    // Swimming with the player who leads it (a fight on the Vile Reef, a dive for a quest item) is not being stuck in the water: the
+    // clock starts when he is out and the bot is still in.
+    ai.update_swim_state(s.is_swimming() && !s.leader_in_water(), swim_now_ms);
     if (!ai.swim_stuck(swim_now_ms)) return false;
     return !s.in_battleground() && !s.is_in_dungeon();
 }
@@ -159,9 +161,12 @@ bool SwimStuckFire(BotSnapshotView const& s, BotAI& ai,
 // escalation takes over (its gate still runs every tick and updates the swim
 // timer). Once the bot is on land the builder clears water_escape_valid and the
 // normal rules (now-correct travel) resume.
+// A bot whose leading player is in the water near it stays with him (BotSnapshot::leader_in_water): the way out raced the follow, the
+// bot went to the bank and back down between fights, and it missed the fights (vile_reef_fight af60, Discord 2026-11-22 Egod). It gets
+// out once he does; its breath is the surfacing rule's (SurvivalRules.cpp).
 bool WaterEscapeGate(BotSnapshotView const& s, BotAI&, GroupSnapshotView const&, uint32)
 {
-    return s.water_escape_valid()
+    return s.water_escape_valid() && !s.leader_in_water()
         && s.is_alive() && !s.in_combat() && !s.is_casting()
         && !s.on_transport()
         && !s.in_battleground() && !s.is_in_dungeon();

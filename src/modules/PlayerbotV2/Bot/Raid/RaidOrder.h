@@ -57,6 +57,9 @@ struct RaidOrder
     // (non-tanks), crowd-controlled adds, Majordomo's reflecting adds, the
     // swap enemy for a tank that carries its debuff.
     std::vector<ObjectGuid> forbidden_targets;
+    // A tank of a fixed tank row while the row holds: no enemy the map's rules leave untanked (RaidRules::noTank) is its own, whatever
+    // the forbidden list of the last pass says (the tank planner reads this before the brain has seen an add sent this tick).
+    bool no_tank_off = false;
     // Where a DPS bot goes when its victim is forbidden (empty = stop).
     ObjectGuid fallback_target;
     // Where an off-tank goes when the enemy it holds becomes forbidden (a banished add): the raid's main target, instead of

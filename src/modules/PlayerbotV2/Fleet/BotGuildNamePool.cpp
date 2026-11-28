@@ -5,6 +5,7 @@
 #include "DatabaseEnv.h"
 #include "GuildMgr.h"
 #include "Log.h"
+#include "ObjectMgr.h"
 
 #include <algorithm>
 
@@ -14,16 +15,17 @@ namespace {
 
 // Per-faction static name pools. Mix of theme variations + capital
 // references so a populated server feels like organic guild diversity.
-// Roughly 30 per faction. All names < 24 chars (TC's guild name limit
-// is 24 with most clients; we leave a buffer).
+// Roughly 30 per faction. Every name at most MAX_CHARTER_NAME (24) characters, the client's limit and the width of `guild`.`name`
+// (varchar 24): three names of 25-26 made guilds the server could not save (guild 20 "Shadowblades of Silvermoon", DBErrors
+// "[1406] Data too long for column 'name'", Discord 2026-11-22). PickAndReserve checks each name with the server's own charter rule.
 std::vector<std::string> const kAllianceNames = {
     "Iron Hearts",
     "Stormwind Vanguard",
     "Lionhearts of Azeroth",
-    "Knights of the Silver Hand",
+    "Silver Hand Knights",
     "Westfall Brigade",
     "Wintergrasp Veterans",
-    "Stranglethorn Adventurers",
+    "Stranglethorn Explorers",
     "Eastvale Rangers",
     "Goldshire Regulars",
     "Theramore Loyalists",
@@ -59,7 +61,7 @@ std::vector<std::string> const kHordeNames = {
     "Orgrimmar Reavers",
     "Bloodspear Tribe",
     "Sons of Doomhammer",
-    "Shadowblades of Silvermoon",
+    "Silvermoon Shadowblades",
     "Sindorei Magisters",
     "Darkspear Rebellion",
     "Maghar Outcasts",
@@ -132,6 +134,15 @@ std::string BotGuildNamePool::PickAndReserve(Faction f, uint64 founder_low)
         // bot guilds already in `guild` table from prior sessions).
         if (sGuildMgr->GetGuildByName(candidate))
             continue;
+
+        // A name the server would refuse a player's charter for (too long for `guild`.`name`, characters the realm does not allow):
+        // the guild would live in memory only, its save failing on every write.
+        if (!ObjectMgr::IsValidCharterName(candidate))
+        {
+            TC_LOG_ERROR("playerbot.v2", "[BotGuildNamePool] '{}' is not a valid guild name (at most {} characters, realm name rules)",
+                         candidate, MAX_CHARTER_NAME);
+            continue;
+        }
 
         // Skip if currently reserved by another in-flight charter.
         if (std::find(reserved_.begin(), reserved_.end(), candidate) != reserved_.end())

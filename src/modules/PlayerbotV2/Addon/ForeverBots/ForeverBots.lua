@@ -212,6 +212,18 @@ for _, c in ipairs(CLASSES) do
 end
 
 local ROLE_LABEL = { tank = L["Tank"], healer = L["Heal"], dps = L["DPS"] }
+-- The specs of each class for the bot menu's Spec list: { spec id the bot's setspec takes, name }.
+local MENU_SPECS = {
+    WARRIOR = { { 71, "Arms" }, { 72, "Fury" }, { 73, "Protection" } },
+    PALADIN = { { 65, "Holy" }, { 66, "Protection" }, { 70, "Retribution" } },
+    HUNTER  = { { 253, "Beast Mastery" }, { 254, "Marksmanship" }, { 255, "Survival" } },
+    ROGUE   = { { 259, "Assassination" }, { 260, "Combat" }, { 261, "Subtlety" } },
+    PRIEST  = { { 256, "Discipline" }, { 257, "Holy" }, { 258, "Shadow" } },
+    SHAMAN  = { { 262, "Elemental" }, { 263, "Enhancement" }, { 264, "Restoration" } },
+    MAGE    = { { 62, "Arcane" }, { 63, "Fire" }, { 64, "Frost" } },
+    WARLOCK = { { 265, "Affliction" }, { 266, "Demonology" }, { 267, "Destruction" } },
+    DRUID   = { { 102, "Balance" }, { 103, "Feral" }, { 104, "Feral (bear)" }, { 105, "Restoration" } },
+}
 
 -- What the add-on was doing when the client blocked a call: set before the steps that touch the client's own frames.
 local currentStep = ""
@@ -938,15 +950,22 @@ do
     end
 end
 
--- Lazy lock (warlock): one key, the server picks the next spell (dots, curse, Shadow Bolt, cooldowns) and casts it on your target.
+-- Lazy key (every class): one key, the server picks the next spell of your class and role (the warlock's dots and Shadow Bolt, a
+-- warrior's Revenge and Sunder in Defensive Stance, a priest's heal on the most hurt group member...) and casts it.
 -- The client will not let an add-on choose spells in a fight, so the key clicks a secure button that runs the server command
--- ".playerbot lazy" as the player's own line, in combat too. Press it again for every cast.
+-- ".playerbot lazy" as the player's own line, in combat too. Press it again for every cast. The heal and tank keys play that role
+-- whatever your spec is (a feral druid tanking, a shadow priest healing a pull).
 do
-    local b = CreateFrame("Button", "ForeverBotsKeyLazy", UIParent, "SecureActionButtonTemplate")
-    b:RegisterForClicks("AnyUp", "AnyDown")
-    b:SetAttribute("type", "macro")
-    b:SetAttribute("macrotext", ".playerbot lazy")
-    _G["BINDING_NAME_CLICK ForeverBotsKeyLazy:LeftButton"] = L["Lazy lock (warlock: next spell on your target)"]
+    local function LazyKey(name, macrotext, label)
+        local b = CreateFrame("Button", name, UIParent, "SecureActionButtonTemplate")
+        b:RegisterForClicks("AnyUp", "AnyDown")
+        b:SetAttribute("type", "macro")
+        b:SetAttribute("macrotext", macrotext)
+        _G["BINDING_NAME_CLICK " .. name .. ":LeftButton"] = label
+    end
+    LazyKey("ForeverBotsKeyLazy", ".playerbot lazy", L["Lazy key (any class: next spell of your spec)"])
+    LazyKey("ForeverBotsKeyLazyHeal", ".playerbot lazy heal", L["Lazy key: heal (most hurt group member)"])
+    LazyKey("ForeverBotsKeyLazyTank", ".playerbot lazy tank", L["Lazy key: tank (threat on your target)"])
 end
 
 -- Duplicate macros: a key bound to a macro ("bind ALT-E MACRO Corruption" in bindings-cache.wtf) runs the first macro of that
@@ -1699,6 +1718,7 @@ function UI.BuildBots()
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText(L["Gear: %s"]:format(GEAR_NAME[ForeverBotsDB.gear or "match"] or "?"))
         GameTooltip:AddLine(L["The gear the next bots wear. Click to go to the next choice: Match, Best, BiS, T1, T2, T3."], 1, 1, 1, true)
+        GameTooltip:AddLine(L["BiS and T1 to T3 start at level 60. Below that the bots wear gear for their level, as with Match."], 1, 0.82, 0, true)
         GameTooltip:Show()
     end)
     gearBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1946,7 +1966,10 @@ local function BuildFrame()
     frame:SetSize(LAYOUT.W, LAYOUT.TOP + LAYOUT.PANE_H + LAYOUT.FOOTER)
     frame:SetScale(WindowScale())
     frame:SetPoint("CENTER")
-    frame:SetFrameStrata("DIALOG")
+    -- the same layer as the bags and the game's own windows, and raised on a click: an opened bag can sit over it (row 352, the
+    -- DIALOG layer kept it on top of every bag)
+    frame:SetFrameStrata("MEDIUM")
+    frame:SetToplevel(true)
     frame:SetMovable(true)
     frame:SetClampedToScreen(true)
     frame:EnableMouse(true)
@@ -2752,6 +2775,16 @@ local function AddBotMenu(root, unit, who)
                 roleMenu:CreateButton(ROLE_LABEL[r] or r, function() Send("setrole " .. r) end)
             end
             roleMenu:CreateButton(L["Auto (by spec)"], function() Send("setrole clear") end)
+        end
+    end
+
+    -- Spec: every spec of the class ("setspec <id>": the spec, its role and its talents). Role "Damage" keeps the damage spec
+    -- the bot plays, so a shaman stayed Enhancement with no menu way to Elemental (row 286).
+    local specs = MENU_SPECS[token]
+    if specs then
+        local specMenu = menu:CreateButton(L["Spec"])
+        for _, s in ipairs(specs) do
+            specMenu:CreateButton(L[s[2]], function() Send("setspec " .. s[1]) end)
         end
     end
 

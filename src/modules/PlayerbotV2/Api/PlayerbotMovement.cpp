@@ -10,6 +10,7 @@
 #include "MMapManager.h"
 #include "MMapDefines.h"
 #include "FollowMovementGenerator.h"
+#include "Group.h"
 #include "MotionMaster.h"
 #include "MoveSplineInit.h"
 #include "Object.h"
@@ -176,6 +177,223 @@ int SehSafeNearestPolyProbe(void const* query, float const* detourPt,
     return NearestPolyProbeGuarded(query, detourPt, extents, filter, nearestOut);
 }
 
+// ---- MeshIslandExit ----------------------------------------------------------
+
+namespace {
+bool RefIn(dtPolyRef const* refs, int n, dtPolyRef r) noexcept
+{
+    for (int i = 0; i < n; ++i)
+        if (refs[i] == r)
+            return true;
+    return false;
+}
+
+// The polygons linked to `start` (links of any kind, off-mesh connections too), breadth first, at most `cap` of them in `seen`.
+// A region that reaches `cap` is no scrap; the search stops there. Plain data only: it runs inside the SEH frame of
+// IslandExitGuarded.
+int FloodRegion(dtNavMesh const* nav, dtQueryFilter const* filter, dtPolyRef start, dtPolyRef* seen, int cap) noexcept
+{
+    int n = 0, head = 0;
+    seen[n++] = start;
+    while (head < n)
+    {
+        dtPolyRef const ref = seen[head++];
+        dtMeshTile const* tile = nullptr;
+        dtPoly const* poly = nullptr;
+        if (dtStatusFailed(nav->getTileAndPolyByRef(ref, &tile, &poly)))
+            continue;
+        for (unsigned int i = poly->firstLink; i != DT_NULL_LINK; i = tile->links[i].next)
+        {
+            dtPolyRef const nref = tile->links[i].ref;
+            if (!nref || RefIn(seen, n, nref))
+                continue;
+            dtMeshTile const* ntile = nullptr;
+            dtPoly const* npoly = nullptr;
+            if (dtStatusFailed(nav->getTileAndPolyByRef(nref, &ntile, &npoly)) || !filter->passFilter(nref, ntile, npoly))
+                continue;
+            if (n >= cap)
+                return n;
+            seen[n++] = nref;
+        }
+    }
+    return n;
+}
+
+// 1: the bot at `pos` (Detour order) stands on a scrap of mesh, and `exitOut` holds a point 1 y inside the nearest polygon of a
+// region of at least kMeshIslandPolys polygons (at most maxYd away on the level, 6 y up or down). 2: on a scrap, no such region
+// in reach. 0: not on a scrap.
+int IslandExitSearch(void const* queryV, void const* floodV, void const* standV, float const* pos, float maxYd, float* exitOut,
+                     int* islandPolys) noexcept
+{
+    auto const* q = static_cast<dtNavMeshQuery const*>(queryV);
+    auto const* flood = static_cast<dtQueryFilter const*>(floodV);
+    auto const* stand = static_cast<dtQueryFilter const*>(standV);
+    dtNavMesh const* nav = q->getAttachedNavMesh();
+    if (!nav)
+        return 0;
+    float const ext[3] = { 1.5f, 3.0f, 1.5f };
+    float snapped[3];
+    dtPolyRef start = 0;
+    if (dtStatusFailed(q->findNearestPoly(pos, ext, flood, &start, snapped)) || !start)
+        return 0;
+    dtPolyRef island[kMeshIslandPolys];
+    int const n = FloodRegion(nav, flood, start, island, kMeshIslandPolys);
+    if (n >= kMeshIslandPolys)
+        return 0;
+    *islandPolys = n;
+    constexpr float kClimbYd = 6.0f;
+    constexpr int kNear = 128;
+    float const box[3] = { maxYd, kClimbYd, maxYd };
+    dtPolyRef nearRefs[kNear];
+    int nc = 0;
+    if (dtStatusFailed(q->queryPolygons(pos, box, stand, nearRefs, &nc, kNear)))
+        return 2;
+    constexpr int kRejectCap = kMeshIslandPolys * 4;
+    dtPolyRef rejected[kRejectCap];   // other scraps met on the way
+    int nr = 0;
+    for (int tries = 0; tries < 8; ++tries)   // a slope can hold several scraps between him and the floor
+    {
+        int best = -1;
+        float bestD2 = maxYd * maxYd;
+        float bp[3] = { 0.f, 0.f, 0.f };
+        for (int i = 0; i < nc; ++i)
+        {
+            if (RefIn(island, n, nearRefs[i]) || RefIn(rejected, nr, nearRefs[i]))
+                continue;
+            float cp[3];
+            if (dtStatusFailed(q->closestPointOnPoly(nearRefs[i], pos, cp, nullptr)))
+                continue;
+            if (std::fabs(cp[1] - pos[1]) > kClimbYd)
+                continue;
+            float const d2 = (cp[0] - pos[0]) * (cp[0] - pos[0]) + (cp[2] - pos[2]) * (cp[2] - pos[2]);
+            if (d2 < bestD2)
+            {
+                bestD2 = d2;
+                best = i;
+                dtVcopy(bp, cp);
+            }
+        }
+        if (best < 0)
+            return 2;
+        dtPolyRef region[kMeshIslandPolys];
+        int const rn = FloodRegion(nav, flood, nearRefs[best], region, kMeshIslandPolys);
+        if (rn >= kMeshIslandPolys)
+        {
+            // That region's polygon is under his feet as well (two layers of mesh within a yard): he stands on the floor, and the
+            // scrap is only the polygon Detour picked first. rol_full af63 (23 Nov): "walks 0.0 y off it" at (1525.9,167.3,64.2).
+            if (bestD2 < 0.5f * 0.5f && std::fabs(bp[1] - pos[1]) < 1.5f)
+                return 0;
+            // 1 y past the edge into that polygon, so the bot ends standing on it and not on the seam it shares with the scrap.
+            float const d = std::sqrt(bestD2);
+            float in[3] = { bp[0], bp[1], bp[2] };
+            if (d > 0.01f)
+            {
+                in[0] += (bp[0] - pos[0]) / d;
+                in[2] += (bp[2] - pos[2]) / d;
+            }
+            if (dtStatusFailed(q->closestPointOnPoly(nearRefs[best], in, exitOut, nullptr)))
+                dtVcopy(exitOut, bp);
+            return 1;
+        }
+        for (int j = 0; j < rn && nr < kRejectCap; ++j)
+            rejected[nr++] = region[j];
+    }
+    return 2;
+}
+
+#ifdef _MSC_VER
+int IslandExitGuarded(void const* query, void const* flood, void const* stand, float const* pos, float maxYd, float* exitOut,
+                      int* islandPolys) noexcept
+{
+    __try
+    {
+        return IslandExitSearch(query, flood, stand, pos, maxYd, exitOut, islandPolys);
+    }
+    __except (GetExceptionCode() == EXCEPTION_ASSERTION_FAILURE
+              ? EXCEPTION_CONTINUE_SEARCH : EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+#else
+int IslandExitGuarded(void const* query, void const* flood, void const* stand, float const* pos, float maxYd, float* exitOut,
+                      int* islandPolys) noexcept
+{
+    return IslandExitSearch(query, flood, stand, pos, maxYd, exitOut, islandPolys);
+}
+#endif
+} // namespace
+
+bool MeshIslandExit(Player* p, float maxYd, Position& out, int* islandPolys)
+{
+    if (!p || !p->IsInWorld() || !p->IsAlive() || p->GetTransport() || p->GetVehicle() || p->IsFlying() || p->IsInWater())
+        return false;
+    Map* m = p->GetMap();
+    if (!m)
+        return false;
+    float const x = p->GetPositionX(), y = p->GetPositionY(), z = p->GetPositionZ();
+    if (!EnsureGridForQuery(m, x, y))
+        return false;
+    uint32 const terrainMapId = PhasingHandler::GetTerrainMapId(p->GetPhaseShift(), p->GetMapId(), m->GetTerrain(), x, y);
+    dtNavMeshQuery const* query = MMAP::MMapManager::instance()->GetNavMeshQuery(terrainMapId, p->GetMapId(), p->GetInstanceId());
+    if (!query)
+        return false;
+    // Linked is linked, whatever the ground: a patch of floor beside a pool is no scrap. The step itself ends on dry footing.
+    dtQueryFilter flood;
+    flood.setIncludeFlags(0xFFFF);
+    flood.setExcludeFlags(0);
+    dtQueryFilter stand;
+    stand.setIncludeFlags(NAV_GROUND | NAV_GROUND_STEEP | NAV_ROAD);
+    stand.setExcludeFlags(0);
+    float const pos[3] = { y, z, x };
+    float exitPt[3] = { 0.f, 0.f, 0.f };
+    int polys = 0;
+    int found = 0;
+    {
+        ReadLockIfOwnQueries const lock;
+        found = IslandExitGuarded(query, &flood, &stand, pos, maxYd, exitPt, &polys);
+    }
+    if (found <= 0)
+        return false;
+    float const ex = found == 1 ? exitPt[2] : x, ey = found == 1 ? exitPt[0] : y, ez = found == 1 ? exitPt[1] : z;
+    // Why a scrap was found and no step taken, once per bot per 10 s: the step is the data to look at.
+    auto refused = [&](char const* why)
+    {
+        static std::mutex s_mu;
+        static std::unordered_map<uint64, uint32> s_at;
+        uint32 const now = GameTime::GetGameTimeMS();
+        std::lock_guard<std::mutex> lk(s_mu);
+        uint32& at = s_at[p->GetGUID().GetCounter()];
+        if (at != 0 && now - at < 10000u)
+            return false;
+        at = now ? now : 1u;
+        TC_LOG_INFO("playerbot.v2", "[mesh_scrap] {} on a scrap of navmesh ({} polygons) at ({:.1f},{:.1f},{:.1f}) map {}: no step to ({:.1f},{:.1f},{:.1f}): {}",
+                    p->GetName(), polys, x, y, z, p->GetMapId(), ex, ey, ez, why);
+        return false;
+    };
+    if (found != 1)
+        return refused("no larger region within reach");
+    // He walks it: nothing in the way, and ground under every yard of it with no step over 2.5 y (no ledge, no hole).
+    if (!LineIsClear(p, x, y, z + 1.5f, ex, ey, ez + 1.5f))
+        return refused("the line is blocked");
+    int const steps = std::max(1, int(std::ceil(std::hypot(ex - x, ey - y))));
+    float prev = z;
+    for (int i = 1; i <= steps; ++i)
+    {
+        float const t = float(i) / float(steps);
+        float g = 0.f;
+        if (!ProbeGround(p, x + (ex - x) * t, y + (ey - y) * t, z + (ez - z) * t, g))
+            return refused("no ground under the step");
+        if (std::fabs(g - prev) > 2.5f)
+            return refused("a ledge in the step");
+        prev = g;
+    }
+    out.Relocate(ex, ey, ez);
+    if (islandPolys)
+        *islandPolys = polys;
+    return true;
+}
+
 // ---- SnapToGround -----------------------------------------------------------
 
 bool SnapToGround(Player* p, float x, float y, float& z)
@@ -190,8 +408,10 @@ bool SnapToGround(Player* p, float x, float y, float& z)
     // Pre-load the destination grid. UpdateAllowedPositionZ samples vmap
     // through the local grid; if the grid hasn't streamed in yet the
     // sampler returns INVALID_HEIGHT and we'd silently keep the bad Z.
-    // LoadGrid is a no-op when the grid is already resident.
-    m->LoadGrid(x, y);
+    // LoadGrid is a no-op when the grid is already resident. From a bot logic thread or a same-map split build the load goes to
+    // the world thread (EnsureGridForQuery): loading a grid there adds creatures and tiles while the map threads read them.
+    if (!EnsureGridForQuery(m, x, y))
+        return false;
 
     float const original = z;
 
@@ -319,7 +539,8 @@ float GroundZ(Player* p, float x, float y, float zHint, char const* where, bool*
 
     constexpr float kGroundProbeUp   = 3.0f;
     constexpr float kGroundProbeDown = 40.0f;
-    m->LoadGrid(x, y);
+    if (!EnsureGridForQuery(m, x, y))   // the world thread loads it (see SnapToGround)
+        return zHint;
     float g = INVALID_HEIGHT;
     try
     {
@@ -362,7 +583,8 @@ bool ProbeGround(Player* p, float x, float y, float zHint, float& out)
         return false;
     constexpr float kProbeUp   = 3.0f;
     constexpr float kProbeDown = 40.0f;
-    m->LoadGrid(x, y);
+    if (!EnsureGridForQuery(m, x, y))   // the world thread loads it (see SnapToGround)
+        return false;
     float g = INVALID_HEIGHT;
     try
     {
@@ -906,6 +1128,20 @@ void UpdateSwimState(Player* p)
     // is out of it, paths again to a navmesh point by the leader, which in water is the surface: a settle that took the follower out
     // of range was undone at the leader's next step and the two took turns (lake_swim 2026-11-09: a follower 2 y behind a leader on
     // the surface, settled down and lifted back up 14 times in 25 s). Left where it is, it still swims (the flag above).
+    // Under the swim z by its fight or by its group's leader, both down there too: it stays down (Swim::HoldsDepth).
+    if (z < swimZ)
+    {
+        auto holds = [&](Unit const* anchor)
+        {
+            return anchor && anchor->IsInMap(p) && anchor->IsAlive() &&
+                Swim::HoldsDepth(z, swimZ, p->GetExactDist(anchor), anchor->GetPositionZ());
+        };
+        Player const* leader = nullptr;
+        if (Group const* grp = p->GetGroup(); grp && grp->GetLeaderGUID() != p->GetGUID())
+            leader = ObjectAccessor::GetPlayer(*p, grp->GetLeaderGUID());
+        if (holds(p->GetVictim()) || holds(leader))
+            return;
+    }
     if (gen == FOLLOW_MOTION_TYPE)
     {
         auto const* follow = static_cast<FollowMovementGenerator const*>(p->GetMotionMaster()->GetCurrentMovementGenerator());

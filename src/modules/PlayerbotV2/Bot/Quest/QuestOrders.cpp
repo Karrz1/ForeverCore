@@ -246,8 +246,16 @@ std::vector<std::string> AcceptAll(Player* sender, Player* bot, std::string_view
         ++taken;
     }
 
+    // A quest an item started that the sender holds ("accept <crest quest>"): no giver has it, I take it from him (the same rule).
+    bool const from_sender = want && sender && taken == 0 && CompanionQuest::QuestStartedByItemOnly(want) &&
+        (sender->GetQuestStatus(want) == QUEST_STATUS_INCOMPLETE || sender->GetQuestStatus(want) == QUEST_STATUS_COMPLETE);
+    if (from_sender)
+    {
+        CompanionQuest::ArmLatch(t.id, CompanionQuest::Latch::AcceptAll, GameTime::GetGameTimeMS(), kOrderWindowMs);
+        out.push_back(fmt::format("I'll take {} from you.", CompanionQuest::QuestLabel(want)));
+    }
     // Walk to the NPCs close to me and take what they offer (the idle:companion_quest_accept rule), for 45 s.
-    if (want == 0 && needle.empty())
+    else if (want == 0 && needle.empty())
     {
         CompanionQuest::ArmLatch(t.id, CompanionQuest::Latch::AcceptAll, GameTime::GetGameTimeMS(), kOrderWindowMs);
         if (taken == 0)
