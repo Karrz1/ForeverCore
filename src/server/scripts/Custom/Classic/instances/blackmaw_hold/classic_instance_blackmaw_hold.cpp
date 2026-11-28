@@ -33,8 +33,8 @@
 //   Unbound Spirit: untouchable (Profane Protection) until Elder Bramblesnap's ritual: three waves (spiders, wolves, a bear),
 //     then Bramblesnap's Purify lifts the protection and the Spirit fights with Fireball and Fire Nova. The ritual starts when
 //     a player talks to Bramblesnap or comes near him (our choice, so a group of bots can start it too).
-//   Blackmaw Behemoth with Clawbert: Clawbert casts Lightning Bolt and Restore (heals the Behemoth to full); the Behemoth
-//     roars (Bestial Roar) and whirls, and at a quarter of its health eats Clawbert and turns to Thunder Roar.
+//   Blackmaw Behemoth with Clawbert (live capture 27 Nov): Clawbert casts Lightning Bolt and Restore (heals the Behemoth to
+//     full) on timers and cannot die; at 1 health the Behemoth eats him (Best Served Cold, heals to full), then Thunder Roar.
 //   Varrox Bleakhoof: Shadow Bolt Volley, Fear, and Crimson Wrest: a player is seized and a few seconds later Nightmare
 //     Detonation bursts around them.
 // Fear, Crimson Wrest, Nightmare Detonation, Thunder Roar, Purify, Bestial Roar and Restore pick their targets by conditions
@@ -43,6 +43,7 @@
 #include "ScriptMgr.h"
 #include "Creature.h"
 #include "InstanceScript.h"
+#include "Log.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -110,6 +111,10 @@ enum ClassicBlackmawSpells : uint32
     SPELL_BMH_BESTIAL_ROAR = 1245119,
     SPELL_BMH_WHIRLWIND = 1244484,
     SPELL_BMH_THUNDER_ROAR = 1245154,
+    SPELL_BMH_VICIOUS_MAUL = 1245164,        // 30% of the target's health and a bleed (10% a second), melee
+    SPELL_BMH_BEST_SERVED_COLD = 1245095,    // 8 s cast: the Behemoth eats Clawbert and heals himself to full
+    SPELL_BMH_IMPS = 1243312,                // Impaan, 4 s cast: three Imps (1243318, summon 247432)
+    SPELL_BMH_FERAL_SPIRIT_SUMMON = 1245338, // Bloodmane, 3 s cast: two Feral Spirits (1245340, summon 248216)
     SPELL_BMH_RESTORE = 1244951,             // heals the Behemoth 100%
     SPELL_BMH_CLAWBERT_BOLT = 1244981,       // 35% of the target's health
     SPELL_BMH_SHADOW_BOLT_VOLLEY = 9081,
@@ -226,9 +231,10 @@ struct classic_boss_blackmaw_withermaw : public ScriptedAI
 
     void JustEngagedWith(Unit* /*who*/) override
     {
-        _events.ScheduleEvent(EV_MAUL, 5s);              // INFERRED timers
-        _events.ScheduleEvent(EV_ROAR, 15s);
-        _events.ScheduleEvent(EV_MAGGOTS, 10s);
+        // live (Karrz's capture 27 Nov, one kill): Maul at 3.4, 15.6, 24.1, 30.2, 41.2 s; Intimidating Roar at 9.5 and 32.6 s
+        _events.ScheduleEvent(EV_MAUL, 3s);
+        _events.ScheduleEvent(EV_ROAR, 9s);
+        _events.ScheduleEvent(EV_MAGGOTS, 10s);          // INFERRED
     }
 
     void UpdateAI(uint32 diff) override
@@ -243,8 +249,8 @@ struct classic_boss_blackmaw_withermaw : public ScriptedAI
         {
             switch (ev)
             {
-                case EV_MAUL: DoCastVictim(SPELL_BMH_MAUL); _events.Repeat(10s, 14s); break;
-                case EV_ROAR: DoCastSelf(SPELL_BMH_INTIMIDATING_ROAR); _events.Repeat(25s, 30s); break;
+                case EV_MAUL: DoCastVictim(SPELL_BMH_MAUL); _events.Repeat(6s, 12s); break;
+                case EV_ROAR: DoCastSelf(SPELL_BMH_INTIMIDATING_ROAR); _events.Repeat(23s); break;
                 case EV_MAGGOTS: BmhSummonAdds(me, NPC_BMH_FLESH_MAGGOT, 3, 6.0f); _events.Repeat(20s, 25s); break;
                 default: break;
             }
@@ -274,8 +280,9 @@ struct classic_boss_blackmaw_bonesnout : public ScriptedAI
         BmhCallNear(me, NPC_BMH_RITUALIST, 40.0f, who);
         CountRitualists();
         _events.ScheduleEvent(EV_BULWARK, 1s);
-        _events.ScheduleEvent(EV_TRAMPLE, 6s);           // INFERRED timers
-        _events.ScheduleEvent(EV_STOMP, 15s);
+        // live (one kill): Trample at 7.1, 15.6, 25.3, 33.8, 41.0 s; Stomp (2.8 s cast) at 11.9 and 27.7 s
+        _events.ScheduleEvent(EV_TRAMPLE, 7s);
+        _events.ScheduleEvent(EV_STOMP, 12s);
     }
 
     void UpdateAI(uint32 diff) override
@@ -291,8 +298,8 @@ struct classic_boss_blackmaw_bonesnout : public ScriptedAI
             switch (ev)
             {
                 case EV_BULWARK: CountRitualists(); _events.Repeat(1s); break;
-                case EV_TRAMPLE: DoCastSelf(SPELL_BMH_TRAMPLE); _events.Repeat(9s, 12s); break;
-                case EV_STOMP: DoCastSelf(SPELL_BMH_STOMP); _events.Repeat(18s, 22s); break;
+                case EV_TRAMPLE: DoCastSelf(SPELL_BMH_TRAMPLE); _events.Repeat(7s, 10s); break;
+                case EV_STOMP: DoCastSelf(SPELL_BMH_STOMP); _events.Repeat(16s); break;
                 default: break;
             }
         }
@@ -330,10 +337,25 @@ struct classic_boss_blackmaw_impaan : public ScriptedAI
 
     void Reset() override { _events.Reset(); }
 
+    // live (a wipe and a kill): a pull yell, Shadowbolts (3 s casts) about every 11 s from about 10 s, and once a fight at
+    // about 23 s the 4 s cast "Imps!!" (its own summon spell brings three Imps), with the yell as it ends
     void JustEngagedWith(Unit* /*who*/) override
     {
-        _events.ScheduleEvent(EV_BOLT, 2s);              // INFERRED timers
-        _events.ScheduleEvent(EV_IMPS, 20s);
+        me->Yell(urand(0, 1) ? "Impolite imposers!" : "Impatient imposters!", LANG_UNIVERSAL);
+        _events.ScheduleEvent(EV_BOLT, 10s);
+        _events.ScheduleEvent(EV_IMPS, 23s);
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 60.0f, true))
+            summon->AI()->AttackStart(target);
+    }
+
+    void OnSpellCast(SpellInfo const* spell) override
+    {
+        if (spell->Id == SPELL_BMH_IMPS)
+            me->Yell("Imps!!", LANG_UNIVERSAL);
     }
 
     void UpdateAI(uint32 diff) override
@@ -351,12 +373,10 @@ struct classic_boss_blackmaw_impaan : public ScriptedAI
                 case EV_BOLT:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 40.0f, true))
                         DoCast(target, BmhImpaanBolts[urand(0, BmhImpaanBolts.size() - 1)]);
-                    _events.Repeat(6s, 8s);
+                    _events.Repeat(10s, 12s);
                     break;
                 case EV_IMPS:
-                    me->Yell("Imps!!", LANG_UNIVERSAL);
-                    BmhSummonAdds(me, NPC_BMH_IMP, 3, 8.0f);
-                    _events.Repeat(30s, 35s);
+                    DoCastSelf(SPELL_BMH_IMPS);
                     break;
                 default: break;
             }
@@ -379,9 +399,18 @@ struct classic_boss_blackmaw_bloodmane : public ScriptedAI
     void JustEngagedWith(Unit* who) override
     {
         BmhCallNear(me, NPC_BMH_DEVOTEE, 30.0f, who);
-        _events.ScheduleEvent(EV_CHAIN, 4s);             // INFERRED timers
-        _events.ScheduleEvent(EV_PURGE, 12s);
-        _events.ScheduleEvent(EV_SPIRITS, 15s);
+        // live (one 26 s kill): the yell and Feral Spirit (3 s cast, its own summon spell) at the pull, Chain Lightning at 10.9 s,
+        // Purge at 15.8 s. The repeats are INFERRED.
+        me->Yell("By fang and claw!", LANG_UNIVERSAL);
+        _events.ScheduleEvent(EV_SPIRITS, 0s);
+        _events.ScheduleEvent(EV_CHAIN, 11s);
+        _events.ScheduleEvent(EV_PURGE, 16s);
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 60.0f, true))
+            summon->AI()->AttackStart(target);
     }
 
     void UpdateAI(uint32 diff) override
@@ -402,7 +431,7 @@ struct classic_boss_blackmaw_bloodmane : public ScriptedAI
                     _events.Repeat(9s, 12s);
                     break;
                 case EV_PURGE: DoCastSelf(SPELL_BMH_PURGE); _events.Repeat(18s, 22s); break;
-                case EV_SPIRITS: BmhSummonAdds(me, NPC_BMH_FERAL_SPIRIT, 2, 5.0f); _events.Repeat(35s, 40s); break;
+                case EV_SPIRITS: DoCastSelf(SPELL_BMH_FERAL_SPIRIT_SUMMON); _events.Repeat(35s, 40s); break;
                 default: break;
             }
         }
@@ -611,20 +640,57 @@ private:
     bool _started = false;
 };
 
-// Clawbert, the Behemoth's keeper: Lightning Bolt, and Restore on the Behemoth when it is hurt.
+// Clawbert, the Behemoth's keeper. As Karrz's live capture of 27 Nov 23:25 (one kill, encounter 3323) has it: Lightning Bolt about
+// every 11 s from 6 s, Restore on the Behemoth on a timer (13 s, then about every 11 s; it heals him to full whatever his
+// health), and he cannot die: at 1 health the Behemoth eats him (Best Served Cold) and he goes. All six lines are his.
+enum BmhClawbertTalk : uint8
+{
+    TALK_CLAWBERT_PULL = 0,      // "Kill the intruders, you half-wit!"
+    TALK_CLAWBERT_RESTORE = 1,   // "What would you do without me?"
+    TALK_CLAWBERT_ROAR = 2,      // "I'm not a club, you imbecile!" (live: with Improvised Weapon at the second Bestial Roar)
+    TALK_CLAWBERT_WHIRL = 3,     // "Aaaaaaaaaaaaaargh!!!" (at a Whirlwind with him low)
+    TALK_CLAWBERT_EATEN = 4,     // "Wait, no! Stop!"
+    TALK_CLAWBERT_EATEN_2 = 5    // "Noooooooooooooooo!"
+};
+
+enum BmhBehemothAction : int32
+{
+    ACTION_BMH_CLAWBERT_SPENT = 1   // Clawbert is down to 1 health: the Behemoth eats him
+};
+
 struct classic_npc_blackmaw_clawbert : public ScriptedAI
 {
     classic_npc_blackmaw_clawbert(Creature* creature) : ScriptedAI(creature) { }
 
     enum : uint32 { EV_BOLT = 1, EV_RESTORE };
 
-    void Reset() override { _events.Reset(); }
+    void Reset() override
+    {
+        _events.Reset();
+        _spent = false;
+    }
 
     void JustEngagedWith(Unit* who) override
     {
         BmhCallNear(me, NPC_BMH_BEHEMOTH, 30.0f, who);
-        _events.ScheduleEvent(EV_BOLT, 3s);              // INFERRED timers
-        _events.ScheduleEvent(EV_RESTORE, 20s);
+        Talk(TALK_CLAWBERT_PULL);
+        _events.ScheduleEvent(EV_BOLT, 6s);              // live: 6.2, 16.6, 30.0, 40.8 s
+        _events.ScheduleEvent(EV_RESTORE, 13s);          // live: 13.4 and 24.3 s
+    }
+
+    // He is not killed: the Behemoth eats him once he is spent (live: his health stopped at 1, then he was removed).
+    void DamageTaken(Unit* /*attacker*/, uint32& damage, DamageEffectType /*type*/, SpellInfo const* /*spellInfo*/) override
+    {
+        if (damage < me->GetHealth())
+            return;
+        damage = me->GetHealth() > 1 ? me->GetHealth() - 1 : 0;
+        if (_spent)
+            return;
+        _spent = true;
+        _events.Reset();
+        me->InterruptNonMeleeSpells(false);
+        if (Creature* behemoth = me->FindNearestCreature(NPC_BMH_BEHEMOTH, 60.0f); behemoth && behemoth->IsAlive() && behemoth->IsAIEnabled())
+            behemoth->AI()->DoAction(ACTION_BMH_CLAWBERT_SPENT);
     }
 
     void UpdateAI(uint32 diff) override
@@ -642,17 +708,16 @@ struct classic_npc_blackmaw_clawbert : public ScriptedAI
                 case EV_BOLT:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 40.0f, true))
                         DoCast(target, SPELL_BMH_CLAWBERT_BOLT);
-                    _events.Repeat(8s, 10s);
+                    _events.Repeat(10s, 13s);
                     break;
                 case EV_RESTORE:
-                    // only when the Behemoth has lost half its health: a cast the group can interrupt or kill him through
-                    if (Creature* behemoth = me->FindNearestCreature(NPC_BMH_BEHEMOTH, 25.0f); behemoth && behemoth->HealthBelowPct(50))
+                    // on the timer, not held for a share of his health: live started it with the Behemoth at 68% and 77%
+                    if (Creature* behemoth = me->FindNearestCreature(NPC_BMH_BEHEMOTH, 40.0f); behemoth && behemoth->IsAlive())
                     {
+                        Talk(TALK_CLAWBERT_RESTORE);
                         DoCast(behemoth, SPELL_BMH_RESTORE);
-                        _events.Repeat(30s, 35s);
                     }
-                    else
-                        _events.Repeat(3s);
+                    _events.Repeat(10s, 12s);
                     break;
                 default: break;
             }
@@ -661,39 +726,60 @@ struct classic_npc_blackmaw_clawbert : public ScriptedAI
 
 private:
     EventMap _events;
+    bool _spent = false;
 };
 
-// Blackmaw Behemoth (the east cave): Bestial Roar and Whirlwind; at 25% it eats Clawbert and turns to Thunder Roar.
+// Blackmaw Behemoth (the east cave), as the live capture has it: Bestial Roar about every 17 s from 11 s and Whirlwind about
+// every 28-30 s from 20 s; Vicious Maul on his target every 11-16 s from 14 s, the whole fight. When Clawbert is spent the
+// Behemoth casts Best Served Cold (8 s; the spell heals him to full at the end), Clawbert yells and goes, and from then on the
+// Behemoth uses Thunder Roar (about every 17-19 s) in place of Bestial Roar. INFERRED: the timers come from one kill.
 struct classic_boss_blackmaw_behemoth : public ScriptedAI
 {
     classic_boss_blackmaw_behemoth(Creature* creature) : ScriptedAI(creature) { }
 
-    enum : uint32 { EV_ROAR = 1, EV_WHIRLWIND, EV_THUNDER };
+    enum : uint32 { EV_ROAR = 1, EV_WHIRLWIND, EV_MAUL, EV_THUNDER, EV_EATEN_2, EV_CLAWBERT_GONE };
 
     void Reset() override
     {
         _events.Reset();
         _ate = false;
+        _roars = 0;
+        _clawbert.Clear();
+        // a group that wipes after the eat finds Clawbert back with him, as at the first pull
+        if (_clawbertSpawnId)
+        {
+            me->GetMap()->Respawn(SPAWN_TYPE_CREATURE, _clawbertSpawnId);
+            _clawbertSpawnId = 0;
+        }
     }
 
     void JustEngagedWith(Unit* who) override
     {
         BmhCallNear(me, NPC_BMH_CLAWBERT, 30.0f, who);
-        _events.ScheduleEvent(EV_ROAR, 8s);              // INFERRED timers
-        _events.ScheduleEvent(EV_WHIRLWIND, 14s);
+        _events.ScheduleEvent(EV_ROAR, 11s);             // live: 11.0, 27.9, 44.9 s
+        _events.ScheduleEvent(EV_WHIRLWIND, 20s);        // live: 20.3, 48.1, 78.4 s
+        _events.ScheduleEvent(EV_MAUL, 14s);             // live: 14.6, 30.0, 40.8, 61.8, 76.0, 91.7 s
     }
 
-    void DamageTaken(Unit* /*attacker*/, uint32& damage, DamageEffectType /*type*/, SpellInfo const* /*spellInfo*/) override
+    void DoAction(int32 action) override
     {
-        if (_ate || !me->HealthBelowPctDamaged(25, damage))
+        if (action != ACTION_BMH_CLAWBERT_SPENT || _ate)
+            return;
+        Creature* clawbert = me->FindNearestCreature(NPC_BMH_CLAWBERT, 60.0f);
+        if (!clawbert)
             return;
         _ate = true;
-        if (Creature* clawbert = me->FindNearestCreature(NPC_BMH_CLAWBERT, 60.0f); clawbert && clawbert->IsAlive())
-        {
-            me->TextEmote("The Blackmaw Behemoth devours Clawbert!");
-            Unit::Kill(me, clawbert);
-        }
-        _events.ScheduleEvent(EV_THUNDER, 1s);
+        _clawbert = clawbert->GetGUID();
+        _clawbertSpawnId = clawbert->GetSpawnId();
+        _events.CancelEvent(EV_ROAR);
+        clawbert->AI()->Talk(TALK_CLAWBERT_EATEN);
+        me->InterruptNonMeleeSpells(false);
+        SpellCastResult const r = DoCastSelf(SPELL_BMH_BEST_SERVED_COLD);
+        TC_LOG_INFO("scripts", "Blackmaw Hold {}: the Behemoth eats Clawbert at {:.0f}% health (Best Served Cold result {})",
+            me->GetMap()->GetInstanceId(), me->GetHealthPct(), uint32(r));
+        _events.ScheduleEvent(EV_EATEN_2, 3800ms);      // live: line 5 at +3.9 s
+        _events.ScheduleEvent(EV_CLAWBERT_GONE, 7300ms);  // live: removed at +7.3 s, the cast ends at +8 s
+        _events.ScheduleEvent(EV_THUNDER, 9700ms);      // live: first Thunder Roar 1.7 s after the cast
     }
 
     void UpdateAI(uint32 diff) override
@@ -701,23 +787,67 @@ struct classic_boss_blackmaw_behemoth : public ScriptedAI
         if (!UpdateVictim())
             return;
         _events.Update(diff);
-        if (me->HasUnitState(UNIT_STATE_CASTING))
-            return;
 
+        // the eat's lines and Clawbert leaving run while the Behemoth is casting
         while (uint32 ev = _events.ExecuteEvent())
         {
             switch (ev)
             {
-                case EV_ROAR: DoCastSelf(SPELL_BMH_BESTIAL_ROAR); _events.Repeat(25s, 30s); break;
-                case EV_WHIRLWIND: DoCastSelf(SPELL_BMH_WHIRLWIND); _events.Repeat(20s, 25s); break;
-                case EV_THUNDER: DoCastSelf(SPELL_BMH_THUNDER_ROAR); _events.Repeat(15s, 18s); break;
-                default: break;
+                case EV_EATEN_2:
+                    if (Creature* clawbert = ObjectAccessor::GetCreature(*me, _clawbert))
+                        clawbert->AI()->Talk(TALK_CLAWBERT_EATEN_2);
+                    break;
+                case EV_CLAWBERT_GONE:
+                    if (Creature* clawbert = ObjectAccessor::GetCreature(*me, _clawbert))
+                        clawbert->DespawnOrUnsummon();
+                    break;
+                default:
+                    if (me->HasUnitState(UNIT_STATE_CASTING))
+                    {
+                        _events.Repeat(500ms);
+                        break;
+                    }
+                    Cast(ev);
+                    break;
             }
         }
     }
 
 private:
+    void Cast(uint32 ev)
+    {
+        switch (ev)
+        {
+            case EV_ROAR:
+                DoCastSelf(SPELL_BMH_BESTIAL_ROAR);
+                if (++_roars == 2)
+                    if (Creature* clawbert = me->FindNearestCreature(NPC_BMH_CLAWBERT, 60.0f); clawbert && clawbert->IsAlive())
+                        clawbert->AI()->Talk(TALK_CLAWBERT_ROAR);
+                _events.Repeat(16s, 18s);
+                break;
+            case EV_WHIRLWIND:
+                DoCastSelf(SPELL_BMH_WHIRLWIND);
+                if (!_ate)
+                    if (Creature* clawbert = me->FindNearestCreature(NPC_BMH_CLAWBERT, 60.0f); clawbert && clawbert->IsAlive() && clawbert->HealthBelowPct(30))
+                        clawbert->AI()->Talk(TALK_CLAWBERT_WHIRL);
+                _events.Repeat(28s, 30s);
+                break;
+            case EV_MAUL:
+                DoCastVictim(SPELL_BMH_VICIOUS_MAUL);
+                _events.Repeat(11s, 16s);
+                break;
+            case EV_THUNDER:
+                DoCastSelf(SPELL_BMH_THUNDER_ROAR);
+                _events.Repeat(17s, 19s);
+                break;
+            default: break;
+        }
+    }
+
     EventMap _events;
+    ObjectGuid _clawbert;
+    ObjectGuid::LowType _clawbertSpawnId = 0;
+    uint8 _roars = 0;
     bool _ate = false;
 };
 
@@ -726,7 +856,7 @@ struct classic_boss_blackmaw_varrox : public ScriptedAI
 {
     classic_boss_blackmaw_varrox(Creature* creature) : ScriptedAI(creature) { }
 
-    enum : uint32 { EV_VOLLEY = 1, EV_FEAR, EV_WREST, EV_DETONATE };
+    enum : uint32 { EV_CALL = 1, EV_VOLLEY, EV_FEAR, EV_WREST, EV_DETONATE };
 
     void Reset() override
     {
@@ -734,11 +864,12 @@ struct classic_boss_blackmaw_varrox : public ScriptedAI
         _seized.Clear();
     }
 
+    // live (one kill, Karrz's capture 27 Nov): a fixed 24.7 s cycle. "The shadows call!" at 11.0 s, Crimson Wrest at 13.4, Fear
+    // at 21.9, the Nightmare Detonation burst at 23.0, Shadow Bolt Volley at 24.4, then again from 35.7.
     void JustEngagedWith(Unit* /*who*/) override
     {
-        _events.ScheduleEvent(EV_VOLLEY, 6s);            // INFERRED timers
-        _events.ScheduleEvent(EV_FEAR, 20s);
-        _events.ScheduleEvent(EV_WREST, 12s);
+        me->Yell("Ha! You stand against me?", LANG_UNIVERSAL);
+        ScheduleCycle(11000ms);
     }
 
     void UpdateAI(uint32 diff) override
@@ -753,17 +884,19 @@ struct classic_boss_blackmaw_varrox : public ScriptedAI
         {
             switch (ev)
             {
-                case EV_VOLLEY: DoCastSelf(SPELL_BMH_SHADOW_BOLT_VOLLEY); _events.Repeat(12s, 15s); break;
-                case EV_FEAR: DoCastSelf(SPELL_BMH_FEAR); _events.Repeat(25s, 30s); break;
+                case EV_CALL:
+                    me->Yell("The shadows call!", LANG_UNIVERSAL);
+                    ScheduleCycle(24700ms);
+                    break;
+                case EV_VOLLEY: DoCastSelf(SPELL_BMH_SHADOW_BOLT_VOLLEY); break;
+                case EV_FEAR: DoCastSelf(SPELL_BMH_FEAR); break;
                 case EV_WREST:
                     // one player is seized (the spell's own fear and slow on that player only)
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 1, 40.0f, true))
                     {
                         me->AddAura(SPELL_BMH_CRIMSON_WREST, target);
                         _seized = target->GetGUID();
-                        _events.ScheduleEvent(EV_DETONATE, 4s);
                     }
-                    _events.Repeat(20s, 24s);
                     break;
                 case EV_DETONATE:
                     // the burst comes from where the seized player stands: a stalker there casts it for Varrox
@@ -781,6 +914,16 @@ struct classic_boss_blackmaw_varrox : public ScriptedAI
     }
 
 private:
+    // one cycle from its "The shadows call!" (the times are from it); the next call comes 24.7 s after this one
+    void ScheduleCycle(Milliseconds call)
+    {
+        _events.ScheduleEvent(EV_CALL, call);
+        _events.ScheduleEvent(EV_WREST, call + 2400ms);
+        _events.ScheduleEvent(EV_FEAR, call + 10900ms);
+        _events.ScheduleEvent(EV_DETONATE, call + 12000ms);
+        _events.ScheduleEvent(EV_VOLLEY, call + 13400ms);
+    }
+
     EventMap _events;
     ObjectGuid _seized;
 };

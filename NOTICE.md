@@ -63,7 +63,7 @@ redistributing. Source files of the module do not carry per-file headers; this n
   [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Changed: only the records we lacked or had different were picked and
   converted to our database tables.
 - Live WoW Forever quest data (quest order, givers and turn-ins) in `sql/custom/world/2026_11_12_15_*.sql`, `2026_11_13_86_*.sql`,
-  `2026_11_13_87_*.sql`, `2026_11_14_97_*.sql`, `2026_11_16_96_*.sql`, `2026_11_18_97_*.sql`, `2026_11_19_97_*.sql` and `2026_11_20_95_*.sql`: from [Questie](https://github.com/Questie/QuestieDB) (Questie team, GPL-3.0), its Forever corrections and
+  `2026_11_13_87_*.sql`, `2026_11_14_97_*.sql`, `2026_11_16_96_*.sql`, `2026_11_18_97_*.sql`, `2026_11_19_97_*.sql`, `2026_11_20_95_*.sql`, `2026_11_22_39_*.sql`, `2026_11_22_40_*.sql`, `2026_11_22_41_*.sql`, `2026_11_23_12_*.sql`, `2026_11_24_13_*.sql`, `2026_11_26_13_*.sql` and `2026_11_27_13_*.sql`: from [Questie](https://github.com/Questie/QuestieDB) (Questie team, GPL-3.0), its Forever corrections and
   play traces. Changed: converted to our database tables, only where ours lacked it.
 - Live WoW Forever world data (quest records, object templates, vendor items, trainer levels) in
   `sql/custom/world/2026_11_12_14_*.sql`, `2026_11_13_88_*.sql`, `2026_11_13_90_*.sql`, `2026_11_14_96_*.sql`, `2026_11_15_96_*.sql`, `2026_11_17_81_*.sql`,
@@ -77,6 +77,13 @@ redistributing. Source files of the module do not carry per-file headers; this n
   (www.wowhead.com/forever), drop counts over kills from its NPC pages. Changed: written as our own loot rows with the measured chance.
 - Trainer lists in `sql/custom/world/2026_11_21_54_world_forever_wowhead_trainers_1121.sql`: Wowhead's WoW Forever database
   (www.wowhead.com/forever), the spells, prices and skill levels on its trainer pages. Changed: written as our own trainer rows.
+- Trying Times and Bring Back a Bang in `sql/custom/world/2026_11_22_34_world_forever_wetlands_quests_and_markers.sql`: quest records
+  from [Efficient Games](https://efficient.games) (EG Link, CC BY 4.0), givers from QuestieDB's Forever traces (GPL-3.0), and the egg and
+  explosives spawns and loot from Everlake's world data (buildthehomelab/wow-everlake-world-data, GPL-3.0, from Wowhead Forever map
+  points). Changed: compared with our world and only what we lacked was written as ours; the map areas are drawn from our own spawns.
+- Spark of Freedom in `sql/custom/world/2026_11_22_35_world_forever_spark_of_freedom_escort.sql`: quest record from Efficient Games
+  (EG Link, CC BY 4.0) as Everlake's world data has it (GPL-3.0), giver and turn-in from QuestieDB's Forever traces (GPL-3.0). Changed:
+  written as our rows; the escort script and path are ours.
 - French quest text in `sql/custom/world/2026_11_15_98_world_forever_quest_locale_frFR_wowhead.sql`: from Wowhead's WoW Forever
   database (www.wowhead.com/forever), French pages, collected and shared by Ashendris (Mizuka). Changed: compared with our world and
   only the fields we lacked or that differ from live were written.

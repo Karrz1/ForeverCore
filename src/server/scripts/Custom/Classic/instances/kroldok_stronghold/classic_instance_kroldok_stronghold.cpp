@@ -40,10 +40,13 @@
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "QuestDef.h"
 #include "ScriptedCreature.h"
+#include "ScriptedEscortAI.h"
 #include "SpellInfo.h"
 #include "TemporarySummon.h"
 #include "classic_dungeon_encounter_tracker.h"
+#include <iterator>
 #include <list>
 #include <vector>
 
@@ -438,9 +441,138 @@ private:
     bool _fury = false;
 };
 
+// Marcus Tilwell (259253), a prisoner by Slavecrusher Grox: "Krol'dok No More!" (94969, Alliance) has the party walk him out
+// of the stronghold. The quest is live (EG Link); no sniff exists, so the walk, the wait for the turn-in and his lines are ours.
+// He stays silent and gives no quest while Grox lives. Once the escort starts he walks the cleared way back to the entrance
+// (the navmesh-checked bot route of 0046, Grox to the door), completes the quest for the group there, and waits a few
+// minutes for the turn-in before he leaves. If he dies the escort fails for the group (EscortAI); if the party leaves him
+// he slips away and comes back to his spot.
+enum ClassicKroldokMarcus : uint32
+{
+    QUEST_KDS_KROLDOK_NO_MORE = 94969,
+    SAY_KDS_MARCUS_START = 0,
+    SAY_KDS_MARCUS_ATTACKED = 1,
+    SAY_KDS_MARCUS_SAFE = 2
+};
+
+// from his spot by Grox back to the entrance (route 0046 points 13 to 0)
+constexpr Position KdsMarcusPath[] =
+{
+    { -7519.87f, -3851.64f, 124.14f },
+    { -7521.00f, -3827.13f, 125.11f },
+    { -7527.38f, -3806.58f, 125.23f },
+    { -7530.13f, -3788.98f, 131.98f },
+    { -7518.27f, -3774.67f, 139.01f },
+    { -7522.76f, -3755.02f, 141.14f },
+    { -7528.53f, -3737.49f, 147.93f },
+    { -7542.73f, -3726.40f, 151.17f },
+    { -7563.20f, -3720.53f, 153.01f },
+    { -7583.47f, -3719.33f, 156.61f },
+    { -7601.38f, -3716.18f, 157.43f },
+    { -7620.36f, -3719.29f, 157.44f },
+    { -7640.49f, -3716.40f, 157.43f },
+    { -7659.97f, -3713.10f, 157.51f, 0.17f }
+};
+
+constexpr uint32 KDS_MARCUS_LAST_POINT = std::size(KdsMarcusPath) - 1;
+constexpr Milliseconds KDS_MARCUS_TURN_IN_WAIT = 3min;
+
+struct classic_npc_kds_marcus_tilwell : public EscortAI
+{
+    classic_npc_kds_marcus_tilwell(Creature* creature) : EscortAI(creature) { }
+
+    void JustAppeared() override
+    {
+        EscortAI::JustAppeared();
+        me->RestoreFaction();
+        me->SetImmuneToNPC(true);
+        _saidAttacked = false;
+        _safe = false;
+        _gateTimer = 0;
+        UpdateQuestGiver();
+    }
+
+    void OnQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() != QUEST_KDS_KROLDOK_NO_MORE || HasEscortState(STATE_ESCORT_ESCORTING))
+            return;
+
+        me->RemoveNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
+        me->SetFaction(FACTION_ESCORTEE_A_NEUTRAL_PASSIVE);
+        me->SetImmuneToNPC(false);
+
+        ResetPath();
+        for (uint32 i = 0; i < std::size(KdsMarcusPath); ++i)
+            AddWaypoint(i, KdsMarcusPath[i].GetPositionX(), KdsMarcusPath[i].GetPositionY(), KdsMarcusPath[i].GetPositionZ(),
+                KdsMarcusPath[i].GetOrientation(), {}, false);
+
+        SetDespawnAtEnd(false);
+        Start(true, player->GetGUID(), quest);
+        Talk(SAY_KDS_MARCUS_START, player);
+    }
+
+    void JustEngagedWith(Unit* /*who*/) override
+    {
+        if (!_saidAttacked && HasEscortState(STATE_ESCORT_ESCORTING))
+        {
+            _saidAttacked = true;
+            Talk(SAY_KDS_MARCUS_ATTACKED);
+        }
+    }
+
+    void WaypointReached(uint32 waypointId, uint32 /*pathId*/) override
+    {
+        if (waypointId != KDS_MARCUS_LAST_POINT)
+            return;
+
+        _safe = true;
+        Player* player = GetPlayerForEscort();
+        if (player)
+            player->GroupEventHappens(QUEST_KDS_KROLDOK_NO_MORE, me);
+        Talk(SAY_KDS_MARCUS_SAFE, player);
+
+        me->RestoreFaction();
+        me->SetImmuneToNPC(true);
+        me->SetNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
+        me->DespawnOrUnsummon(KDS_MARCUS_TURN_IN_WAIT);
+    }
+
+    void UpdateEscortAI(uint32 diff) override
+    {
+        if (!HasEscortState(STATE_ESCORT_ESCORTING) && !_safe)
+        {
+            if (_gateTimer <= diff)
+            {
+                UpdateQuestGiver();
+                _gateTimer = 1000;
+            }
+            else
+                _gateTimer -= diff;
+        }
+
+        EscortAI::UpdateEscortAI(diff);
+    }
+
+private:
+    // the quest is offered only once Slavecrusher Grox is dead
+    void UpdateQuestGiver()
+    {
+        InstanceScript* instance = me->GetInstanceScript();
+        if (instance && instance->GetBossState(CKDS_ENC_GROX) == DONE)
+            me->SetNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
+        else
+            me->RemoveNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
+    }
+
+    bool _saidAttacked = false;
+    bool _safe = false;
+    uint32 _gateTimer = 0;
+};
+
 void AddSC_classic_instance_kroldok_stronghold()
 {
     new classic_instance_kroldok_stronghold();
+    RegisterCreatureAI(classic_npc_kds_marcus_tilwell);
     RegisterCreatureAI(classic_boss_kds_grox);
     RegisterCreatureAI(classic_boss_kds_zarmok);
     RegisterCreatureAI(classic_boss_kds_ashka);

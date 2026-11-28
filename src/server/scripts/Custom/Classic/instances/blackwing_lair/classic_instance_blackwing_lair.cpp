@@ -50,6 +50,9 @@
 #include <map>
 #include <vector>
 
+// classic_boss_razorgore.cpp
+void ClassicBwlRazSetChannel(Unit* unit, ObjectGuid target, uint32 spellId);
+
 namespace
 {
 Position const ClassicBwlEggSpawnCoords[] =
@@ -461,6 +464,9 @@ public:
                     break;
                 case CLASSIC_BWL_NPC_GRETHOK_THE_CONTROLLER:
                     m_guids[CLASSIC_BWL_DATA_GRETOK_GUID] = pCreature->GetGUID();
+                    // respawned by Razorgore's reset as a new creature (TC dynamic spawns): channel like the original
+                    if (pCreature->IsAlive() && GetBossState(CLASSIC_BWL_TYPE_RAZORGORE) != IN_PROGRESS && GetBossState(CLASSIC_BWL_TYPE_RAZORGORE) != DONE)
+                        ClassicBwlRazSetChannel(pCreature, ObjectGuid::Empty, CLASSIC_BWL_SPELL_POSSESS);
                     [[fallthrough]]; // VMaNGOS: "no break - intended?"
                 case CLASSIC_BWL_NPC_BLACKWING_GUARDSMAN:
                     if (std::find(m_razorgoreGuards.begin(), m_razorgoreGuards.end(), pCreature->GetGUID()) == m_razorgoreGuards.end())

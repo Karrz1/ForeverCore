@@ -107,6 +107,8 @@ class TC_GAME_API Transport final : public GameObject, public TransportBase
         bool TeleportTransport(uint32 oldMapId, uint32 newMapId, float x, float y, float z, float o);
         void TeleportPassengersAndHideTransport(uint32 newMapid);
         void UpdatePassengerPositions(PassengerSet const& passengers);
+        void BoardOwnersCompanions(Player* owner);
+        void LeaveWithOwner(Player* owner);
 
         TransportTemplate const* _transportInfo;
         TransportMovementState _movementState;

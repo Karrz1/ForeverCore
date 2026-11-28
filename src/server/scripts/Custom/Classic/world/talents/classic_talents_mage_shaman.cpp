@@ -31,6 +31,7 @@
 #include "Player.h"
 #include "Random.h"
 #include "DB2Stores.h"
+#include "GameTime.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellHistory.h"
@@ -575,19 +576,96 @@ class classic_spell_mage_master_of_elements : public AuraScript
     }
 };
 
+// 5143, 5144, 5145, 8416, 8417, 10211, 10212, 25345 - the Arcane Missiles channels
+static bool IsArcaneMissilesChannel(uint32 spellId)
+{
+    switch (spellId)
+    {
+        case 5143: case 5144: case 5145: case 8416: case 8417: case 10211: case 10212: case 25345:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// WoW Forever hotfix of 9 Nov 2026: "Arcane Concentration's activation chance now correctly splits across the cast and every bolt (was
+// granting 10% on cast and per bolt)". The channel start and each missile roll an equal share, 1 / (missiles + 1): a sixth each on a five
+// missile channel (wowsims/forever, MIT, docs/evidence EV-0098). The missile count is the channel row's duration over its missile period.
+static float ArcaneMissilesRollShare(SpellInfo const* channel)
+{
+    int32 const duration = channel->GetMaxDuration();
+    for (SpellEffectInfo const& effect : channel->GetEffects())
+        if (effect.IsAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL) && effect.ApplyAuraPeriod > 0 && duration > 0)
+            return 1.0f / float(duration / int32(effect.ApplyAuraPeriod) + 1);
+    return 1.0f;
+}
+
 // 11213 - Arcane Concentration: "Gives you a $s1% chance of entering a Clearcasting state after any damage spell hits a target." The client
 // spell is a proc trigger (Clearcasting 12536) with 100 as spell proc chance and the talent chance as the effect amount, so it entered
-// Clearcasting on every damage spell hit. The chance is rolled from the amount (spell_proc: harmful spell, damage, hit).
+// Clearcasting on every damage spell hit. The chance is rolled from the amount (spell_proc: harmful spell, damage, hit; the 1 s cooldown
+// is the client's). Arcane Missiles' missiles are triggered spells, so they never rolled it, and the channel start deals no damage, so a
+// channel never gave Clearcasting at all. Now each missile rolls its share of the chance (ArcaneMissilesRollShare) and the channel start
+// rolls its own in classic_spell_mage_arcane_missiles_concentration. The row lets triggered spells through (PROC_ATTR_TRIGGERED_CAN_PROC)
+// for the missiles; every other triggered spell is turned away here, as Aura::GetProcEffectMask did before. Credit: Everlake
+// (buildthehomelab, GPL-3) ported the hotfix first.
 class classic_spell_mage_arcane_concentration : public AuraScript
 {
-    bool CheckProc(AuraEffect const* aurEff, ProcEventInfo& /*eventInfo*/)
+    bool CheckProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
     {
-        return roll_chance(float(aurEff->GetAmount()));
+        float chance = float(aurEff->GetAmount());
+        if (Spell const* procSpell = eventInfo.GetProcSpell(); procSpell && procSpell->IsTriggered())
+        {
+            SpellInfo const* channel = procSpell->GetTriggeredByAuraSpell();
+            if (channel && IsArcaneMissilesChannel(channel->Id))
+                chance *= ArcaneMissilesRollShare(channel);
+            else if (!procSpell->GetSpellInfo()->HasAttribute(SPELL_ATTR3_NOT_A_PROC))
+                return false;
+        }
+
+        return roll_chance(chance);
     }
 
     void Register() override
     {
         DoCheckEffectProc += AuraCheckEffectProcFn(classic_spell_mage_arcane_concentration::CheckProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+};
+
+// 5143, 5144, 5145, 8416, 8417, 10211, 10212, 25345 - Arcane Missiles: the channel start rolls Arcane Concentration's share. The channel
+// deals no damage at its start, so the proc row never hears it; the roll is made here, after the cast spent any Clearcasting it found,
+// and it shares the talent's 1 s proc cooldown.
+class classic_spell_mage_arcane_missiles_concentration : public SpellScript
+{
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellEffect({ { SPELL_MAGE_ARCANE_CONCENTRATION, EFFECT_0 } });
+    }
+
+    void HandleAfterCast()
+    {
+        Unit* caster = GetCaster();
+        Aura* talent = caster->GetAura(SPELL_MAGE_ARCANE_CONCENTRATION);
+        AuraEffect* chance = talent ? talent->GetEffect(EFFECT_0) : nullptr;
+        if (!chance)
+            return;
+
+        uint32 const clearcasting = chance->GetSpellEffectInfo().TriggerSpell;
+        TimePoint const now = GameTime::Now();
+        if (!clearcasting || talent->IsProcOnCooldown(now))
+            return;
+
+        if (!roll_chance(float(chance->GetAmount()) * ArcaneMissilesRollShare(GetSpellInfo())))
+            return;
+
+        if (SpellProcEntry const* procEntry = sSpellMgr->GetSpellProcEntry(talent->GetSpellInfo()))
+            talent->AddProcCooldown(procEntry, now);
+
+        caster->CastSpell(caster, clearcasting, CastSpellExtraArgs(chance));
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(classic_spell_mage_arcane_missiles_concentration::HandleAfterCast);
     }
 };
 
@@ -1361,6 +1439,8 @@ class classic_spell_sha_chain_heal_riptide : public SpellScript
 // TARGET_DEST_DEST + enemies 10 yd) at its position for the shaman.
 class classic_spell_sha_fire_nova : public SpellScript
 {
+    static constexpr int32 ITEM_FIRE_TOTEM = 5176;
+
     static uint32 GetDamageSpell(uint32 spellId)
     {
         switch (spellId)
@@ -1392,7 +1472,19 @@ class classic_spell_sha_fire_nova : public SpellScript
 
     SpellCastResult CheckCast()
     {
-        return GetFireTotem(GetCaster()) ? SPELL_CAST_OK : SPELL_FAILED_TOTEMS;
+        if (GetFireTotem(GetCaster()))
+            return SPELL_CAST_OK;
+
+        // The client prints SPELL_FAILED_TOTEMS as "Requires %s" filled with the item in FailedArg1. These spells carry no totem item
+        // of their own (the core fills the argument from SpellInfo::Totem), so the player saw a bare "Requires %s" (Discord 11-22).
+        // Name the Fire Totem item, which every fire totem needs: "Requires Fire Totem", in the client's own language.
+        if (Player const* player = GetCaster()->ToPlayer())
+        {
+            int32 fireTotemItem = ITEM_FIRE_TOTEM;
+            Spell::SendCastResult(player, GetSpellInfo(), GetSpell()->m_SpellVisual, GetSpell()->m_castId, SPELL_FAILED_TOTEMS,
+                SPELL_CUSTOM_ERROR_NONE, &fireTotemItem);
+        }
+        return SPELL_FAILED_DONT_REPORT;
     }
 
     void HandleDummy(SpellEffIndex /*effIndex*/)
@@ -1663,6 +1755,7 @@ void AddSC_classic_talents_mage_shaman()
     RegisterSpellScript(classic_spell_mage_arcane_blast);
     RegisterSpellScript(classic_spell_mage_missile_barrage);
     RegisterSpellScript(classic_spell_mage_arcane_missiles_barrage);
+    RegisterSpellScript(classic_spell_mage_arcane_missiles_concentration);
 
     // Shaman
     RegisterSpellScript(classic_spell_sha_flurry);

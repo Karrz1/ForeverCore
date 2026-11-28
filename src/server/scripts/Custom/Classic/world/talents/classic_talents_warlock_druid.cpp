@@ -28,11 +28,13 @@
 #include "Random.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
+#include "SpellHistory.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "SpellScript.h"
 #include "Unit.h"
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -80,6 +82,11 @@ enum ClassicWarlockDruidTalentSpells
     SPELL_CWD_GRIMOIRE_OF_SYNERGY_BUFF      = 426303,   // all damage done, 15 sec
     SPELL_CWD_DECIMATION                    = 440870,
     SPELL_CWD_DECIMATION_BUFF               = 440873,   // Soul Fire cast time (bp0) and no Soul Shard, 10 sec
+    SPELL_CWD_DEMONIC_BRAND                 = 1293695,  // talent: Searing Pain threat, +charges on the brand
+    SPELL_CWD_DEMONIC_BRAND_DEBUFF          = 1293696,  // on the target: proc aura (no trigger spell) + dummy
+    SPELL_CWD_DEMONIC_BRAND_SHADOW          = 1293697,  // school damage, 0 bp
+    SPELL_CWD_DEMONIC_BRAND_FIRE            = 1293698,  // school damage, 0 bp
+    SPELL_CWD_UNHOLY_POWER                  = 18769,    // effect 0: pet melee damage % (rank value)
 
     // druid
     SPELL_CWD_THICK_HIDE                    = 16929,
@@ -92,7 +99,7 @@ enum ClassicWarlockDruidTalentSpells
     SPELL_CWD_ECLIPSE                       = 408248,
     SPELL_CWD_ECLIPSE_BUFF                  = 408255,
     SPELL_CWD_DREAMSTATE                    = 408258,
-    SPELL_CWD_DREAMSTATE_BUFF               = 408261,
+    SPELL_CWD_INNERVATE                     = 29166,
     SPELL_CWD_KING_OF_THE_JUNGLE            = 417046,
     SPELL_CWD_KING_OF_THE_JUNGLE_ENERGIZE   = 417045,
     SPELL_CWD_REND_AND_TEAR                 = 1223246,
@@ -757,6 +764,28 @@ class classic_talent_warl_demon_talent_sync : public AuraScript
         AfterEffectApply += AuraEffectApplyFn(classic_talent_warl_demon_talent_sync::HandleApplyOrRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
         AfterEffectRemove += AuraEffectRemoveFn(classic_talent_warl_demon_talent_sync::HandleApplyOrRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
         OnHeartbeat += AuraHeartbeatFn(classic_talent_warl_demon_talent_sync::HandleHeartbeat);
+    }
+};
+
+// 1235316 - Demonic Aegis (talent). Blizzard 20 November 2026 (71037+1): "Fixed a bug where the effects of the Demonic Aegis talent
+// could be snapshotted into your Demon Armor or Demon Skin and then untalented to retain the effects. Demonic Aegis and Demon Skin are
+// removed when your talents are unlearned." When the talent's aura leaves a player in the world (talents unlearned), the warlock's own
+// Demon Skin (687, 696) and Demon Armor (706, 1086, 11733-11735) go with it, so a buff cast with the talent cannot be kept without it.
+class classic_talent_warl_demonic_aegis : public AuraScript
+{
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        if (!target->IsPlayer() || !target->IsInWorld())
+            return;
+
+        for (uint32 spellId : { 687u, 696u, 706u, 1086u, 11733u, 11734u, 11735u })
+            target->RemoveOwnedAura(spellId, target->GetGUID());
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(classic_talent_warl_demonic_aegis::HandleRemove, EFFECT_FIRST_FOUND, SPELL_AURA_ANY, AURA_EFFECT_HANDLE_REAL);
     }
 };
 
@@ -1807,32 +1836,41 @@ class classic_talent_dru_eclipse_starfire : public SpellScript
     bool _usesCharge = false;
 };
 
-// 408258 - Dreamstate: "Your damaging non-periodic spell critical strikes grant you $m1% of your mana regeneration while casting for
-// $408261d." (408261: SPELL_AURA_MOD_MANA_REGEN_INTERRUPT)
-class classic_talent_dru_dreamstate : public AuraScript
+// 29166 - Innervate, with 408258 - Dreamstate (WoW Forever, 25 November 2026: replaces Moonfury): "When you cast Innervate on a
+// target other than yourself, you gain $s1% of the effect as well." The share is Dreamstate's amount, 20/40/60/80/100% by rank
+// (its trait definition's curve). The druid gets the same Innervate with every effect scaled to that share.
+class classic_talent_dru_dreamstate : public SpellScript
 {
-    bool Validate(SpellInfo const* /*spellInfo*/) override
+    void HandleAfterHit()
     {
-        return ValidateSpellInfo({ SPELL_CWD_DREAMSTATE_BUFF });
-    }
+        Unit* caster = GetCaster();
+        Unit* target = GetHitUnit();
+        if (!caster || !target || target == caster)
+            return;
 
-    bool CheckProc(ProcEventInfo& eventInfo)
-    {
-        DamageInfo* damageInfo = eventInfo.GetDamageInfo();
-        return eventInfo.GetSpellInfo() && damageInfo && damageInfo->GetDamage() && (eventInfo.GetHitMask() & PROC_HIT_CRITICAL)
-            && !(eventInfo.GetTypeMask() & PROC_FLAG_DEAL_HARMFUL_PERIODIC);
-    }
+        AuraEffect const* dreamstate = caster->GetAuraEffect(SPELL_CWD_DREAMSTATE, EFFECT_0);
+        if (!dreamstate || dreamstate->GetAmount() <= 0)
+            return;
 
-    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& /*eventInfo*/)
-    {
-        PreventDefaultAction();
-        GetTarget()->CastSpell(GetTarget(), SPELL_CWD_DREAMSTATE_BUFF, CastSpellExtraArgs(aurEff).AddSpellBP0(aurEff->GetAmount()));
+        Aura const* given = target->GetAura(SPELL_CWD_INNERVATE, caster->GetGUID());
+        if (!given)
+            return;
+
+        int32 const share = std::min(dreamstate->GetAmountAsInt(), 100);
+        caster->CastSpell(caster, SPELL_CWD_INNERVATE, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+        Aura* own = caster->GetAura(SPELL_CWD_INNERVATE, caster->GetGUID());
+        if (!own || share >= 100)
+            return;
+
+        for (AuraEffect* effect : own->GetAuraEffects())
+            if (effect)
+                if (AuraEffect const* full = given->GetEffect(effect->GetEffIndex()))
+                    effect->ChangeAmount(CalculatePct(full->GetAmount(), share));
     }
 
     void Register() override
     {
-        DoCheckProc += AuraCheckProcFn(classic_talent_dru_dreamstate::CheckProc);
-        OnEffectProc += AuraEffectProcFn(classic_talent_dru_dreamstate::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+        AfterHit += SpellHitFn(classic_talent_dru_dreamstate::HandleAfterHit);
     }
 };
 
@@ -1999,8 +2037,13 @@ std::unordered_map<ObjectGuid, std::vector<classic_spell_dru_entangling_roots_li
 // 18562 - Swiftmend: "Consumes a Rejuvenation or Regrowth effect on a friendly target to instantly heal them an amount equal to 12 sec of
 // Rejuvenation or 18 sec of Regrowth." The client spell is a plain heal of 1 and consumed nothing. The heal is now the periodic effect's
 // base amount times the ticks of 12 / 18 sec, the effect is removed, and the cast needs one of the two from the druid on the target.
+// 1291075 - Swiftmend Cooldown Reduction (Idol of Synthesis 272429): "Each of your heal over time effects on the target reduces the remaining
+// cooldown on Swiftmend by 1 sec when you cast it." The equip aura is a dummy holding the 1000 ms that nothing read. The druid's heals over
+// time on the target are counted as the cast launches, the consumed one included, and the cooldown the cast started (Spell::_cast sends
+// it before AfterCast) is shortened by that many. Credit: Everlake (buildthehomelab, GPL-3) found it first.
 class classic_spell_dru_swiftmend : public SpellScript
 {
+    static constexpr uint32 SPELL_ITEM_SWIFTMEND_COOLDOWN_REDUCTION = 1291075;
     static constexpr uint32 FAMILY_REJUVENATION = 0x10;
     static constexpr uint32 FAMILY_REGROWTH = 0x40;
 
@@ -2041,6 +2084,22 @@ class classic_spell_dru_swiftmend : public SpellScript
         int32 ticks = (hot->GetSpellInfo()->SpellFamilyFlags[0] & FAMILY_REJUVENATION) ? TICKS_REJUVENATION : TICKS_REGROWTH;
         SetEffectValue(hot->GetAmount() * ticks);
         _consumedSpell = hot->GetId();
+
+        std::vector<uint32> hots;
+        for (AuraEffect const* effect : target->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
+            if (effect->GetCasterGUID() == GetCaster()->GetGUID() && std::find(hots.begin(), hots.end(), effect->GetId()) == hots.end())
+                hots.push_back(effect->GetId());
+        _hotCount = uint32(hots.size());
+    }
+
+    void HandleAfterCast()
+    {
+        if (!_hotCount)
+            return;
+
+        Unit* druid = GetCaster();
+        if (AuraEffect const* idol = druid->GetAuraEffect(SPELL_ITEM_SWIFTMEND_COOLDOWN_REDUCTION, EFFECT_0))
+            druid->GetSpellHistory()->ModifyCooldown(GetSpellInfo(), -Milliseconds(int64(idol->GetAmountAsInt()) * _hotCount));
     }
 
     void HandleHitHeal(SpellEffIndex /*effIndex*/)
@@ -2055,10 +2114,12 @@ class classic_spell_dru_swiftmend : public SpellScript
         OnCheckCast += SpellCheckCastFn(classic_spell_dru_swiftmend::CheckCast);
         OnEffectLaunchTarget += SpellEffectFn(classic_spell_dru_swiftmend::HandleLaunchHeal, EFFECT_0, SPELL_EFFECT_HEAL);
         OnEffectHitTarget += SpellEffectFn(classic_spell_dru_swiftmend::HandleHitHeal, EFFECT_0, SPELL_EFFECT_HEAL);
+        AfterCast += SpellCastFn(classic_spell_dru_swiftmend::HandleAfterCast);
     }
 
 private:
     uint32 _consumedSpell = 0;
+    uint32 _hotCount = 0;
 };
 
 // 22842 - Frenzied Regeneration: "Converts up to 10 Rage per second into health for $d. Each point of Rage is converted into $s1% health."
@@ -2256,10 +2317,40 @@ private:
         druid->CastSpell(druid, _buffSpellId, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
     }
 
+    // The passive's own proc (a marker on entering combat, 1330741 for the rogue) is never needed: the check above gives the buff.
+    bool CheckProc(ProcEventInfo& /*eventInfo*/)
+    {
+        return false;
+    }
+
+    // Poised worked until the first fight and came back only at the next login (RU Discord, Nursa, 11-22: "after a fight, once the energy
+    // is full again, it stops working until I log out and in"). TestPlayer on af61 (rogue-nursa-1122 BEFORE r2): 4 s after the fight
+    // ended the marker 1330741 and the passive 1328825 went together, and the buff never came back. A character that still knows the
+    // spell gets the passive back half a second later; the removal is logged with its remove mode ([poised], scripts.classic).
+    void OnRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* owner = GetUnitOwner();
+        if (!owner || !owner->IsPlayer() || !owner->IsInWorld())
+            return;
+
+        uint32 const spellId = GetId();
+        TC_LOG_INFO("scripts.classic", "[poised] {} lost Poised {} (remove mode {}, in combat {})", owner->GetName(), spellId,
+            uint32(GetTargetApplication() ? GetTargetApplication()->GetRemoveMode() : AURA_REMOVE_NONE), owner->IsInCombat());
+
+        owner->m_Events.AddEventAtOffset([owner, spellId]()
+        {
+            Player* player = owner->ToPlayer();
+            if (player && player->IsInWorld() && player->IsAlive() && player->HasSpell(spellId) && !player->HasAura(spellId))
+                player->CastSpell(player, spellId, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
+        }, 500ms);
+    }
+
     void Register() override
     {
         DoEffectCalcPeriodic += AuraEffectCalcPeriodicFn(classic_spell_dru_poised::CalcPeriodic, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
         OnEffectUpdatePeriodic += AuraEffectUpdatePeriodicFn(classic_spell_dru_poised::CheckEnergy, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+        DoCheckProc += AuraCheckProcFn(classic_spell_dru_poised::CheckProc);
+        AfterEffectRemove += AuraEffectRemoveFn(classic_spell_dru_poised::OnRemove, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL);
     }
 };
 
@@ -2395,8 +2486,117 @@ class classic_spell_dru_shifting_power : public SpellScript
     }
 };
 
+// 1293695 - Demonic Brand (talent): "Your Searing Pain generates $s1% less threat and brands the target for $1293696d. Your pet's next
+// $m2 attacks against the target deal $<minDam> to $<maxDam> Fire or Shadow damage based on the pet. If Shadow damage is dealt, it has
+// high threat." The talent aura only carries the threat and charge spell mods; nothing in the client data puts the brand on the target.
+// 5676, 17919-17923 - Searing Pain: a hit from a warlock with the talent brands the target.
+class classic_talent_warl_demonic_brand_searing_pain : public SpellScript
+{
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_CWD_DEMONIC_BRAND, SPELL_CWD_DEMONIC_BRAND_DEBUFF });
+    }
+
+    void HandleAfterHit()
+    {
+        Unit* caster = GetCaster();
+        Unit* target = GetHitUnit();
+        if (!target || !target->IsAlive() || !caster->HasAura(SPELL_CWD_DEMONIC_BRAND))
+            return;
+
+        caster->CastSpell(target, SPELL_CWD_DEMONIC_BRAND_DEBUFF, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+    }
+
+    void Register() override
+    {
+        AfterHit += SpellHitFn(classic_talent_warl_demonic_brand_searing_pain::HandleAfterHit);
+    }
+};
+
+// 1293696 - Demonic Brand (the brand): "The caster's pet deals an additional ${$<minDam>*$<mult>} to ${$<maxDam>*$<mult>} damage with its
+// next $m2 attacks." Its proc aura has no trigger spell, so the brand did nothing. A hit from the branding warlock's pet now uses up one
+// attack and makes the pet deal 1293698 (Fire, the Imp) or 1293697 (Shadow, any other demon; the pet is the caster, so the threat is the
+// pet's). Damage from the client's description variables (SpellDescriptionVariables 1017 / 1018):
+//   ((level - 26) * 1.5 + 14 .. 17 + 0.078 * the warlock's Shadow or Fire spell power) * Unholy Power ($18769m1 / 100 + 1).
+// Master Demonologist's Fire / Shadow damage done (the other factor of the formula) sits on the pet itself and applies through its own
+// damage bonus. The attacks are the aura's charges when it has some (SpellModOp::ProcCharges from the talent), else effect 1's amount.
+class classic_talent_warl_demonic_brand_debuff : public AuraScript
+{
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellEffect({ { spellInfo->Id, EFFECT_1 } })
+            && ValidateSpellInfo({ SPELL_CWD_DEMONIC_BRAND_SHADOW, SPELL_CWD_DEMONIC_BRAND_FIRE });
+    }
+
+    void HandleApply(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
+    {
+        _attacksLeft = std::max(1, aurEff->GetAmountAsInt());
+    }
+
+    Unit* GetBrandingPet(Unit* actor) const
+    {
+        Unit* warlock = GetCaster();
+        if (!warlock || !actor || actor->GetGUID() != warlock->GetPetGUID())
+            return nullptr;
+        return actor;
+    }
+
+    bool CheckProc(ProcEventInfo& eventInfo)
+    {
+        if (SpellInfo const* spellInfo = eventInfo.GetSpellInfo())
+            if (spellInfo->Id == SPELL_CWD_DEMONIC_BRAND_SHADOW || spellInfo->Id == SPELL_CWD_DEMONIC_BRAND_FIRE)
+                return false;
+
+        DamageInfo* damageInfo = eventInfo.GetDamageInfo();
+        if (!damageInfo || !damageInfo->GetDamage())
+            return false;
+
+        return GetBrandingPet(eventInfo.GetActor()) != nullptr;
+    }
+
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        Unit* warlock = GetCaster();
+        Unit* pet = GetBrandingPet(eventInfo.GetActor());
+        if (!warlock || !pet)
+            return;
+
+        bool const fire = pet->IsCreature() && pet->ToCreature()->GetCreatureTemplate()->family == CREATURE_FAMILY_IMP;
+        SpellSchoolMask const school = fire ? SPELL_SCHOOL_MASK_FIRE : SPELL_SCHOOL_MASK_SHADOW;
+
+        float const base = (float(int32(warlock->GetLevel()) - 26) * 1.5f) + frand(14.0f, 17.0f)
+            + 0.078f * float(warlock->SpellBaseDamageBonusDone(school));
+        float mult = 1.0f;
+        if (AuraEffect const* unholyPower = warlock->GetAuraEffect(SPELL_CWD_UNHOLY_POWER, EFFECT_0))
+            mult += unholyPower->GetAmount() / 100.0f;
+
+        int32 const damage = std::max(1, int32(std::lround(base * mult)));
+        pet->CastSpell(GetTarget(), fire ? SPELL_CWD_DEMONIC_BRAND_FIRE : SPELL_CWD_DEMONIC_BRAND_SHADOW,
+            CastSpellExtraArgs(TRIGGERED_FULL_MASK).AddSpellBP0(damage));
+
+        // with charges the core drops one per proc and removes the brand at 0
+        if (GetAura()->IsUsingCharges())
+            return;
+        if (--_attacksLeft <= 0)
+            GetAura()->Remove();
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(classic_talent_warl_demonic_brand_debuff::HandleApply, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL_OR_REAPPLY_MASK);
+        DoCheckProc += AuraCheckProcFn(classic_talent_warl_demonic_brand_debuff::CheckProc);
+        OnEffectProc += AuraEffectProcFn(classic_talent_warl_demonic_brand_debuff::HandleProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+
+    int32 _attacksLeft = 1;
+};
+
 void AddSC_classic_talents_warlock_druid()
 {
+    RegisterSpellScript(classic_talent_warl_demonic_brand_searing_pain);
+    RegisterSpellScript(classic_talent_warl_demonic_brand_debuff);
     RegisterSpellScript(classic_spell_dru_bloom);
     // warlock
     RegisterSpellScript(classic_talent_warl_life_tap);
@@ -2409,6 +2609,7 @@ void AddSC_classic_talents_warlock_druid()
     RegisterSpellScript(classic_spell_warl_wrack);
     RegisterSpellScript(classic_talent_warl_soul_harvest);
     RegisterSpellScript(classic_talent_warl_demon_talent_sync);
+    RegisterSpellScript(classic_talent_warl_demonic_aegis);
     RegisterSpellScript(classic_talent_warl_summon_demon);
     RegisterSpellScript(classic_talent_warl_demonic_sacrifice);
     RegisterSpellScript(classic_talent_warl_conflagrate);

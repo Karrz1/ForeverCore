@@ -1325,7 +1325,7 @@ struct TransmogOutfitMetadata : public IsUpdateFieldStructureTag
     bool operator!=(TransmogOutfitMetadata const& right) const { return !(*this == right); }
 };
 
-struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMask<402>
+struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMask<438>
 {
     UpdateField<bool, 0, 1> BackpackAutoSortDisabled;
     UpdateField<bool, 0, 2> BackpackSellJunkDisabled;
@@ -1482,22 +1482,22 @@ struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMas
     OptionalUpdateField<UF::ChallengeModeData, 134, 160> ChallengeModeData;
     UpdateField<UF::TransmogOutfitData, 134, 161> ViewedOutfit;
     UpdateField<UF::TransmogOutfitMetadata, 134, 162> TransmogMetadata;
-    UpdateFieldArray<ObjectGuid, 108, 163, 164> InvSlots;     // Classic 1.60: 108 used (client has 145), bits after it +3
-    UpdateFieldArray<UF::RestInfo, 2, 272, 273> RestInfo;
-    UpdateFieldArray<int32, 7, 275, 276> ModDamageDonePos;
-    UpdateFieldArray<int32, 7, 275, 283> ModDamageDoneNeg;
-    UpdateFieldArray<float, 7, 275, 290> ModDamageDonePercent;
-    UpdateFieldArray<float, 7, 275, 297> ModHealingDonePercent;
-    UpdateFieldArray<float, 3, 304, 305> WeaponDmgMultipliers;
-    UpdateFieldArray<float, 3, 304, 308> WeaponAtkSpeedMultipliers;
-    UpdateFieldArray<uint32, 12, 311, 312> BuybackPrice;
-    UpdateFieldArray<int64, 12, 311, 324> BuybackTimestamp;
-    UpdateFieldArray<int32, 32, 336, 337> CombatRatings;
-    UpdateFieldArray<uint32, 4, 369, 370> NoReagentCostMask;
-    UpdateFieldArray<int32, 2, 374, 375> ProfessionSkillLine;
-    UpdateFieldArray<uint32, 5, 377, 378> BagSlotFlags;
-    UpdateFieldArray<float, 17, 383, 384> ItemUpgradeHighWatermark;
-    UpdateField<uint8, 134, 401> NumStableSlots;            // Classic 1.60 only (client bit 159): stable slots bought at a stable master
+    UpdateFieldArray<ObjectGuid, 144, 163, 164> InvSlots;     // Classic 1.60: the first 144 of the client's 145 (key ring 112..143)
+    UpdateFieldArray<UF::RestInfo, 2, 308, 309> RestInfo;
+    UpdateFieldArray<int32, 7, 311, 312> ModDamageDonePos;
+    UpdateFieldArray<int32, 7, 311, 319> ModDamageDoneNeg;
+    UpdateFieldArray<float, 7, 311, 326> ModDamageDonePercent;
+    UpdateFieldArray<float, 7, 311, 333> ModHealingDonePercent;
+    UpdateFieldArray<float, 3, 340, 341> WeaponDmgMultipliers;
+    UpdateFieldArray<float, 3, 340, 344> WeaponAtkSpeedMultipliers;
+    UpdateFieldArray<uint32, 12, 347, 348> BuybackPrice;
+    UpdateFieldArray<int64, 12, 347, 360> BuybackTimestamp;
+    UpdateFieldArray<int32, 32, 372, 373> CombatRatings;
+    UpdateFieldArray<uint32, 4, 405, 406> NoReagentCostMask;
+    UpdateFieldArray<int32, 2, 410, 411> ProfessionSkillLine;
+    UpdateFieldArray<uint32, 5, 413, 414> BagSlotFlags;
+    UpdateFieldArray<float, 17, 419, 420> ItemUpgradeHighWatermark;
+    UpdateField<uint8, 134, 437> NumStableSlots;            // Classic 1.60 only (client bit 159): stable slots bought at a stable master
 
     using OwnerObject = Player;
     void WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteBuffer& data, Player const* receiver, Player const* owner) const;

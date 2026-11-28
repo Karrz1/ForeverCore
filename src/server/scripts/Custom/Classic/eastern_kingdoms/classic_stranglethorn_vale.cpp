@@ -22,6 +22,7 @@
 #include "ScriptMgr.h"
 #include "GameObject.h"
 #include "GameObjectAI.h"
+#include "Log.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "Random.h"
@@ -42,58 +43,88 @@ enum YennikuData
     CLASSIC_FACTION_TROLL_BLOODSCALP = 28
 };
 
+// Yenniku's Release (3607, the Soul Gem) stuns him and makes him friendly to the Horde for 60 s, so Filling the Soul Gem (593)
+// can be handed in to him. The port cleared only the timer in Reset(), not the released state, so the evade that follows the
+// CombatStop (UpdateVictim with no victim) reset him and the next update ended the release at once: faction 28 again and
+// attacking within a second. The release now ends only on its own timer; an evade while released only drops combat, and he
+// is passive while released so nothing pulls him back in. The scripts.classic lines are for the dev check of this fix.
 struct classic_mob_yenniku : public ScriptedAI
 {
-    classic_mob_yenniku(Creature* creature) : ScriptedAI(creature), _resetTimer(0), _reset(false) { }
+    classic_mob_yenniku(Creature* creature) : ScriptedAI(creature), _releaseTimer(0), _released(false) { }
 
     void Reset() override
     {
-        _resetTimer = 0;
+        TC_LOG_INFO("scripts.classic", "Yenniku {}: Reset (released {}, {} ms left)", me->GetGUID().ToString(), _released, _releaseTimer);
+        if (_released)
+            return;                                         // a reset does not end the release, only its timer does
+
         me->SetEmoteState(EMOTE_STATE_NONE);
+    }
+
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        TC_LOG_INFO("scripts.classic", "Yenniku {}: evade (reason {}, released {})", me->GetGUID().ToString(), uint32(why), _released);
+        if (_released)
+        {
+            // stunned in place and friendly: nothing to walk back to, only leave combat
+            me->CombatStop(true);
+            me->GetThreatManager().ClearAllThreat();
+            return;
+        }
+
+        ScriptedAI::EnterEvadeMode(why);
     }
 
     void SpellHit(WorldObject* caster, SpellInfo const* spellInfo) override
     {
-        Player* player = caster ? caster->ToPlayer() : nullptr;
-        if (!player)
+        if (spellInfo->Id != SPELL_YENNIKUS_RELEASE)
             return;
 
-        // Yenniku's Release
-        if (!_reset && player->GetQuestStatus(QUEST_SAVING_YENNIKU) == QUEST_STATUS_INCOMPLETE && spellInfo->Id == SPELL_YENNIKUS_RELEASE)
-        {
-            me->SetEmoteState(EMOTE_STATE_STUN);
-            me->CombatStop();                               // stop combat
-            me->GetThreatManager().ClearAllThreat();        // unsure of this
-            me->SetFaction(CLASSIC_FACTION_HORDE_GENERIC);          // horde generic
+        Player* player = caster ? caster->ToPlayer() : nullptr;
+        TC_LOG_INFO("scripts.classic", "Yenniku {}: hit by Yenniku's Release from {} (quest 592 status {}, released {})", me->GetGUID().ToString(),
+            player ? player->GetName() : std::string("no player"), player ? uint32(player->GetQuestStatus(QUEST_SAVING_YENNIKU)) : 0u, _released);
+        if (!player || _released || player->GetQuestStatus(QUEST_SAVING_YENNIKU) != QUEST_STATUS_INCOMPLETE)
+            return;
 
-            _reset = true;
-            _resetTimer = 60000;
-        }
+        _released = true;
+        _releaseTimer = 60000;
+
+        me->SetReactState(REACT_PASSIVE);
+        me->CombatStop(true);
+        me->GetThreatManager().ClearAllThreat();
+        me->StopMoving();
+        me->SetEmoteState(EMOTE_STATE_STUN);
+        me->SetFaction(CLASSIC_FACTION_HORDE_GENERIC);      // horde generic: 593 can be handed in to him
+        TC_LOG_INFO("scripts.classic", "Yenniku {}: released for 60 s (faction {})", me->GetGUID().ToString(), me->GetFaction());
     }
 
     void JustEngagedWith(Unit* /*who*/) override { }
 
     void UpdateAI(uint32 diff) override
     {
-        if (_reset)
+        if (_released)
         {
-            if (_resetTimer < diff)
+            if (_releaseTimer > diff)
             {
-                EnterEvadeMode();
-                _reset = false;
-                me->SetFaction(CLASSIC_FACTION_TROLL_BLOODSCALP);   // troll, bloodscalp
+                _releaseTimer -= diff;
+                return;
             }
-            else
-                _resetTimer -= diff;
+
+            _released = false;
+            _releaseTimer = 0;
+            me->SetFaction(CLASSIC_FACTION_TROLL_BLOODSCALP);  // troll, bloodscalp
+            me->SetReactState(REACT_AGGRESSIVE);
+            TC_LOG_INFO("scripts.classic", "Yenniku {}: release over (faction {})", me->GetGUID().ToString(), me->GetFaction());
+            EnterEvadeMode(EvadeReason::Other);
+            return;
         }
 
-        // Return since we have no target
         UpdateVictim();
     }
 
 private:
-    uint32 _resetTimer;
-    bool _reset;
+    uint32 _releaseTimer;
+    bool _released;
 };
 
 /*######

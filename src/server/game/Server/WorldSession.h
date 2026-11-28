@@ -559,6 +559,7 @@ namespace WorldPackets
         class MoveTeleportAck;
         class MovementAckMessage;
         class MovementSpeedAck;
+        class MoveSetTurnRateCheat;
         class MovementSpeedRangeAck;
         class MoveKnockBackAck;
         class SetActiveMover;
@@ -1376,6 +1377,7 @@ class TC_GAME_API WorldSession
 
         void HandleMoveTeleportAck(WorldPackets::Movement::MoveTeleportAck& packet);
         void HandleForceSpeedChangeAck(WorldPackets::Movement::MovementSpeedAck& packet);
+        void HandleMoveSetTurnRateCheat(WorldPackets::Movement::MoveSetTurnRateCheat& packet);
         void HandleSetAdvFlyingSpeedAck(WorldPackets::Movement::MovementSpeedAck& speedAck);
         void HandleSetAdvFlyingSpeedRangeAck(WorldPackets::Movement::MovementSpeedRangeAck& speedRangeAck);
         void HandleSetCollisionHeightAck(WorldPackets::Movement::MoveSetCollisionHeightAck& setCollisionHeightAck);
@@ -1418,6 +1420,7 @@ class TC_GAME_API WorldSession
         void HandleSetSelectionOpcode(WorldPackets::Misc::SetSelection& packet);
         void HandleStandStateChangeOpcode(WorldPackets::Misc::StandStateChange& packet);
         void UpdateCampfireRest(uint8 standState);   // UnitStandStateType
+        void UpdatePendingCampfireRest();            // Player::Update, after its movement aura interrupts
         void HandleEmoteOpcode(WorldPackets::Chat::EmoteClient& packet);
 
         // Social
@@ -2157,6 +2160,7 @@ class TC_GAME_API WorldSession
         uint32 expireTime;
         std::atomic<bool> forceExit;
         bool _motdPending = false;          // MOTD due once the client's loading screen after the login is gone
+        uint8 _pendingCampfireRestStandState = 0;   // a sit state whose camp rest waits for a seat move to land (0 = none)
 
         std::unique_ptr<boost::circular_buffer<std::pair<int64, uint32>>> _timeSyncClockDeltaQueue; // first member: clockDelta. Second member: latency of the packet exchange that was used to compute that clockDelta.
         int64 _timeSyncClockDelta;

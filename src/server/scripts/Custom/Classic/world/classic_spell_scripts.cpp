@@ -52,6 +52,7 @@
 #include "Unit.h"
 #include "World.h"
 #include "WorldSession.h"
+#include <any>
 #include <mutex>
 #include <unordered_map>
 
@@ -96,6 +97,8 @@ static std::unordered_map<uint32, ClassicGroundAreaDamage> const ClassicGroundAr
 
 class classic_spell_ground_area_damage : public AuraScript
 {
+    static constexpr uint32 SPELL_DRUID_GENESIS = 1223081;
+
     bool Validate(SpellInfo const* spellInfo) override
     {
         return ClassicGroundAreaDamages.contains(spellInfo->Id);
@@ -138,6 +141,12 @@ class classic_spell_ground_area_damage : public AuraScript
             float modifiedDamage = float(damage) * caster->SpellDamagePctDone(target, spellInfo, DOT, spellInfo->GetEffect(EFFECT_2));
             if (Player* modOwner = caster->GetSpellModOwner())
                 modOwner->ApplySpellMod(spellInfo, SpellModOp::PeriodicHealingAndDamage, modifiedDamage);
+            // Genesis 1223081 effect 1 (live hotfix push 114405): a percent mod of the direct damage op on Hurricane (class mask 0x400000),
+            // which these ticks never read, so Hurricane kept its damage (WoW Forever 71139, Nov 25: "Genesis was not increasing the damage
+            // of Hurricane"). Only Genesis is read here: talents that mod both ops would count twice with the whole direct op. From Everlake
+            // (buildthehomelab/wow-trinitycore-everlake acedfc2a, GPL-3.0), with thanks.
+            if (AuraEffect const* genesis = caster->GetAuraEffect(SPELL_DRUID_GENESIS, EFFECT_1); genesis && genesis->IsAffectingSpell(spellInfo))
+                AddPct(modifiedDamage, genesis->GetAmount());
             damage = int32(std::max(modifiedDamage, 0.0f));
 
             damage = target->SpellDamageBonusTaken(caster, spellInfo, damage, DOT);
@@ -1653,8 +1662,12 @@ class classic_spell_pal_consecration_tick : public SpellScript
 };
 
 // 15286 - Vampiric Embrace (vanilla, VMaNGOS UnitAuraProcHandler): a debuff on the enemy. Shadow damage the priest deals to it
-// heals the priest's party (15290, the priest included) for 20% of the damage. The retail script treated it as a self buff and
-// made the debuffed enemy cast the heal.
+// heals the priest's party (15290, the priest included) for effect 0's share of the damage. The retail script treated it as a self buff
+// and made the debuffed enemy cast the heal.
+// WoW Forever hotfix of 16 Nov 2026 (live push 114093): "causes all party members to be healed for $s1% of any Shadow spell damage you
+// deal ... You receive $s2% increased healing on yourself from this effect." Effect 0 went from 20 to 10 and a new effect 1 (record
+// 1372611) carries 100: the priest heals for twice the party's share. The priest's raise rides on the heal's cast as its custom value
+// (classic_spell_pri_vampiric_embrace_heal). Credit: Everlake (buildthehomelab, GPL-3) ported the hotfix first.
 // WoW Forever: Spirit Tap 15270 "Gives you a $m1% chance ... after killing a non-trivial target or when an enemy afflicted by your Vampiric
 // Embrace dies": the second part has no proc flag, so when the debuffed enemy dies, a priest with the talent gets 15271 without a roll,
 // whoever made the kill (tooltip; wowsims/forever, MIT, sim/priest/talents_shadow.go; no log reading).
@@ -1693,6 +1706,8 @@ class classic_spell_pri_vampiric_embrace : public AuraScript
 
         CastSpellExtraArgs args(aurEff);
         args.AddSpellMod(SPELLVALUE_BASE_POINT0, heal);
+        if (AuraEffect const* selfBonus = GetAura()->GetEffect(EFFECT_1); selfBonus && selfBonus->GetAmount() > 0)
+            args.SetCustomArg(selfBonus->GetAmount());
         priest->CastSpell(priest, SPELL_VAMPIRIC_EMBRACE_HEAL, args);
     }
 
@@ -1701,6 +1716,25 @@ class classic_spell_pri_vampiric_embrace : public AuraScript
         DoCheckProc += AuraCheckProcFn(classic_spell_pri_vampiric_embrace::CheckProc);
         OnEffectProc += AuraEffectProcFn(classic_spell_pri_vampiric_embrace::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
         AfterEffectRemove += AuraEffectRemoveFn(classic_spell_pri_vampiric_embrace::HandleRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 15290 - Vampiric Embrace (heal): heals the priest's party for the share 15286 puts in its base points. The priest, who casts it, gets
+// that share raised by the percent 15286's effect 1 passes along as the cast's custom value (live 100: twice the share).
+class classic_spell_pri_vampiric_embrace_heal : public SpellScript
+{
+    void HandleHeal(SpellEffIndex /*effIndex*/)
+    {
+        if (GetHitUnit() != GetCaster())
+            return;
+
+        if (int32 const* selfBonusPct = std::any_cast<int32>(&GetSpell()->m_customArg))
+            SetEffectValue(GetEffectValue() + CalculatePct(GetEffectValue(), *selfBonusPct));
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_pri_vampiric_embrace_heal::HandleHeal, EFFECT_0, SPELL_EFFECT_HEAL);
     }
 };
 
@@ -2719,6 +2753,26 @@ class classic_spell_cleave_melee_reach : public SpellScript
     }
 };
 
+// 1321560 - Siphon the Grave (4-piece bonus of item set 2133): "When your Mana falls below 15%, restore 200 Mana over 10 sec. May only
+// occur once every 5 min." The data gives it a cast-successful proc with a 5 minute proc cooldown, and the 15% is only the effect's
+// value: with no check the bonus fired on the first spell cast at any mana (Discord, Vondragon, 2026-11-23: it came up on Lightning
+// Shield and Flametongue Weapon at full mana, and then sat on its 5 minute cooldown when the mana really ran low).
+class classic_spell_item_siphon_the_grave : public AuraScript
+{
+    bool CheckProc(AuraEffect const* aurEff, ProcEventInfo& /*eventInfo*/)
+    {
+        Unit const* wearer = GetTarget();
+        if (wearer->GetMaxPower(POWER_MANA) <= 0)
+            return false;
+        return wearer->GetPowerPct(POWER_MANA) < float(aurEff->GetAmount());
+    }
+
+    void Register() override
+    {
+        DoCheckEffectProc += AuraCheckEffectProcFn(classic_spell_item_siphon_the_grave::CheckProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+};
+
 // 1258773 - Testing the Wells (Forever quest 92742, Westfall): the Well Testing Kit 254545 casts a dummy on a "nearby entry" target that
 // nothing in the data names, so every use failed with an invalid target and the two water samples could never be had (Discord
 // 2026-11-09). The target is the caster now (SpellMgr::LoadSpellInfoCorrections); next to a well the kit gives that well's sample.
@@ -2882,8 +2936,80 @@ protected:
 };
 
 
+// 1306410 - Restore Mathystral Amulet (Mathystral Amulet Fragment 279276): "Combine 20 Mathystral Amulet Fragments into a restored
+// Mathystral Amulet." The client spell is a bare dummy with no reagent, so using a fragment did nothing and the amulet 279277, which
+// summons Baron Marinous at the Fathom Stone, could not be made. The cast needs 20 fragments and room for the amulet, then trades them
+// for it, the fragments going once the amulet is in the bags. Credit: Everlake (buildthehomelab, GPL-3) found it first.
+class classic_spell_item_restore_mathystral_amulet : public SpellScript
+{
+    static constexpr uint32 ITEM_MATHYSTRAL_AMULET_FRAGMENT = 279276;
+    static constexpr uint32 ITEM_MATHYSTRAL_AMULET = 279277;
+    static constexpr uint32 FRAGMENTS_NEEDED = 20;
+
+    SpellCastResult CheckCast()
+    {
+        Player* player = GetCaster()->ToPlayer();
+        if (!player || !player->HasItemCount(ITEM_MATHYSTRAL_AMULET_FRAGMENT, FRAGMENTS_NEEDED))
+            return SPELL_FAILED_REAGENTS;
+
+        ItemPosCountVec dest;
+        if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, ITEM_MATHYSTRAL_AMULET, 1) != EQUIP_ERR_OK)
+            return SPELL_FAILED_DONT_REPORT;
+        return SPELL_CAST_OK;
+    }
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster()->ToPlayer();
+        if (!player || !player->HasItemCount(ITEM_MATHYSTRAL_AMULET_FRAGMENT, FRAGMENTS_NEEDED))
+            return;
+
+        if (player->AddItem(ITEM_MATHYSTRAL_AMULET, 1))
+            player->DestroyItemCount(ITEM_MATHYSTRAL_AMULET_FRAGMENT, FRAGMENTS_NEEDED, true);
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(classic_spell_item_restore_mathystral_amulet::CheckCast);
+        AfterCast += SpellCastFn(classic_spell_item_restore_mathystral_amulet::HandleAfterCast);
+    }
+};
+
+// 1309550 - Claymore of Two Moons 280080: "Your attacks have a chance to Wax, dealing 189 Arcane damage or Wane, granting 40 Strength
+// for 10s." The equip aura is a dummy naming neither spell, so it did nothing. Each proc casts Waxing Moon 1319378 at the target or puts
+// up Waning Moon 1319382, one in two each, never both, at 1.35 a minute on landed melee hits (spell_proc row in 2026_11_24_58;
+// wowsims/forever, MIT, docs/evidence EV-0163, Warcraft Logs of four wearers). Credit: Everlake (buildthehomelab, GPL-3) found it first.
+class classic_spell_item_claymore_of_two_moons : public AuraScript
+{
+    static constexpr uint32 SPELL_WAXING_MOON = 1319378;
+    static constexpr uint32 SPELL_WANING_MOON = 1319382;
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_WAXING_MOON, SPELL_WANING_MOON });
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+        Unit* wearer = GetTarget();
+        Unit* enemy = eventInfo.GetActionTarget();
+        if (enemy && enemy != wearer && roll_chance(50))
+            wearer->CastSpell(enemy, SPELL_WAXING_MOON, CastSpellExtraArgs(aurEff));
+        else
+            wearer->CastSpell(wearer, SPELL_WANING_MOON, CastSpellExtraArgs(aurEff));
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(classic_spell_item_claymore_of_two_moons::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
 void AddSC_classic_spell_scripts()
 {
+    RegisterSpellScript(classic_spell_item_restore_mathystral_amulet);
+    RegisterSpellScript(classic_spell_item_claymore_of_two_moons);
     RegisterSpellScript(classic_spell_sha_windfury_weapon);
     RegisterSpellScript(classic_spell_proc_chance_from_effect);
     RegisterSpellScript(classic_spell_warr_gore_drinker);
@@ -2895,6 +3021,7 @@ void AddSC_classic_spell_scripts()
     new classic_unit_tigers_fury();
     new classic_unit_unflinching_morale();
     RegisterSpellScript(classic_spell_pri_vampiric_embrace);
+    RegisterSpellScript(classic_spell_pri_vampiric_embrace_heal);
     RegisterSpellScript(classic_spell_item_moonshadow_stave);
     RegisterSpellScript(classic_spell_item_argent_defender);
     RegisterSpellScript(classic_spell_item_fatal_wound);
@@ -2953,4 +3080,5 @@ void AddSC_classic_spell_scripts()
     RegisterSpellScript(classic_spell_shadow_storm_min_range);
     RegisterSpellScript(classic_spell_cleave_melee_reach);
     RegisterSpellScript(classic_spell_quest_testing_the_wells);
+    RegisterSpellScript(classic_spell_item_siphon_the_grave);
 }

@@ -2745,6 +2745,15 @@ int64 Spell::GetCorpseTargetCountForEffect(SpellEffIndex effect) const
     });
 }
 
+// SPELL_ATTR1_THREAT_ONLY_ON_MISS: a hit leaves the target out of combat, only a failed cast engages it (Pick Pocket, Mind Soothe, Soothe
+// Animal). Pick Pocket put the rogue and the mark in combat on every success, and the mark came after the rogue once it walked off 30-40 y
+// (RU Discord, Nursa, 11-22). A spell with damage over time (the pets' Scorpid Poison carries the flag too) keeps its combat.
+static bool NoCombatOnHit(SpellInfo const* spellInfo, SpellMissInfo missCondition)
+{
+    return missCondition == SPELL_MISS_NONE && spellInfo->HasAttribute(SPELL_ATTR1_THREAT_ONLY_ON_MISS) &&
+        !spellInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE);
+}
+
 void Spell::TargetInfo::PreprocessTarget(Spell* spell)
 {
     Unit* unit = spell->m_caster->GetGUID() == TargetGUID ? spell->m_caster->ToUnit() : ObjectAccessor::GetUnit(*spell->m_caster, TargetGUID);
@@ -2764,7 +2773,8 @@ void Spell::TargetInfo::PreprocessTarget(Spell* spell)
     else if (MissCondition == SPELL_MISS_REFLECT && ReflectResult == SPELL_MISS_NONE)
         _spellHitTarget = spell->m_caster->ToUnit();
 
-    if (spell->m_originalCaster && MissCondition != SPELL_MISS_EVADE && !spell->m_originalCaster->IsFriendlyTo(unit) && (!spell->m_spellInfo->IsPositive() || spell->m_spellInfo->HasEffect(SPELL_EFFECT_DISPEL)) && (spell->m_spellInfo->HasInitialAggro() || unit->IsEngaged()))
+    if (spell->m_originalCaster && MissCondition != SPELL_MISS_EVADE && !spell->m_originalCaster->IsFriendlyTo(unit) && (!spell->m_spellInfo->IsPositive() || spell->m_spellInfo->HasEffect(SPELL_EFFECT_DISPEL)) && (spell->m_spellInfo->HasInitialAggro() || unit->IsEngaged()) &&
+        !NoCombatOnHit(spell->m_spellInfo, MissCondition))
         unit->SetInCombatWith(spell->m_originalCaster);
 
     // if target is flagged for pvp also flag caster if a player
@@ -3028,7 +3038,14 @@ void Spell::TargetInfo::DoDamageAndTriggers(Spell* spell)
                 // EV-0021, docs/rulings R-0041).
                 bool const requiresShield = spell->m_spellInfo->EquippedItemClass == ITEM_CLASS_ARMOR
                     && (spell->m_spellInfo->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD));
-                if (spell->m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE || spell->m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED)
+                // WoW Forever hotfixes of 11 and 13 Nov 2026 (live push 113887, in the client files since 70959): the judgements of
+                // Righteousness, Fury, Light, Wisdom, Justice and the Crusader are ranged attacks (SpellCategories DefenseType 3) and
+                // trigger no melee item procs; Judgement of Command stays melee and still does. A ranged attack without a ranged weapon
+                // takes the main hand as its attack type (SpellInfo::GetAttackType), so the main hand's chance-on-hit spells and enchants
+                // rolled on every judgement. Only a ranged attack made with the ranged weapon hears that weapon's item procs. Credit:
+                // Everlake (buildthehomelab, GPL-3) found it first.
+                bool const rangedWithWeapon = spell->m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED && spell->m_spellInfo->GetAttackType() == RANGED_ATTACK;
+                if (spell->m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE || rangedWithWeapon)
                     if (!spell->m_spellInfo->HasAttribute(SPELL_ATTR0_CANCELS_AUTO_ATTACK_COMBAT) && !spell->m_spellInfo->HasAttribute(SPELL_ATTR4_SUPPRESS_WEAPON_PROCS) && !requiresShield)
                         caster->ToPlayer()->CastItemCombatSpell(*spellDamageInfo);
             }
@@ -5982,6 +5999,9 @@ void Spell::HandleThreatSpells()
         float threatToAdd = threat;
         if (ihit->MissCondition != SPELL_MISS_NONE)
             threatToAdd = 0.0f;
+        // a Pick Pocket that succeeds leaves no threat either (NoCombatOnHit): an entry on the mark's threat list engaged it with the rogue
+        if (NoCombatOnHit(m_spellInfo, ihit->MissCondition))
+            continue;
 
         Unit* target = ObjectAccessor::GetUnit(*unitCaster, ihit->TargetGUID);
         if (!target)
@@ -7690,6 +7710,14 @@ SpellCastResult Spell::CheckRange(bool strict) const
     if (!strict && m_casttime == 0)
         return SPELL_CAST_OK;
 
+    // Classic 1.60: an effect a proc puts on the unit the triggering hit struck, whose own range is "Self Only" (range 1, 0 yd), has no
+    // range of its own: the hit that triggered it already reached that unit. Without this, Improved Starfire's stun 16922, Improved
+    // Concussive Shot's stun 19410 and the Bow and Gun Specialization effects failed on every ranged hit (only a target within combat
+    // reach was in range); cast-repeat on dev 11-24: 23 procs of 19410 from 100 Concussive Shots, every one refused.
+    if (m_triggeredByAuraSpell && m_spellInfo->RangeEntry && m_spellInfo->RangeEntry->ID == 1)
+        if (Unit const* target = m_targets.GetUnitTarget(); target && target != m_caster)
+            return SPELL_CAST_OK;
+
     auto [minRange, maxRange] = GetMinMaxRange(strict);
 
     // dont check max_range to strictly after cast
@@ -8224,6 +8252,11 @@ SpellCastResult Spell::CheckItems(int32* param1 /*= nullptr*/, int32* param2 /*=
                 if (!itemProto)
                     return SPELL_FAILED_CANT_BE_SALVAGED;
 
+                // The loot of an earlier cast on this item is still open. Closing it destroys the item, so a second cast would
+                // replace the loot (and with it the item) under its own spell effect.
+                if (item->m_loot)
+                    return SPELL_FAILED_ALREADY_OPEN;
+
                 Optional<uint16> disenchantSkillRequired = item->GetDisenchantSkillRequired();
                 if (!disenchantSkillRequired)
                     return SPELL_FAILED_CANT_BE_SALVAGED;
@@ -8273,6 +8306,9 @@ SpellCastResult Spell::CheckItems(int32* param1 /*= nullptr*/, int32* param2 /*=
                 //prevent prospecting in trade slot
                 if (item->GetOwnerGUID() != player->GetGUID())
                     return SPELL_FAILED_CANT_BE_PROSPECTED;
+                // the loot of an earlier cast on this stack is still open (see SPELL_EFFECT_DISENCHANT)
+                if (item->m_loot)
+                    return SPELL_FAILED_ALREADY_OPEN;
                 //Check for enough skill in jewelcrafting
                 uint32 item_prospectingskilllevel = item->GetTemplate()->GetRequiredSkillRank();
                 if (item_prospectingskilllevel > player->GetSkillValue(SKILL_JEWELCRAFTING))
@@ -8304,6 +8340,9 @@ SpellCastResult Spell::CheckItems(int32* param1 /*= nullptr*/, int32* param2 /*=
                 //prevent milling in trade slot
                 if (item->GetOwnerGUID() != player->GetGUID())
                     return SPELL_FAILED_CANT_BE_MILLED;
+                // the loot of an earlier cast on this stack is still open (see SPELL_EFFECT_DISENCHANT)
+                if (item->m_loot)
+                    return SPELL_FAILED_ALREADY_OPEN;
                 //Check for enough skill in inscription
                 uint32 item_millingskilllevel = item->GetTemplate()->GetRequiredSkillRank();
                 if (item_millingskilllevel > player->GetSkillValue(SKILL_INSCRIPTION))
@@ -8991,7 +9030,8 @@ void Spell::PreprocessSpellLaunch(TargetInfo& targetInfo)
         targetInfo.MissCondition = SPELL_MISS_IMMUNE;
 
     // This will only cause combat - the target will engage once the projectile hits (in Spell::TargetInfo::PreprocessTarget)
-    if (m_originalCaster && targetInfo.MissCondition != SPELL_MISS_EVADE && !m_originalCaster->IsFriendlyTo(targetUnit) && (!m_spellInfo->IsPositive() || m_spellInfo->HasEffect(SPELL_EFFECT_DISPEL)) && (m_spellInfo->HasInitialAggro() || targetUnit->IsEngaged()))
+    if (m_originalCaster && targetInfo.MissCondition != SPELL_MISS_EVADE && !m_originalCaster->IsFriendlyTo(targetUnit) && (!m_spellInfo->IsPositive() || m_spellInfo->HasEffect(SPELL_EFFECT_DISPEL)) && (m_spellInfo->HasInitialAggro() || targetUnit->IsEngaged()) &&
+        !NoCombatOnHit(m_spellInfo, targetInfo.MissCondition))
         m_originalCaster->SetInCombatWith(targetUnit, true);
 
     Unit* unit = nullptr;

@@ -92,6 +92,16 @@ public:
                 HandleGameObject(ObjectGuid::Empty, /*open=*/true, go);
         }
 
+        // Classic: the freed prisoner (Deathstalker Adamant for the Horde, Sorcerer Ashcrombe for the Alliance) walks from his cell to
+        // the Courtyard Door after Rethilgore, and his waypoint script sets instance data 1 to DONE (the VMaNGOS TYPE_FREE_NPC, carried
+        // over in the converted SmartAI: SET_INST_DATA 1, 3). Nothing here took it, so the door stayed shut (sfk_full af58: the party
+        // walked back and forth at the door, z 90, for 45 minutes).
+        void SetData(uint32 type, uint32 data) override
+        {
+            if (type == DATA_CLASSIC_FREE_NPC && data == DONE)
+                OpenDoor(DATA_COURTYARD_DOOR);
+        }
+
         // The five Cataclysm-revamp SFK bosses (Ashbury, Silverlaine,
         // Springvale, Walden, Godfrey) run entirely on SmartAI and have no
         // C++ BossAI, so nothing ever calls _JustDied()/SetBossState() when

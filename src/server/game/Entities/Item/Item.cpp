@@ -2314,11 +2314,30 @@ uint32 Item::GetSellPrice(Player const* owner, bool forVendor /*= false*/) const
     return price;
 }
 
-uint32 Item::GetSellPrice(ItemTemplate const* proto, uint32 /*quality*/, uint32 /*itemLevel*/)
+uint32 Item::GetSellPrice(ItemTemplate const* proto, uint32 quality, uint32 itemLevel)
 {
-    // Classic: always the item's own sell price, the one its tooltip shows. 919 client items have no gold-cost override flag
-    // and got the retail item level formula instead (a different price, or money for items the game marks as unsellable)
-    return proto->GetSellPrice();
+    // Classic: the item's own sell price, the one its tooltip shows, wins whenever it has one. 919 client items have no
+    // gold-cost override flag, and the retail item level formula gives most of them a different price than their own
+    if (uint32 sellPrice = proto->GetSellPrice())
+        return sellPrice;
+
+    // No price and the gold-cost override flag: the game marks the item as unsellable
+    if (proto->HasFlag(ITEM_FLAG2_OVERRIDE_GOLD_COST))
+        return 0;
+
+    // No price and no override flag (the Forever quest reward greens, e.g. 282064 Tim's Lost Rib): live prices these with the
+    // item level formula, so they sell and disenchant there (412 copper for Tim's Lost Rib, the same as live). Items the formula
+    // does not cover (quest items, consumables, anything not worn) keep no price
+    bool standardPrice = false;
+    uint32 cost = Item::GetBuyPrice(proto, quality, itemLevel, standardPrice);
+    if (!standardPrice || !cost)
+        return 0;
+
+    ItemClassEntry const* classEntry = sDB2Manager.GetItemClassByOldEnum(proto->GetClass());
+    if (!classEntry)
+        return 0;
+
+    return uint32(cost * classEntry->PriceModifier / proto->GetBuyCount());
 }
 
 // Classic 1.60 (WoW Forever): a weapon flagged REDUCED_CASTER_DPS (ItemSparse Flags[3] 0x100, 165 caster weapons) or carrying a random

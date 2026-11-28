@@ -2263,11 +2263,12 @@ bool SpellInfo::IsAuraExclusiveBySpecificWith(SpellInfo const* spellInfo) const
         case SPELL_SPECIFIC_MAGE_POLYMORPH:
         case SPELL_SPECIFIC_PRESENCE:
         case SPELL_SPECIFIC_CHARM:
-        case SPELL_SPECIFIC_SCROLL:
+        // Classic 1.60 (WoW Forever): scrolls of different stats stack; each stat counts its strongest scroll, elixir or raid
+        // buff through spell group 1400920 (sql 2026_11_28_20), so SPELL_SPECIFIC_SCROLL is no longer exclusive here
         case SPELL_SPECIFIC_WARRIOR_ENRAGE:
         case SPELL_SPECIFIC_MAGE_ARCANE_BRILLANCE:
         case SPELL_SPECIFIC_PRIEST_DIVINE_SPIRIT:
-        case SPELL_SPECIFIC_TRACKER: // Classic: one form of tracking at a time (Find Herbs and Find Minerals included)
+        case SPELL_SPECIFIC_TRACKER: // Forever: one tracker at a time; the dwarf racial Find Treasure stacks on top
             return spellSpec1 == spellSpec2;
         case SPELL_SPECIFIC_FOOD:
             return spellSpec2 == SPELL_SPECIFIC_FOOD
@@ -3243,8 +3244,12 @@ void SpellInfo::_LoadSpellSpecific()
                         if (Id == 30645) // Gas Cloud Tracking
                             return SPELL_SPECIFIC_NORMAL;
                         [[fallthrough]];
-                    case SPELL_AURA_TRACK_RESOURCES:
                     case SPELL_AURA_TRACK_STEALTHED:
+                        return SPELL_SPECIFIC_TRACKER;
+                    case SPELL_AURA_TRACK_RESOURCES:
+                        // Forever: one tracker at a time; the dwarf racial Find Treasure (misc 6) stacks on top
+                        if (effect.MiscValue == 6)
+                            return SPELL_SPECIFIC_NORMAL;
                         return SPELL_SPECIFIC_TRACKER;
                     default:
                         break;
@@ -4435,11 +4440,14 @@ Optional<SpellPowerCost> SpellInfo::CalcPowerCost(SpellPowerEntry const* power, 
             switch (power->PowerType)
             {
                 // health as power used
+                // Classic 1.60: a percent health cost is taken from base health, the number the tooltip shows ("25% of base
+                // health", Reckless Swings 1329555; Bloodrage 2687 20%). Max health made gear stamina raise the cost two to
+                // three times (ForeverCore#411; Everlake core 7344d4b, GPL-3.0). The mana branch below already uses base mana.
                 case POWER_HEALTH:
                     if (G3D::fuzzyEq(power->PowerCostPct, 0.0f))
-                        powerCost += int32(CalculatePct(unitCaster->GetMaxHealth(), power->PowerCostMaxPct));
+                        powerCost += int32(CalculatePct(unitCaster->GetCreateHealth(), power->PowerCostMaxPct));
                     else
-                        powerCost += int32(CalculatePct(unitCaster->GetMaxHealth(), power->PowerCostPct));
+                        powerCost += int32(CalculatePct(unitCaster->GetCreateHealth(), power->PowerCostPct));
                     break;
                 case POWER_MANA:
                     powerCost += int32(CalculatePct(unitCaster->GetCreateMana(), power->PowerCostPct));
@@ -4470,8 +4478,8 @@ Optional<SpellPowerCost> SpellInfo::CalcPowerCost(SpellPowerEntry const* power, 
             switch (power->PowerType)
             {
                 // health as power used
-                case POWER_HEALTH:
-                    powerCost += int32(CalculatePct(unitCaster->GetMaxHealth(), power->OptionalCostPct));
+                case POWER_HEALTH: // base health, as above
+                    powerCost += int32(CalculatePct(unitCaster->GetCreateHealth(), power->OptionalCostPct));
                     break;
                 case POWER_MANA:
                     powerCost += int32(CalculatePct(unitCaster->GetCreateMana(), power->OptionalCostPct));

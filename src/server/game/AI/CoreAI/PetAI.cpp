@@ -31,6 +31,7 @@
 #include "SpellHistory.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include <algorithm>
 
 int32 PetAI::Permissible(Creature const* creature)
 {
@@ -126,7 +127,12 @@ void PetAI::UpdateAI(uint32 diff)
 
             if (spellInfo->IsPositive())
             {
-                if (spellInfo->CanBeUsedInCombat(me))
+                // Classic 1.60: a buff that lasts until it is cancelled (Imp Blood Pact, Felhunter Paranoia) is a persistent spell:
+                // the pet keeps it up out of combat too, as on live. CanAutoCast below skips it while the target still has it.
+                bool const persistentBuff = spellInfo->GetMaxDuration() == -1 && !spellInfo->HasAnyAuraInterruptFlag()
+                    && std::ranges::any_of(spellInfo->GetEffects(), [](SpellEffectInfo const& effect) { return effect.IsAura(); });
+
+                if (spellInfo->CanBeUsedInCombat(me) && !persistentBuff)
                 {
                     // Check if we're in combat or commanded to attack
                     if (!me->IsInCombat() && !me->GetCharmInfo()->IsCommandAttack())

@@ -32,6 +32,7 @@
 #include "TemporarySummon.h"
 #include "ThreatManager.h"
 #include "classic_blackwing_lair.h"
+#include "classic_respawn.h"
 #include "classic_script_text.h"
 #include <initializer_list>
 #include <list>
@@ -83,6 +84,8 @@ void ClassicBwlRazGetCreatureList(std::list<Creature*>& list, WorldObject* sourc
     }
 }
 
+}
+
 // VMaNGOS SetUInt64Value(UNIT_FIELD_CHANNEL_OBJECT) + SetUInt32Value(UNIT_CHANNEL_SPELL) (channel visual without a cast)
 void ClassicBwlRazSetChannel(Unit* unit, ObjectGuid target, uint32 spellId)
 {
@@ -95,7 +98,6 @@ void ClassicBwlRazSetChannel(Unit* unit, ObjectGuid target, uint32 spellId)
         if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId, unit->GetMap()->GetDifficultyID()))
             visual.SpellXSpellVisualID = unit->GetCastSpellXSpellVisualId(spellInfo);
     unit->SetChannelVisual(visual);
-}
 }
 
 struct classic_boss_razorgore : public ScriptedAI
@@ -243,18 +245,17 @@ struct classic_boss_razorgore : public ScriptedAI
                 }
             }
 
+            // VMaNGOS respawned the dead guards found around Razorgore. TC removes a dead creature from the map when its corpse
+            // decays, so they are respawned by spawn (a corpse still there comes back too). A Grethok that comes back as a new
+            // creature gets his channel in the instance's OnCreatureCreate.
+            Position const home = me->GetHomePosition();
+            ClassicRespawnDeadSpawns(me->GetMap(), { CLASSIC_BWL_NPC_BLACKWING_GUARDSMAN, CLASSIC_BWL_NPC_GRETHOK_THE_CONTROLLER }, &home, 150.0f);
+
             std::list<Creature*> GardesListe;
-            ClassicBwlRazGetCreatureList(GardesListe, me, { CLASSIC_BWL_NPC_BLACKWING_GUARDSMAN, CLASSIC_BWL_NPC_GRETHOK_THE_CONTROLLER }, 150.0f);
-
+            ClassicBwlRazGetCreatureList(GardesListe, me, { CLASSIC_BWL_NPC_GRETHOK_THE_CONTROLLER }, 150.0f);
             for (Creature* itr : GardesListe)
-            {
-                // TODO(classic): TC only finds guards whose corpse is still in the map
-                if (!itr->IsAlive())
-                    itr->Respawn(true);
-
-                if (itr->GetEntry() == CLASSIC_BWL_NPC_GRETHOK_THE_CONTROLLER)
+                if (itr->IsAlive())
                     ClassicBwlRazSetChannel(itr, ObjectGuid::Empty, CLASSIC_BWL_SPELL_POSSESS);
-            }
 
             if (GameObject* pOrb = me->GetMap()->GetGameObject(m_pInstance->GetGuidData(CLASSIC_BWL_DATA_ORB_DOMINATION_GUID)))
                 pOrb->RemoveFlag(GO_FLAG_NOT_SELECTABLE); // VMaNGOS GO_FLAG_NO_INTERACT

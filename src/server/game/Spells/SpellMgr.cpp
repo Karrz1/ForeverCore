@@ -1501,6 +1501,11 @@ void SpellMgr::LoadSpellGroupStackRules()
                 TC_LOG_ERROR("sql.sql", "SpellId {} listed in `spell_group` with stack rule 3 does not share aura assigned for group {}", spellId, group_id);
         }
 
+        // Classic 1.60 (WoW Forever): the elixir and scroll stat group (sql 2026_11_28_20, wowsims R-0054) counts each stat once,
+        // the strongest, whatever other effects its auras carry
+        if (group_id == 1400920)
+            auraTypes = { SPELL_AURA_MOD_STAT };
+
         mSpellSameEffectStack[SpellGroup(group_id)] = auraTypes;
         ++count;
     }
@@ -4223,11 +4228,32 @@ void SpellMgr::LoadSpellInfoCorrections()
         });
     });
 
+    // Forever quest The Great Cat Spirit (98342): the Great Cat Spirit Statue (673394, type 22) casts Feline Blessing of the Silent
+    // Shadow (1309054) through the player. Its effect 1 dummy aims at a "nearby entry" that no data names, with self range, so it
+    // never found a target and the whole cast failed with "No target" (Discord, Mansen). The dummy does nothing here: it hits the caster
+    ApplySpellFix({ 1309054 }, [](SpellInfo* spellInfo)
+    {
+        ApplySpellEffectFix(spellInfo, EFFECT_1, [](SpellEffectInfo* spellEffectInfo)
+        {
+            spellEffectInfo->TargetA = SpellImplicitTargetInfo(TARGET_UNIT_CASTER);
+            spellEffectInfo->TargetB = SpellImplicitTargetInfo();
+        });
+    });
+
     // Forever Skyborne racial Skysight: its buff (Elemental Blessing 1259688) also raises mounted speed, so it can be cast while
     // mounted (client row through hotfixes 2026_11_09_40)
     ApplySpellFix({ 1259686 }, [](SpellInfo* spellInfo)
     {
         spellInfo->Attributes |= SPELL_ATTR0_ALLOW_WHILE_MOUNTED;
+    });
+
+    // WoW Forever 71139 (2026-11-25): "The Night Watchman's Torch can once again be used while mounted, casting spells, etc." Light the
+    // torch (1309410, item 280612) while mounted, and keep holding it through mounting and casting; entering combat still ends it.
+    // Live's interrupt record (hotfix push 114408) already drops the mount and cast flags; the clear here also covers older data.
+    ApplySpellFix({ 1309410 }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->Attributes |= SPELL_ATTR0_ALLOW_WHILE_MOUNTED;
+        spellInfo->AuraInterruptFlags &= ~(SpellAuraInterruptFlags::Mount | SpellAuraInterruptFlags::Action | SpellAuraInterruptFlags::ActionDelayed);
     });
 
     // Forever Skyborne racial buffs Elemental Blessing (Skysight) and Energized (Read Ley Line): next to an Elemental Convergence or a
@@ -4310,6 +4336,27 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->AttributesEx2 |= SPELL_ATTR2_CANT_CRIT;
         spellInfo->AttributesEx3 |= SPELL_ATTR3_ALWAYS_HIT;
         spellInfo->AttributesCu |= SPELL_ATTR0_CU_IGNORE_ARMOR;
+    });
+
+    // Classic 1.60 (WoW Forever): Ice Lance's damage effect carries no spell power coefficient in the client data, so it gained nothing from
+    // spell power. Measured 0.11 (wowsims/forever, MIT, docs/evidence EV-0171: a level 60 mage's logs of 20-21 Nov, 28 casts at 0 spell
+    // power and 255 geared casts at 228.5 read 0.108 to 0.115). Ranks 1 to 6; no vanilla row exists for this Forever spell. Credit:
+    // Everlake (buildthehomelab, GPL-3) found it first.
+    ApplySpellFix({ 400640, 1240044, 1240045, 1240046, 1240047, 1312002 }, [](SpellInfo* spellInfo)
+    {
+        ApplySpellEffectFix(spellInfo, EFFECT_0, [](SpellEffectInfo* spellEffectInfo)
+        {
+            spellEffectInfo->BonusCoefficient = 0.11f;
+        });
+    });
+
+    // Classic 1.60 Hunter's Mark (every rank and the Forever copy 1213268): one per hunter, marking a new target takes it off the old
+    // one (vanilla: VMaNGOS IsSingleTargetSpell, hunter family flag 0x400). The client data has no single target attribute for it,
+    // so a hunter could mark every mob in a pull (Discord RU, 2026-11-23).
+    ApplySpellFix({ 1130, 14323, 14324, 14325, 1213268 }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->AttributesEx5 |= SPELL_ATTR5_LIMIT_N;
+        spellInfo->MaxAffectedTargets = 1;
     });
 
     // specific code for cases with no trigger spell provided in field

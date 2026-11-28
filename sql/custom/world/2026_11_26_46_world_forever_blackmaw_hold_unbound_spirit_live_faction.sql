@@ -1,0 +1,11 @@
+-- Blackmaw Hold (map 2974): the Unbound Spirit 247231 gets live's faction, 3567 (Timbermaw Hold - Unbound Spirit - Enemies), the
+-- faction of the three Profane Totems 248781 that 2026_11_26_41 stands round him at live's spots. 42 kept him at ours (16, Monster).
+-- Faction template 3567 is hostile by default (flag 0x2000): to it the Spirit at 16 was an enemy, so as soon as players came near
+-- enough to wake that part of the hold the totems attacked him, he was engaged and his encounter stayed IN_PROGRESS with nobody
+-- near him (TestPlayer blackmaw-probe-1126: boss 6 IN_PROGRESS with a GM 240 y away, the others NOT_STARTED; blackmaw_full af84:
+-- the bots' tank waited behind that open fight for good). In his own faction the totems are his. Hostile to players as before;
+-- Elder Bramblesnap keeps ours (35, friendly; live 3568, the Spirit's enemies), so the ritual runs as our script has it.
+-- The Ethereal Spider 249064, Wolf 249061 and Bear 249065 that the ritual brings out of the Spirit take his faction too (INFERRED: live's
+-- waves are not in the capture): at 16 they would be the totems' and the Spirit's enemies the moment they appear, 8 y from him.
+-- Safe to run again.
+UPDATE `creature_template` SET `faction` = 3567 WHERE `entry` IN (247231,249061,249064,249065);

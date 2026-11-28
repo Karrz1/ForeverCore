@@ -280,6 +280,7 @@ Player::Player(WorldSession* session) : Unit(true), m_sceneMgr(this)
     m_petResummonDelay = 0;
     m_petParkedForTravel = false;
     m_petParkedCheckTimer = 0;
+    m_petParkedLoadFails = 0;
     //cache for CreatedBySpell to allow
     //returning reagents for temporarily removed pets
     //when dying/logging out
@@ -971,6 +972,9 @@ void Player::Update(uint32 p_time)
     Unit::Update(p_time);
     SetCanDelayTeleport(false);
 
+    // a camp rest that waited for a chair's seat move to land starts now, after Unit::Update's movement interrupts
+    GetSession()->UpdatePendingCampfireRest();
+
     UpdateParkedPet(p_time);
     UpdateCombatNameplates(p_time);
 
@@ -991,7 +995,10 @@ void Player::Update(uint32 p_time)
     // A moment with no fight and no victim puts the weapons away, as a player's client does.
     if (GetSession()->IsBot())
     {
-        if (GetSheath() == SHEATH_STATE_UNARMED || IsInCombat() || GetVictim() || !IsAlive())
+        // A fight cancels a show's hold on the sheath — post-combat resheath then works as before.
+        if (IsInCombat() || GetVictim())
+            m_botSheathHold = false;
+        if (m_botSheathHold || GetSheath() == SHEATH_STATE_UNARMED || IsInCombat() || GetVictim() || !IsAlive())
             m_botSheathIdleMs = 0;
         else if ((m_botSheathIdleMs += p_time) >= 3000)
         {
@@ -1167,7 +1174,10 @@ void Player::Update(uint32 p_time)
     Pet* pet = GetPet();
     // A pet out of sight on the same map (stuck on the terrain, left at a fight) is set down next to its owner, the way a player's pet
     // catches up in Classic; before, it was dismissed and a warlock's Imp just vanished while fighting or travelling (player report, 3 Nov).
-    if (pet && !pet->IsWithinDistInMap(this, GetMap()->GetVisibilityRange()) && !pet->isPossessed() && !pet->CatchUpWithOwner())
+    // One that cannot follow where the owner went (a taxi, a boat) is parked until the owner is back on the ground, never dismissed:
+    // Pet::Update has this same fallback, and whichever of the two ticks first used to decide whether the pet survived the trip.
+    if (pet && !pet->IsWithinDistInMap(this, GetMap()->GetVisibilityRange()) && !pet->isPossessed()
+        && !pet->CatchUpWithOwner() && !(pet->isControlled() && pet->ParkForOwnerTravel()))
     //if (pet && !pet->IsWithinDistInMap(this, GetMap()->GetVisibilityDistance()) && (GetCharmGUID() && (pet->GetGUID() != GetCharmGUID())))
     {
         TC_LOG_INFO("entities.pet", "Pet {} ({}) of {} dismissed: out of its owner's sight", pet->GetName(), pet->GetEntry(), GetName());
@@ -1391,9 +1401,9 @@ bool Player::TeleportTo(TeleportLocation const& teleportLocation, TeleportToOpti
 
         if (!(options & TELE_TO_NOT_UNSUMMON_PET))
         {
-            //same map, only remove pet if out of range for new position
+            //same map, only remove pet if out of range for new position; parked so UpdateParkedPet can retry the bring-back
             if (pet && !pet->IsWithinDist3d(&teleportLocation.Location, GetMap()->GetVisibilityRange()))
-                UnsummonPetTemporaryIfAny();
+                ParkPetForTravel();
         }
 
         if (!IsAlive() && options & TELE_REVIVE_AT_TELEPORT)
@@ -1416,7 +1426,14 @@ bool Player::TeleportTo(TeleportLocation const& teleportLocation, TeleportToOpti
             SendTeleportPacket(m_teleport_dest);
 
         if (!IsBeingTeleportedNear()) // update position immediately if we will not be waiting for client ACK
-            UpdatePosition(m_teleport_dest.Location, true);
+        {
+            // Classic 1.60: a teleport onto a ship gives the place on its deck, not a world position (as HandleMoveTeleportAck reads it)
+            Position dest = m_teleport_dest.Location;
+            if (TransportBase* transport = GetTransport())
+                if (m_teleport_dest.TransportGuid && *m_teleport_dest.TransportGuid == transport->GetTransportGUID())
+                    dest = transport->GetPositionWithOffset(m_movementInfo.transport.pos);
+            UpdatePosition(dest, true);
+        }
     }
     else
     {
@@ -1482,9 +1499,9 @@ bool Player::TeleportTo(TeleportLocation const& teleportLocation, TeleportToOpti
                 pet->RemoveArenaAuras();
         }
 
-        // remove pet on map change
+        // remove pet on map change; parked so a resummon that cannot fire right away is retried instead of lost
         if (pet)
-            UnsummonPetTemporaryIfAny();
+            ParkPetForTravel();
 
         // remove all dyn objects
         RemoveAllDynObjects();
@@ -1876,8 +1893,14 @@ void Player::RegenerateHealth()
 
     addValue += m_healthFraction;
     int32 integerValue = int32(addValue);
+    // Under 1 health so far: carry it to the next tick, as RegeneratePower does. Dropping it meant a regen below 1 a tick never
+    // added up, and a low Spirit character got nothing back out of combat (a level 4 High Order Skyborne warrior, 18 Spirit:
+    // 0.08 a tick). Found by Everlake (buildthehomelab, GPL-3), written here from their description.
     if (!integerValue)
+    {
+        m_healthFraction = addValue;
         return;
+    }
 
     if (curValue + integerValue < maxValue)
     {
@@ -2163,6 +2186,38 @@ void Player::SetGMVisible(bool on)
 
     for (Channel* channel : m_channels)
         channel->SetInvisible(this, !on);
+
+    UpdateInvisibilityVisFlags();
+}
+
+void Player::UpdateInvisibilityVisFlags()
+{
+    // GM-invisible players get the invisibility spell's state visual so their own model renders
+    // the transparent look (like the invisibility potion) as a reminder the flag is on.
+    // Only the GM flag drives it: StateSpellVisualID goes to every viewer, and quest/phase
+    // invisibility auras on normal players must not turn them translucent for everyone.
+    // Magic static: map threads can reach this at the same time.
+    static int32 const gmVisualId = []() -> int32
+    {
+        for (uint32 spellId : { 11392u, 7870u, 66u, 3680u })   // Invisibility / Lesser Invisibility (potion + succubus + mage)
+            if (SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE))
+                if (uint32 v = si->GetSpellVisual(nullptr, nullptr))
+                    return int32(v);
+        return 0;
+    }();
+
+    bool show = !isGMVisible();
+    int32 cur = *m_unitData->StateSpellVisualID;
+    if (show && cur != gmVisualId && gmVisualId != 0)
+    {
+        SetUpdateFieldValue(m_values.ModifyValue(&Player::m_unitData).ModifyValue(&UF::UnitData::StateSpellVisualID), gmVisualId);
+        TC_LOG_INFO("commands.gm", "[gm-visual] {} invisible: StateSpellVisualID {} -> {}", GetName(), cur, gmVisualId);
+    }
+    else if (!show && cur == gmVisualId && gmVisualId != 0)  // only remove our own visual, quest/other state visuals are not ours to touch
+    {
+        SetUpdateFieldValue(m_values.ModifyValue(&Player::m_unitData).ModifyValue(&UF::UnitData::StateSpellVisualID), 0);
+        TC_LOG_INFO("commands.gm", "[gm-visual] {} visible: StateSpellVisualID {} -> 0", GetName(), cur);
+    }
 }
 
 bool Player::IsGroupVisibleFor(Player const* p) const
@@ -6973,8 +7028,14 @@ void Player::CheckAreaExplore()
         return;
     }
 
-    uint32 offset = areaEntry->AreaBit / PLAYER_EXPLORED_ZONES_BITS;
-    uint64 val = UI64LIT(1) << (areaEntry->AreaBit % PLAYER_EXPLORED_ZONES_BITS);
+    // An area without an exploration bit (AreaBit -1, possible through a hotfix) cannot be discovered, as in IsExploredArea and
+    // .explore. A bit past the end only grows the explored-zones field (a dynamic field, see AddExploredZones); the stores'
+    // index asserts AreaBit / 64 < PLAYER_EXPLORED_ZONES_SIZE (240) at start-up, the newest Forever areas reach 13340 / 64 = 208
+    if (areaEntry->AreaBit < 0)
+        return;
+
+    uint32 offset = uint32(areaEntry->AreaBit) / PLAYER_EXPLORED_ZONES_BITS;
+    uint64 val = UI64LIT(1) << (uint32(areaEntry->AreaBit) % PLAYER_EXPLORED_ZONES_BITS);
 
     if (offset >= m_activePlayerData->BitVectors->Values[PLAYER_DATA_FLAG_EXPLORED_ZONES_INDEX].Values.size()
         || !(m_activePlayerData->BitVectors->Values[PLAYER_DATA_FLAG_EXPLORED_ZONES_INDEX].Values[offset] & val))
@@ -9140,6 +9201,10 @@ void Player::CastAllObtainSpells()
         if (Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             ApplyItemObtainSpells(item, true);
 
+    for (uint8 slot = KEYRING_SLOT_START; slot < KEYRING_SLOT_END; ++slot)
+        if (Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            ApplyItemObtainSpells(item, true);
+
     for (uint8 i = INVENTORY_SLOT_BAG_START; i < REAGENT_BAG_SLOT_END; ++i)
     {
         Bag* bag = GetBagByPos(i);
@@ -10024,9 +10089,33 @@ Loot* Player::GetLootByWorldObjectGUID(ObjectGuid const& lootWorldObjectGuid) co
 {
     auto itr = std::find_if(m_AELootView.begin(), m_AELootView.end(), [&lootWorldObjectGuid](std::pair<ObjectGuid const, Loot*> const& lootView)
     {
-        return lootView.second->GetOwnerGUID() == lootWorldObjectGuid;
+        return Loot::IsLive(lootView.second, lootView.first) && lootView.second->GetOwnerGUID() == lootWorldObjectGuid;
     });
     return itr != m_AELootView.end() ? itr->second : nullptr;
+}
+
+void Player::PruneDeadLootViews()
+{
+    bool pruned = false;
+    for (auto itr = m_AELootView.begin(); itr != m_AELootView.end();)
+    {
+        if (Loot::IsLive(itr->second, itr->first))
+        {
+            ++itr;
+            continue;
+        }
+
+        TC_LOG_ERROR("loot", "Player::PruneDeadLootViews: {} ({}) still had loot {} open after it was freed; dropped it",
+            GetName(), GetGUID().ToString(), itr->first.ToString());
+        itr = m_AELootView.erase(itr);
+        pruned = true;
+    }
+
+    if (pruned && m_AELootView.empty())
+    {
+        SetLootGUID(ObjectGuid::Empty);
+        RemoveUnitFlag(UNIT_FLAG_LOOTING);
+    }
 }
 
 LootRoll* Player::GetLootRoll(ObjectGuid const& lootObjectGuid, uint8 lootListId)
@@ -10801,7 +10890,20 @@ bool Player::IsInventoryPos(uint8 bag, uint8 slot)
         return true;
     if (bag == INVENTORY_SLOT_BAG_0 && (slot >= CHILD_EQUIPMENT_SLOT_START && slot < CHILD_EQUIPMENT_SLOT_END))
         return true;
+    if (IsKeyRingPos(bag, slot))
+        return true;
     return false;
+}
+
+bool Player::IsKeyRingPos(uint8 bag, uint8 slot)
+{
+    return bag == INVENTORY_SLOT_BAG_0 && (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END);
+}
+
+// what the client lets into its key ring: items of the Keys bag family (keys, not lockpicks or key-like quest items without it)
+bool Player::CanGoInKeyRing(ItemTemplate const* proto)
+{
+    return proto && (proto->GetBagFamily() & BAG_FAMILY_MASK_KEYS) != 0;
 }
 
 bool Player::IsEquipmentPos(uint8 bag, uint8 slot)
@@ -10885,6 +10987,10 @@ bool Player::IsValidPos(uint8 bag, uint8 slot, bool explicit_pos) const
 
         // bank bag slots
         if (slot >= BANK_SLOT_BAG_START && slot < BANK_SLOT_BAG_END)
+            return true;
+
+        // key ring slots
+        if (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END)
             return true;
 
         return false;
@@ -11190,8 +11296,13 @@ InventoryResult Player::CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemP
             // prevent cheating
             if ((slot >= BUYBACK_SLOT_START && slot < BUYBACK_SLOT_END) || slot >= PLAYER_SLOT_END)
                 return EQUIP_ERR_WRONG_BAG_TYPE;
+            if (slot >= ACCOUNT_BANK_SLOT_BAG_END && slot < KEYRING_SLOT_START)
+                return EQUIP_ERR_WRONG_BAG_TYPE;
             if (slot < INVENTORY_SLOT_ITEM_END && slot >= INVENTORY_SLOT_ITEM_START + GetInventorySlotCount())
                 return EQUIP_ERR_NO_SLOT_AVAILABLE;
+            // the key ring takes keys only
+            if (IsKeyRingPos(bag, slot) && !CanGoInKeyRing(pProto))
+                return EQUIP_ERR_WRONG_BAG_TYPE;
         }
         else
         {
@@ -11453,6 +11564,7 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
 
     // not specific slot or have space for partly store only in specific slot
     uint8 inventorySlotEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();
+    bool keyRing = CanGoInKeyRing(pProto);
 
     // in specific bag
     if (bag != NULL_BAG)
@@ -11462,6 +11574,13 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
         {
             if (bag == INVENTORY_SLOT_BAG_0)               // inventory
             {
+                if (keyRing)
+                {
+                    res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
+                    if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+                        return *res2;
+                }
+
                 res = CanStoreItem_InInventorySlots(CHILD_EQUIPMENT_SLOT_START, CHILD_EQUIPMENT_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
                 if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
                     return *res2;
@@ -11485,6 +11604,14 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
         // search free slot in bag for place to
         if (bag == INVENTORY_SLOT_BAG_0)                     // inventory
         {
+            // search free slot - key ring case
+            if (keyRing)
+            {
+                res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, false, pItem, bag, slot);
+                if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+                    return *res2;
+            }
+
             if (pItem && pItem->HasItemFlag(ITEM_FIELD_FLAG_CHILD))
             {
                 res = CanStoreItem_InInventorySlots(CHILD_EQUIPMENT_SLOT_START, CHILD_EQUIPMENT_SLOT_END, dest, pProto, count, false, pItem, bag, slot);
@@ -11512,6 +11639,13 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
     // search stack for merge to
     if (pProto->GetMaxStackSize() != 1)
     {
+        if (keyRing)
+        {
+            res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
+            if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+                return *res2;
+        }
+
         res = CanStoreItem_InInventorySlots(CHILD_EQUIPMENT_SLOT_START, CHILD_EQUIPMENT_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
         if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
             return *res2;
@@ -11547,6 +11681,14 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
             if (Optional<InventoryResult> res2 = tryHandleBagStoreResult(res))
                 return *res2;
         }
+    }
+
+    // search free slot - key ring case (keys go on the key ring before any bag, like the client's own sorting)
+    if (keyRing)
+    {
+        res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, false, pItem, bag, slot);
+        if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+            return *res2;
     }
 
     // search free slot - special bag case
@@ -11631,10 +11773,12 @@ InventoryResult Player::CanStoreItems(Item** items, int count, uint32* offending
 
     // counts
     uint32 inventoryCounts[INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START] = {};
+    uint32 keyRingCounts[KEYRING_SLOT_END - KEYRING_SLOT_START] = {};
     uint32 bagCounts[AsUnderlyingType(REAGENT_BAG_SLOT_END) - AsUnderlyingType(INVENTORY_SLOT_BAG_START)][MAX_BAG_SIZE] = {};
 
     // Item pointers
     Item* inventoryPointers[INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START] = {};
+    Item* keyRingPointers[KEYRING_SLOT_END - KEYRING_SLOT_START] = {};
     Item* bagPointers[AsUnderlyingType(REAGENT_BAG_SLOT_END) - AsUnderlyingType(INVENTORY_SLOT_BAG_START)][MAX_BAG_SIZE] = {};
 
     uint8 inventoryEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();
@@ -11648,6 +11792,17 @@ InventoryResult Player::CanStoreItems(Item** items, int count, uint32* offending
         {
             inventoryCounts[i - INVENTORY_SLOT_ITEM_START] = item2->GetCount();
             inventoryPointers[i - INVENTORY_SLOT_ITEM_START] = item2;
+        }
+    }
+
+    // filling key ring
+    for (uint8 i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; i++)
+    {
+        item2 = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (item2 && !item2->IsInTrade())
+        {
+            keyRingCounts[i - KEYRING_SLOT_START] = item2->GetCount();
+            keyRingPointers[i - KEYRING_SLOT_START] = item2;
         }
     }
 
@@ -11698,10 +11853,29 @@ InventoryResult Player::CanStoreItems(Item** items, int count, uint32* offending
         if (res != EQUIP_ERR_OK)
             return res;
 
+        bool const keyRing = CanGoInKeyRing(pProto);
+
         // search stack for merge to
         if (pProto->GetMaxStackSize() != 1)
         {
             bool b_found = false;
+
+            for (int t = KEYRING_SLOT_START; keyRing && t < KEYRING_SLOT_END; ++t)
+            {
+                item2 = keyRingPointers[t - KEYRING_SLOT_START];
+                if (item2 && item2->CanBeMergedPartlyWith(pProto) == EQUIP_ERR_OK && keyRingCounts[t - KEYRING_SLOT_START] < pProto->GetMaxStackSize())
+                {
+                    keyRingCounts[t - KEYRING_SLOT_START] += remaining_count;
+                    remaining_count = keyRingCounts[t - KEYRING_SLOT_START] < pProto->GetMaxStackSize() ? 0 : keyRingCounts[t - KEYRING_SLOT_START] - pProto->GetMaxStackSize();
+
+                    b_found = remaining_count == 0;
+                    if (b_found)
+                        break;
+                }
+            }
+
+            if (b_found)
+                continue;
 
             for (int t = INVENTORY_SLOT_ITEM_START; t < inventoryEnd; ++t)
             {
@@ -11744,6 +11918,26 @@ InventoryResult Player::CanStoreItems(Item** items, int count, uint32* offending
                                 break;
                         }
                     }
+                }
+            }
+
+            if (b_found)
+                continue;
+        }
+
+        // key ring case
+        if (keyRing)
+        {
+            bool b_found = false;
+            for (int t = KEYRING_SLOT_START; t < KEYRING_SLOT_END; ++t)
+            {
+                if (keyRingCounts[t - KEYRING_SLOT_START] == 0)
+                {
+                    keyRingCounts[t - KEYRING_SLOT_START] = remaining_count;
+                    keyRingPointers[t - KEYRING_SLOT_START] = item;
+
+                    b_found = true;
+                    break;
                 }
             }
 
@@ -13322,31 +13516,35 @@ uint32 Player::DestroyItemCount(uint32 itemEntry, uint32 count, bool update, boo
         GetName(), GetGUID().ToString(), itemEntry, count);
     uint32 remcount = 0;
 
-    // in inventory
+    // in inventory: backpack, then key ring
     uint8 inventoryEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();
-    for (uint8 i = INVENTORY_SLOT_ITEM_START; i < inventoryEnd; ++i)
+    std::array<std::pair<uint8, uint8>, 2> const inventoryRanges = { { { INVENTORY_SLOT_ITEM_START, inventoryEnd }, { KEYRING_SLOT_START, KEYRING_SLOT_END } } };
+    for (auto [rangeStart, rangeEnd] : inventoryRanges)
     {
-        if (Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+        for (uint8 i = rangeStart; i < rangeEnd; ++i)
         {
-            if (item->GetEntry() == itemEntry && !item->IsInTrade())
+            if (Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             {
-                if (item->GetCount() + remcount <= count)
+                if (item->GetEntry() == itemEntry && !item->IsInTrade())
                 {
-                    // all items in inventory can unequipped
-                    remcount += item->GetCount();
-                    DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
+                    if (item->GetCount() + remcount <= count)
+                    {
+                        // all items in inventory can unequipped
+                        remcount += item->GetCount();
+                        DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
 
-                    if (remcount >= count)
-                        return remcount;
-                }
-                else
-                {
-                    item->SetCount(item->GetCount() - count + remcount);
-                    ItemRemovedQuestCheck(item->GetEntry(), count - remcount);
-                    if (IsInWorld() && update)
-                        item->SendUpdateToPlayer(this);
-                    item->SetState(ITEM_CHANGED, this);
-                    return count;
+                        if (remcount >= count)
+                            return remcount;
+                    }
+                    else
+                    {
+                        item->SetCount(item->GetCount() - count + remcount);
+                        ItemRemovedQuestCheck(item->GetEntry(), count - remcount);
+                        if (IsInWorld() && update)
+                            item->SendUpdateToPlayer(this);
+                        item->SetState(ITEM_CHANGED, this);
+                        return count;
+                    }
                 }
             }
         }
@@ -13521,6 +13719,12 @@ void Player::DestroyZoneLimitedItem(bool update, uint32 new_zone)
     // in inventory
     uint8 inventoryEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();
     for (uint8 i = INVENTORY_SLOT_ITEM_START; i < inventoryEnd; i++)
+        if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            if (pItem->IsLimitedToAnotherMapOrZone(GetMapId(), new_zone))
+                DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
+
+    // in key ring
+    for (uint8 i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; i++)
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             if (pItem->IsLimitedToAnotherMapOrZone(GetMapId(), new_zone))
                 DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
@@ -13948,10 +14152,26 @@ void Player::SwapItem(uint16 src, uint16 dst)
     // impossible merge/fill, do real swap
     InventoryResult msg = EQUIP_ERR_OK;
 
+    // A full equipped bag swapped with an empty bag from the inventory. The full bag's items move into the empty one
+    // (the "bag swap with item exchange" block below), so the full bag lands, empty, in the slot the empty bag held. The move checks
+    // below ran first and refused it as a non-empty bag ("You can only do that with empty bags"), so that block was never reached.
+    // That slot already holds a bag, so a bag may go there.
+    Item* exchangeFullBag = nullptr;
+    if (Bag* srcAsBag = pSrcItem->ToBag())
+        if (Bag* dstAsBag = pDstItem->ToBag())
+        {
+            if (srcAsBag->IsEmpty() && !IsBagPos(src) && !dstAsBag->IsEmpty())
+                exchangeFullBag = dstAsBag;
+            else if (dstAsBag->IsEmpty() && !IsBagPos(dst) && !srcAsBag->IsEmpty())
+                exchangeFullBag = srcAsBag;
+        }
+
     // check src->dest move possibility
     ItemPosCountVec sDest;
     uint16 eDest = 0;
-    if (IsInventoryPos(dst))
+    if (exchangeFullBag == pSrcItem && IsInventoryPos(dst))
+        sDest.emplace_back(dst, 1);
+    else if (IsInventoryPos(dst))
         msg = CanStoreItem(dstbag, dstslot, sDest, pSrcItem, true);
     else if (IsBankPos(dst))
         msg = CanBankItem(dstbag, dstslot, sDest, pSrcItem, true);
@@ -13971,7 +14191,9 @@ void Player::SwapItem(uint16 src, uint16 dst)
     // check dest->src move possibility
     ItemPosCountVec sDest2;
     uint16 eDest2 = 0;
-    if (IsInventoryPos(src))
+    if (exchangeFullBag == pDstItem && IsInventoryPos(src))
+        sDest2.emplace_back(src, 1);
+    else if (IsInventoryPos(src))
         msg = CanStoreItem(srcbag, srcslot, sDest2, pDstItem, true);
     else if (IsBankPos(src))
         msg = CanBankItem(srcbag, srcslot, sDest2, pDstItem, true);
@@ -16038,13 +16260,15 @@ void Player::AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver)
             sScriptMgr->OnQuestAccept(this, item, quest);
 
             // There are two cases where the source item is not destroyed when the quest is accepted:
-            // - It is required to finish the quest, and is an unique item
+            // - It is required to finish the quest (an item objective names it). Unique or not: taking it would leave the
+            //   quest impossible to finish. The Craftsman's Writs (WoW Forever) start their quest and are its first
+            //   objective ("This writ must be in your possession to complete the transaction"), and are not unique.
             // - It is the same item present in the source item field (item that would be given on quest accept)
             bool destroyItem = true;
 
             for (QuestObjective const& obj : quest->GetObjectives())
             {
-                if (obj.Type == QUEST_OBJECTIVE_ITEM && uint32(obj.ObjectID) == item->GetEntry() && item->GetTemplate()->GetMaxCount() > 0)
+                if (obj.Type == QUEST_OBJECTIVE_ITEM && uint32(obj.ObjectID) == item->GetEntry())
                 {
                     destroyItem = false;
                     break;
@@ -17750,6 +17974,18 @@ void Player::AdjustQuestObjectiveProgress(Quest const* quest)
             case QUEST_OBJECTIVE_CRITERIA_TREE:
                 if (m_questObjectiveCriteriaMgr->HasCompletedObjective(&obj))
                     SetQuestObjectiveData(obj, 1);
+                break;
+            case QUEST_OBJECTIVE_AREA_TRIGGER_ENTER:
+                // already standing inside the area when the quest is taken (e.g. the quest starts from an object in it):
+                // no enter event will come, so count it now
+                for (AreaTrigger const* areaTrigger : GetInsideAreaTriggers())
+                {
+                    if (areaTrigger->GetEntry() == uint32(obj.ObjectID))
+                    {
+                        SetQuestObjectiveData(obj, 1);
+                        break;
+                    }
+                }
                 break;
             default:
                 break;
@@ -25628,6 +25864,21 @@ void Player::SetResurrectRequestData(WorldObject const* caster, uint32 health, u
     _resurrectionData.reset(new ResurrectionData());
     _resurrectionData->GUID = caster->GetGUID();
     _resurrectionData->Location.WorldRelocate(*caster);
+    // The player comes up where the caster stands. A caster whose position the server moved (a bot, ended on a navmesh point) can stand
+    // a little under the floor model that the client collides with: the player put there fell through the floor (row 359, Tasko 0.1.39,
+    // about half of the bot resurrections, in the world and in dungeons). A surface within the caster's own height above its feet is the
+    // floor it stands on, so the spot goes up onto it; never down, and a caster standing on the floor keeps its own spot.
+    if (float const height = caster->GetCollisionHeight(); height > 0.0f)
+    {
+        float const z = _resurrectionData->Location.GetPositionZ();
+        float const floor = caster->GetMapHeight(caster->GetPositionX(), caster->GetPositionY(), z + height - Z_OFFSET_FIND_HEIGHT, true, height);
+        if (floor > z + 0.05f && floor <= z + height)
+        {
+            TC_LOG_INFO("entities.player", "Player::SetResurrectRequestData: {} resurrects {} from z {:.2f} under the floor at {:.2f} (map {})",
+                caster->GetName(), GetName(), z, floor, caster->GetMapId());
+            _resurrectionData->Location.Relocate(caster->GetPositionX(), caster->GetPositionY(), floor, caster->GetOrientation());
+        }
+    }
     _resurrectionData->Health = health;
     _resurrectionData->Mana = mana;
     _resurrectionData->Aura = appliedAura;
@@ -26439,6 +26690,8 @@ void Player::UpdateObjectVisibility(bool forced)
     // Prevent updating visibility if player is not in world (example: LoadFromDB sets drunkstate which updates invisibility while player is not in map)
     if (!IsInWorld())
         return;
+
+    UpdateInvisibilityVisFlags();
 
     if (!forced)
         AddToNotify(NOTIFY_VISIBILITY_CHANGED);
@@ -29816,6 +30069,7 @@ void Player::ParkPetForTravel()
     {
         m_petParkedForTravel = true;
         m_petParkedCheckTimer = 2000;
+        m_petParkedLoadFails = 0;
     }
 }
 
@@ -29841,8 +30095,11 @@ void Player::UpdateParkedPet(uint32 diff)
     if (!IsInWorld() || IsBeingTeleported() || IsInFlight() || GetTransport() || GetVehicle() || IsPetNeedBeTemporaryUnsummoned())
         return;
 
-    m_petParkedForTravel = false;
     ResummonPetTemporaryUnSummonedIfAny();
+    // The flag stays set while a retry is still owed; a pet brought back (or brought back by someone
+    // else) or the retry limit reached clears it.
+    if (!m_temporaryUnsummonedPetNumber || !GetPetGUID().IsEmpty())
+        m_petParkedForTravel = false;
 }
 
 void Player::ResummonPetTemporaryUnSummonedIfAny()
@@ -29858,8 +30115,23 @@ void Player::ResummonPetTemporaryUnSummonedIfAny()
         return;
 
     Pet* NewPet = new Pet(this);
-    if (!NewPet->LoadPetFromDB(this, 0, m_temporaryUnsummonedPetNumber, true))
-        delete NewPet;
+    if (NewPet->LoadPetFromDB(this, 0, m_temporaryUnsummonedPetNumber, true))
+    {
+        m_temporaryUnsummonedPetNumber = 0;
+        return;
+    }
+
+    delete NewPet;
+    // A pet parked for travel gets the load retried by UpdateParkedPet rather than dropped after one
+    // failure. Give up after a few tries but keep the number, so a later resummon trigger can still
+    // bring the pet back.
+    if (m_petParkedForTravel)
+    {
+        if (++m_petParkedLoadFails < 5)
+            return;
+        m_petParkedForTravel = false;
+        return;
+    }
 
     m_temporaryUnsummonedPetNumber = 0;
 }
@@ -30628,6 +30900,31 @@ void Player::_LoadTraits(PreparedQueryResult configsResult, PreparedQueryResult 
     {
         int32 const ranksBefore = spentRanks(traitConfig);
         std::vector<WorldPackets::Traits::TraitEntry> const entriesBefore = traitConfig.Entries;
+
+        // A node Blizzard gave fewer ranks (WoW Forever, 25 November 2026: Improved Starfire 5 -> 2) holds more ranks than it
+        // can: as on live, every talent point of that config is given back, not only the ranks above the new maximum.
+        auto const overMaxRanks = std::ranges::find_if(traitConfig.Entries, [](WorldPackets::Traits::TraitEntry const& entry)
+        {
+            TraitNodeEntryEntry const* nodeEntry = sTraitNodeEntryStore.LookupEntry(entry.TraitNodeEntryID);
+            return nodeEntry && entry.Rank > 0 && entry.Rank + entry.GrantedRanks > nodeEntry->MaxRanks;
+        });
+        if (overMaxRanks != traitConfig.Entries.end())
+        {
+            TC_LOG_INFO("entities.player.talents", "Player {} ({}): talent config {} (type {}, spec {}) has node {} entry {} at rank {}, above its {} ranks now; every talent point of it is given back.",
+                GetName(), GetGUID().ToString(), traitConfig.ID, AsUnderlyingType(traitConfig.Type), traitConfig.ChrSpecializationID,
+                overMaxRanks->TraitNodeID, overMaxRanks->TraitNodeEntryID, overMaxRanks->Rank + overMaxRanks->GrantedRanks,
+                sTraitNodeEntryStore.AssertEntry(overMaxRanks->TraitNodeEntryID)->MaxRanks);
+
+            traitConfig.Entries.clear();
+            traitConfig.SubTrees.clear();
+            for (UF::TraitEntry const& grantedEntry : TraitMgr::GetGrantedTraitEntriesForConfig(traitConfig, this))
+                traitConfig.Entries.emplace_back(grantedEntry);
+            TraitMgr::ValidateConfig(traitConfig, this, false, true);
+            AddTraitConfig(traitConfig);
+            m_traitConfigStates[traitConfig.ID] = PLAYERSPELL_CHANGED;   // saved emptied: the next login does not reset it again
+            continue;
+        }
+
         TraitMgr::LearnResult const validateResult = TraitMgr::ValidateConfig(traitConfig, this, false, true);
         if (validateResult == TraitMgr::LearnResult::Ok && spentRanks(traitConfig) < ranksBefore)
         {
@@ -32706,6 +33003,10 @@ Pet* Player::SummonPet(uint32 entry, Optional<PetSaveMode> slot, float x, float 
     pet->SetFullHealth();
     pet->SetFullPower(POWER_MANA);
     pet->SetPetNameTimestamp(uint32(GameTime::GetGameTime()));
+
+    // Classic 1.60: a pet made next to an owner on a ship rides the ship (Pet::LoadPetFromDB)
+    if (TransportBase* transport = GetTransport())
+        transport->AddPassenger(pet, transport->GetPositionOffsetTo(pet->GetPosition()));
 
     map->AddToMap(pet->ToCreature());
 

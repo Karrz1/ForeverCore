@@ -200,6 +200,7 @@ struct classic_boss_alcaz_wrex : public ScriptedAI
 
     void JustEngagedWith(Unit* who) override
     {
+        Talk(0);                                         // live's aggro yell (creature_text, 2026_11_27_40)
         AlcazCallGuards(me, NPC_ALCAZ_SLAVERING_HOUND, 15.0f, who);
         _events.ScheduleEvent(EV_BATTLE_SHOUT, 1s);     // INFERRED timers
         _events.ScheduleEvent(EV_MORTAL_STRIKE, 6s);
@@ -287,6 +288,7 @@ struct classic_boss_alcaz_katerina : public ScriptedAI
 
     void JustEngagedWith(Unit* who) override
     {
+        Talk(0);                                         // live's aggro yell
         AlcazCallGuards(me, NPC_ALCAZ_CHAPLAIN, 15.0f, who);
         _events.ScheduleEvent(EV_POISON, 4s);           // INFERRED timers
         _events.ScheduleEvent(EV_GARROTE, 8s);
@@ -329,6 +331,7 @@ struct classic_boss_alcaz_questioner : public ScriptedAI
 
     void JustEngagedWith(Unit* /*who*/) override
     {
+        Talk(0);                                         // live's aggro yell
         _events.ScheduleEvent(EV_REND, 3s);             // INFERRED timers
         _events.ScheduleEvent(EV_DRAIN_LIFE, 8s);
     }
@@ -387,6 +390,7 @@ struct classic_boss_alcaz_blazeroar : public ScriptedAI
 
     void JustEngagedWith(Unit* /*who*/) override
     {
+        Talk(0);                                         // live's aggro yell
         _events.SetPhase(PHASE_ZARLA);
         _events.ScheduleEvent(EV_FIREBALL, 2s, 0, PHASE_ZARLA);         // INFERRED timers
         _events.ScheduleEvent(EV_FLAMESTRIKE, 9s, 0, PHASE_ZARLA);
@@ -404,6 +408,7 @@ struct classic_boss_alcaz_blazeroar : public ScriptedAI
         if (me->HealthBelowPctDamaged(AlcazRevealPct, damage))
         {
             _revealed = true;
+            Talk(1);                                     // "I grow tired of our little game!" (live: 27 s into the fight, taken as the reveal)
             me->InterruptNonMeleeSpells(false);
             DoCastSelf(SPELL_ALCAZ_REVEAL_FORM, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
             _events.SetPhase(PHASE_DRAGON);
@@ -411,7 +416,7 @@ struct classic_boss_alcaz_blazeroar : public ScriptedAI
             _events.ScheduleEvent(EV_FLAME_BREATH, 7s, 0, PHASE_DRAGON);
             _events.ScheduleEvent(EV_SEARING_SCALES, 10s, 0, PHASE_DRAGON);
             _events.ScheduleEvent(EV_FEAR, 18s, 0, PHASE_DRAGON);
-            _events.ScheduleEvent(EV_ENRAGE, 45s, 0, PHASE_DRAGON);
+            _events.ScheduleEvent(EV_ENRAGE, 28s, 0, PHASE_DRAGON);     // live: the enrage emote 28 s after that line
         }
     }
 
@@ -447,10 +452,19 @@ struct classic_boss_alcaz_blazeroar : public ScriptedAI
                     _events.Repeat(20s, 25s);
                     break;
                 case EV_FEAR: DoCastSelf(SPELL_ALCAZ_FEAR, CastSpellExtraArgs(TRIGGERED_FULL_MASK)); _events.Repeat(25s, 30s); break;
-                case EV_ENRAGE: DoCastSelf(SPELL_ALCAZ_ENRAGE, CastSpellExtraArgs(TRIGGERED_FULL_MASK)); _events.Repeat(45s); break;
+                case EV_ENRAGE:
+                    Talk(2);                             // the enrage emote
+                    DoCastSelf(SPELL_ALCAZ_ENRAGE, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
+                    _events.Repeat(45s);
+                    break;
                 default: break;
             }
         }
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        Talk(3);                                         // live's death line
     }
 
 private:

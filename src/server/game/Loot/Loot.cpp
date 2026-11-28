@@ -36,6 +36,8 @@
 #include "StringFormat.h"
 #include "World.h"
 #include "WorldSession.h"
+#include <mutex>
+#include <unordered_set>
 
 //
 // --------- LootItem ---------
@@ -739,6 +741,18 @@ void LootRoll::Finish(RollVoteMap::const_iterator winnerItr)
             }
             else
                 player->StoreLootItem(m_loot->GetOwnerGUID(), m_lootItem->LootListId, m_loot);
+
+            // A roll usually ends after everyone has closed the loot window, so no loot release runs for the corpse once the winner
+            // takes the last item. Do the release's empty corpse step here: else the corpse keeps its loot sparkle and can't be skinned.
+            if (m_loot->isLooted() && m_loot->GetOwnerGUID().IsCreatureOrVehicle())
+            {
+                if (Creature* creature = m_map->GetCreature(m_loot->GetOwnerGUID()); creature && creature->IsFullyLooted())
+                {
+                    creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
+                    if (!creature->IsAlive())
+                        creature->AllLootRemovedFromCorpse();
+                }
+            }
         }
     }
     m_isStarted = false;
@@ -748,19 +762,58 @@ void LootRoll::Finish(RollVoteMap::const_iterator winnerItr)
 // --------- Loot ---------
 //
 
+namespace
+{
+    // Every Loot alive right now. Loot is made and freed on map threads, so the set has a lock.
+    std::mutex& LiveLootLock()
+    {
+        static std::mutex lock;
+        return lock;
+    }
+
+    std::unordered_set<Loot const*>& LiveLoots()
+    {
+        static std::unordered_set<Loot const*> loots;
+        return loots;
+    }
+}
+
+bool Loot::IsLive(Loot const* loot, ObjectGuid const& lootGuid)
+{
+    if (!loot)
+        return false;
+
+    std::scoped_lock lock(LiveLootLock());
+    // the GUID check catches a new Loot that took a freed one's address
+    return LiveLoots().contains(loot) && loot->GetGUID() == lootGuid;
+}
+
 Loot::Loot(Map* map, ObjectGuid owner, LootType type, Group const* group) : gold(0), unlootedCount(0), loot_type(type),
     _guid(map ? ObjectGuid::Create<HighGuid::LootObject>(map->GetId(), 0, map->GenerateLowGuid<HighGuid::LootObject>()) : ObjectGuid::Empty),
     _owner(owner), _itemContext(ItemContext::NONE), _lootMethod(group ? group->GetLootMethod() : FREE_FOR_ALL),
     _lootMaster(group ? group->GetMasterLooterGuid() : ObjectGuid::Empty), _wasOpened(false), _changed(false), _dungeonEncounterId(0)
 {
+    std::scoped_lock lock(LiveLootLock());
+    LiveLoots().insert(this);
 }
 
 Loot::~Loot()
 {
+    {
+        // out of the registry first: from here on no loot view treats this pointer as usable
+        std::scoped_lock lock(LiveLootLock());
+        LiveLoots().erase(this);
+    }
+
+    // PlayersLooting is how a dying loot finds every player whose loot view still points at it, so each one is released
+    // here and none is left holding a freed pointer. Release only views that really hold this loot (another loot may have
+    // taken the same view key), and skip a player whose session is already gone (bot logout teardown).
     GuidSet activeLooters = std::move(PlayersLooting);
     for (ObjectGuid playerGuid : activeLooters)
         if (Player* player = ObjectAccessor::FindConnectedPlayer(playerGuid))
-            player->GetSession()->DoLootRelease(this);
+            if (WorldSession* session = player->GetSession())
+                if (Trinity::Containers::MapGetValuePtr(player->GetAELootView(), GetGUID()) == this)
+                    session->DoLootRelease(this);
 }
 
 void Loot::NotifyLootList(Map const* map) const
@@ -787,38 +840,26 @@ void Loot::NotifyItemRemoved(uint8 lootListId, Map const* map)
 {
     // notify all players that are looting this that the item was removed
     // convert the index to the slot the player sees
-    for (auto itr = PlayersLooting.begin(); itr != PlayersLooting.end();)
+    // A looter not on this map stays in PlayersLooting: it is how ~Loot finds the views to release (dropping it here left that
+    // player's view pointing at this loot after it was freed).
+    LootItem const& item = items[lootListId];
+    for (ObjectGuid const& looterGuid : PlayersLooting)
     {
-        LootItem const& item = items[lootListId];
-        if (item.GetAllowedLooters().find(*itr) == item.GetAllowedLooters().end())
-        {
-            ++itr;
+        if (!item.GetAllowedLooters().contains(looterGuid))
             continue;
-        }
 
-        if (Player* player = ObjectAccessor::GetPlayer(map, *itr))
-        {
+        if (Player* player = ObjectAccessor::GetPlayer(map, looterGuid))
             player->SendNotifyLootItemRemoved(GetGUID(), GetOwnerGUID(), lootListId);
-            ++itr;
-        }
-        else
-            itr = PlayersLooting.erase(itr);
     }
 }
 
 void Loot::NotifyMoneyRemoved(Map const* map)
 {
     // notify all players that are looting this that the money was removed
-    for (auto itr = PlayersLooting.begin(); itr != PlayersLooting.end();)
-    {
-        if (Player* player = ObjectAccessor::GetPlayer(map, *itr))
-        {
+    // looters off this map stay in PlayersLooting (see NotifyItemRemoved)
+    for (ObjectGuid const& looterGuid : PlayersLooting)
+        if (Player* player = ObjectAccessor::GetPlayer(map, looterGuid))
             player->SendNotifyLootMoneyRemoved(GetGUID());
-            ++itr;
-        }
-        else
-            itr = PlayersLooting.erase(itr);
-    }
 }
 
 namespace

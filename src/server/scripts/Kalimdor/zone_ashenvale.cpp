@@ -88,7 +88,8 @@ public:
             {
                 me->SetFaction(FACTION_ESCORTEE_N_NEUTRAL_PASSIVE);
                 LoadPath(PATH_ESCORT_RUUL_SNOWHOOF);
-                EscortAI::Start(true, player->GetGUID());
+                // With the quest, EscortAI fails it for the player and their group when Ruul dies.
+                EscortAI::Start(true, player->GetGUID(), quest);
             }
         }
 
@@ -131,9 +132,11 @@ public:
 
         void EnterEvadeMode(EvadeReason why) override
         {
-            if (!me->HasAura(RUUL_SHAPECHANGE))
-                me->AddAura(RUUL_SHAPECHANGE, me);
+            // The evade strips every aura, the bear form too: put it back afterwards, or Ruul walks back as a tauren
+            // until he reaches his evade point (live Forever keeps him a bear).
             ScriptedAI::EnterEvadeMode(why);
+            if (me->IsAlive() && !me->HasAura(RUUL_SHAPECHANGE))
+                me->AddAura(RUUL_SHAPECHANGE, me);
         }
     };
 

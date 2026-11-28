@@ -203,6 +203,23 @@ public:
         {
             InstanceScript::OnCreatureRemove(creature);
             _encounterTracker.OnCreatureRemove(creature);
+
+            // A killed abomination leaves the map when its corpse decays (VMaNGOS kept dead creatures on the map until respawn).
+            // TYPE_RAMSTEIN counts every guid it cannot find as still alive, so a slow clear of the Slaughter Square never
+            // summoned Ramstein: forget the abominations that leave the map dead. One that leaves alive (grid unload) still counts.
+            switch (creature->GetEntry())
+            {
+                case NPC_ABOM_BILE:
+                case NPC_ABOM_VENOM:
+                    if (!creature->IsAlive())
+                    {
+                        abomnationGUID.erase(creature->GetGUID());
+                        slaugtherAboGUID.remove(creature->GetGUID());
+                    }
+                    break;
+                default:
+                    break;
+            }
         }
 
         uint32 m_auiEncounter[STRAT_MAX_ENCOUNTER];
@@ -622,7 +639,7 @@ public:
                             SummonRamstein();
                         }
                         else
-                            TC_LOG_DEBUG("scripts", "Instance Stratholme: {} Abomnation left to kill.", uiCount);
+                            TC_LOG_INFO("scripts", "Instance Stratholme {}: {} abominations left to kill before Ramstein.", instance->GetInstanceId(), uiCount);
                         m_summoningRammstein = false;
                     }
                     if (uiData == DONE) // on ramstein death OK
@@ -1035,7 +1052,10 @@ public:
 
         void SummonRamstein()
         {
-            if (TempSummon* pRamstein = SummonInMap(NPC_RAMSTEIN, 4032.35f, -3380.567f, 119.739571f, 4.7614f, TEMPSUMMON_TIMED_OR_DEAD_DESPAWN, 1800000))
+            // He stays until he is killed, as on live. A 30 min timed despawn (VMaNGOS) left the instance holding his guid with no
+            // Ramstein on the map: the abominations' deaths then take the "already summoned" path, he never comes back, and the
+            // Baron stays unattackable for the rest of the run (Fox's report, 27 Nov).
+            if (TempSummon* pRamstein = SummonInMap(NPC_RAMSTEIN, 4032.35f, -3380.567f, 119.739571f, 4.7614f, TEMPSUMMON_DEAD_DESPAWN, 0))
             {
                 pRamstein->GetMotionMaster()->MovePoint(0, 4033.009f, -3404.3293f, 115.3554f);
                 pRamstein->SetHomePosition(4033.009f, -3404.3293f, 115.3554f, 4.788970f);

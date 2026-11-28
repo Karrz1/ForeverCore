@@ -25,6 +25,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellScript.h"
 #include "classic_molten_core.h"
+#include "classic_respawn.h"
 #include "classic_script_text.h"
 #include <list>
 
@@ -87,12 +88,11 @@ struct classic_boss_golemagg : public ScriptedAI
         std::list<Creature*> addList;
         me->GetCreatureListWithEntryInGrid(addList, CLASSIC_MC_NPC_CORE_RAGER, 250.0f);
         for (Creature* rager : addList)
-        {
             if (rager->IsAlive())
                 rager->DespawnOrUnsummon(0s, 1s);   // TC: despawn + forced respawn after 1s
-            else
-                rager->Respawn(true);
-        }
+        // dead ones by spawn: TC removes a dead creature from the map when its corpse decays, so the grid search misses it
+        Position const home = me->GetHomePosition();
+        ClassicRespawnDeadSpawns(me->GetMap(), CLASSIC_MC_NPC_CORE_RAGER, &home, 250.0f);
     }
 
     void JustEngagedWith(Unit* /*who*/) override

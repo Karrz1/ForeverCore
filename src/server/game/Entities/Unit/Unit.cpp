@@ -79,6 +79,7 @@
 #include "PlayerAI.h"
 #include "QuestDef.h"
 #include "RecentAllies.h"
+#include "ScriptMgr.h"
 #include "Spell.h"
 #include "ScheduledChangeAI.h"
 #include "ClassicRounding.h"
@@ -1859,12 +1860,30 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
 }
 
 // Classic 1.60 (WoW Forever): a binary spell's hit roll took its whole resist, so a hit or tick of one that lands takes no partial resist
-// and no Spell Piercing bonus (EV-0142: 0 partial resists on the live realms' binary hits and ticks against hundreds expected)
+// (EV-0142: 0 partial resists on the live realms' binary hits and ticks against hundreds expected)
 static bool IsClassicBinaryResistRoll(SpellInfo const* spellInfo, ClassicResistRoll resistRoll)
 {
     if (resistRoll == ClassicResistRoll::Binary)
         return true;
     return resistRoll == ClassicResistRoll::Spell && spellInfo && spellInfo->HasAttribute(SPELL_ATTR0_CU_BINARY_SPELL);
+}
+
+// Classic 1.60 (WoW Forever, hotfix 114309 of 20 Nov 2026): the binary spells whose ticks take the Spell Piercing bonus, Mind Flay and
+// Insect Swarm (wowsims/forever, MIT, docs/evidence EV-0142: Mind Flay 483 of 5,398 ticks with a bonus against 388 expected, Insect Swarm
+// 1,089 of 9,240 against 1,051). The other binary ticks (Hurricane, Entangling Roots, Curse of Agony, Immolate's) take none.
+static bool IsClassicPiercedBinaryTick(SpellInfo const* spellInfo)
+{
+    if (!spellInfo)
+        return false;
+
+    switch (spellInfo->Id)
+    {
+        case 15407: case 17311: case 17312: case 17313: case 17314: case 18807: // Mind Flay
+        case 5570: case 24974: case 24975: case 24976: case 24977:               // Insect Swarm
+            return true;
+        default:
+            return false;
+    }
 }
 
 /*static*/ uint32 Unit::CalcSpellResistedDamage(Unit const* attacker, Unit* victim, uint32 damage, SpellSchoolMask schoolMask, SpellInfo const* spellInfo, bool periodicTick /*= false*/,
@@ -1975,8 +1994,14 @@ static bool IsClassicBinaryResistRoll(SpellInfo const* spellInfo, ClassicResistR
         if (Player const* player = caster->GetSpellModOwner())
         {
             victimResistance += float(player->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_TARGET_RESISTANCE, schoolMask));
-            victimResistance -= float(player->GetSpellPenetrationItemMod());
-            victimResistance -= float(player->GetClassicSpellPenetration(schoolMask));
+            // Classic 1.60 (WoW Forever): a totem's attacks take none of the shaman's Spell Piercing (wowsims/forever, MIT, EV-0142: Magma
+            // Totem 186 of 26,257 hits with a bonus against 3,042 expected, Searing Totem 3 of 3,160 against 334)
+            Unit const* unitCaster = caster->ToUnit();
+            if (!unitCaster || !unitCaster->IsTotem())
+            {
+                victimResistance -= float(player->GetSpellPenetrationItemMod());
+                victimResistance -= float(player->GetClassicSpellPenetration(schoolMask));
+            }
         }
         else if (Unit const* unitCaster = caster->ToUnit())
             victimResistance += float(unitCaster->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_TARGET_RESISTANCE, schoolMask));
@@ -1988,20 +2013,32 @@ static bool IsClassicBinaryResistRoll(SpellInfo const* spellInfo, ClassicResistR
 // Classic 1.60 (WoW Forever): Spell Piercing beyond the target's resistance makes the average resist negative, and the partial resist roll
 // on its size pays out bonus damage in tenths instead: a hit gains 10% or 20% (wowsims/forever, MIT, docs/evidence EV-0091 and EV-0092:
 // pierced hits carry a negative resisted amount of exactly 10% or 20%, about 2:1, at the caster's piercing rate). A tick at a tenth
-// of the share (ClassicTickResistShare) and a binary spell take none (Shadow Word: Pain 0 of 515 at 8 piercing, Flamestrike's ground
-// ticks 0 of 4,177, Frostbolt 0 of 425, Frost Nova 0 of 1,258, Mind Flay ticks 0 of 320), while Fire Blast, Blizzard's ticks and Devouring
-// Plague's, Pyroblast's and Starshards' ticks take it in full (EV-0092, EV-0142).
+// of the share (ClassicTickResistShare) takes none (Shadow Word: Pain 0 of 515 at 8 piercing, Flamestrike's ground ticks 0 of 4,177),
+// while Fire Blast, Blizzard's ticks and Devouring Plague's, Pyroblast's and Starshards' ticks take it in full (EV-0092, EV-0142).
+// Since hotfix 114309 (20 Nov 2026, build 71037) a binary hit that lands takes it at the full share too, still with no partial resist
+// (EV-0142: Frostbolt 1,863 of 6,276 hits against 1,802 expected, Cone of Cold 1,111 of 4,675, Arcane Wrath 898 of 3,385), and so do
+// Mind Flay's and Insect Swarm's ticks (IsClassicPiercedBinaryTick); Hurricane's ticks (ClassicResistRoll::Binary) and the other binary
+// ticks take none. A negative share under 1% pays nothing: 5 piercing at level 60 gives no bonus, 6 does (EV-0142 "The 1% cut": 0.11%
+// of hits at a 0.70-0.80% share against 5.88% expected). Credit: Everlake (buildthehomelab, GPL-3) ported it first.
 /*static*/ uint32 Unit::CalcSpellPiercingBonusDamage(Unit const* attacker, Unit* victim, uint32 damage, SpellSchoolMask schoolMask, SpellInfo const* spellInfo, bool periodicTick /*= false*/,
     ClassicResistRoll resistRoll /*= ClassicResistRoll::Spell*/)
 {
     if (!attacker || !(schoolMask & SPELL_SCHOOL_MASK_MAGIC))
         return 0;
 
-    if (IsClassicBinaryResistRoll(spellInfo, resistRoll) || ClassicTickResistShare(spellInfo, periodicTick, resistRoll) < 1.0f)
+    if (resistRoll == ClassicResistRoll::Binary)
+        return 0;
+
+    if (IsClassicBinaryResistRoll(spellInfo, resistRoll))
+    {
+        if (periodicTick && !IsClassicPiercedBinaryTick(spellInfo))
+            return 0;
+    }
+    else if (ClassicTickResistShare(spellInfo, periodicTick, resistRoll) < 1.0f)
         return 0;
 
     float const averageResist = Unit::CalculateSignedAverageResist(attacker, schoolMask, victim, spellInfo);
-    if (averageResist >= 0.0f)
+    if (averageResist > -0.01f)
         return 0;
 
     // the same tenths roll as CalcSpellResistedDamage, on the size of the negative share (always under 10% in practice)
@@ -3260,9 +3297,19 @@ void Unit::_UpdateAutoRepeatSpell()
     if (HasAuraType(SPELL_AURA_DISABLE_AUTOATTACK))
         return;
 
+    // Classic 1.60: a channel holds Auto Shot until it ends, even one that keeps the ranged timer running (Volley 14295 has
+    // SPELL_ATTR2_DO_NOT_RESET_COMBAT_TIMERS). A shot fired mid-channel is an action, and Volley's channel ends on actions
+    // (ChannelInterruptFlags Action), so every Auto Shot cut Volley short with no tick landed (RU row 345, probe ru345-1127:
+    // Volley cancelled 0.7 s in, SPELL_FAILED_INTERRUPTED, at the next Auto Shot). The timer keeps running, so the shot
+    // that was due leaves as soon as the channel ends.
+    Spell const* channel = m_currentSpells[CURRENT_CHANNELED_SPELL];
+    bool const channelHoldsAutoShot = classicAutoShot && channel && channel->getState() != SPELL_STATE_FINISHED
+        && !channel->GetSpellInfo()->HasAttribute(SPELL_ATTR5_ALLOW_ACTIONS_DURING_CHANNEL);
+
     // check "realtime" interrupts
     // don't cancel spells which are affected by a SPELL_AURA_CAST_WHILE_WALKING effect
-    if ((isMoving() && m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->CheckMovement() != SPELL_CAST_OK) || IsNonMeleeSpellCast(false, false, true, autoRepeatSpellInfo->Id == 75))
+    if ((isMoving() && m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->CheckMovement() != SPELL_CAST_OK) || IsNonMeleeSpellCast(false, false, true, autoRepeatSpellInfo->Id == 75)
+        || channelHoldsAutoShot)
     {
         // cancel wand shoot
         if (autoRepeatSpellInfo->Id != 75)
@@ -7249,9 +7296,16 @@ static ClassicSpellValue::Value const* ClassicCoefficientRow(SpellInfo const* sp
 // Classic 1.60: the spell power / healing power factor of an effect with the vanilla level penalty in. A vanilla table row is
 // already penalised and is taken as it is; the client's coefficient is the unpenalized one and gets 1 - (20 - spell level) * 3.75%
 // below level 20 (Fireball rank 1: 0.429 x 0.2875 = 0.123). See ClassicSpellValue::BonusCoefficientWithLevelPenalty.
-static float ClassicBonusCoefficient(SpellInfo const* spellProto, SpellEffectInfo const& spellEffectInfo)
+// A spell an aura triggers (a seal's hit, a shield's proc) takes the level of the aura that cast it: the client gives many of them
+// spell level 1, so they were penalised like a level 1 spell. WoW Forever: Seal of Fury rank 5's hit (20418, level 1) is
+// floor(35 + 0.1 x spell power) on live, no penalty (wowsims/forever EV-0143, 437 + 591 level 60 hits); with level 1 it got 0.029.
+static float ClassicBonusCoefficient(SpellInfo const* spellProto, SpellEffectInfo const& spellEffectInfo, Spell const* spell = nullptr)
 {
-    return ClassicSpellValue::BonusCoefficientWithLevelPenalty(ClassicCoefficientRow(spellProto, spellEffectInfo), spellEffectInfo.BonusCoefficient, int32(spellProto->SpellLevel));
+    int32 spellLevel = int32(spellProto->SpellLevel);
+    if (spell)
+        if (SpellInfo const* triggeringAura = spell->GetTriggeredByAuraSpell())
+            spellLevel = std::max(spellLevel, int32(triggeringAura->SpellLevel));
+    return ClassicSpellValue::BonusCoefficientWithLevelPenalty(ClassicCoefficientRow(spellProto, spellEffectInfo), spellEffectInfo.BonusCoefficient, spellLevel);
 }
 
 int32 Unit::SpellDamageBonusDone(Unit* victim, SpellInfo const* spellProto, int32 pdamage, DamageEffectType damagetype, SpellEffectInfo const& spellEffectInfo, uint32 stack /*= 1*/, Spell* spell /*= nullptr*/, AuraEffect const* aurEff /*= nullptr*/) const
@@ -7360,7 +7414,7 @@ float Unit::SpellDamageBonusDoneExact(Unit* victim, SpellInfo const* spellProto,
     float takenTotal = 0.0f;
     if (DoneAdvertisedBenefit || takenBenefit)
     {
-        float coeff = ClassicBonusCoefficient(spellProto, spellEffectInfo);
+        float coeff = ClassicBonusCoefficient(spellProto, spellEffectInfo, spell);
         if (Player* modOwner = GetSpellModOwner())
         {
             coeff *= 100.0f;
@@ -7891,7 +7945,7 @@ int32 Unit::SpellHealingBonusDone(Unit* victim, SpellInfo const* spellProto, int
     // Default calculation
     if (DoneAdvertisedBenefit)
     {
-        float coeff = ClassicBonusCoefficient(spellProto, spellEffectInfo);
+        float coeff = ClassicBonusCoefficient(spellProto, spellEffectInfo, spell);
         if (Player* modOwner = GetSpellModOwner())
         {
             coeff *= 100.0f;
@@ -10675,9 +10729,27 @@ void Unit::SetPower(Powers power, int32 val, bool withPowerUpdate /*= true*/)
         }
     }
 
+    // Diagnostic (RU Discord, Nursa, 11-22): a rogue's combat text says one combo point more than the target frame, up to 6. Logs every change
+    // of a rogue's points with the maximum and the spell in progress, a couple of hundred lines at most, so a test run shows whether the
+    // server holds a point too many or only the client counts one.
+    if (power == POWER_COMBO_POINTS && oldPower != val && GetClass() == CLASS_ROGUE && IsPlayer())
+    {
+        static std::atomic<uint32> loggedRogueCombo{ 0 };
+        if (loggedRogueCombo.fetch_add(1) < 200)
+        {
+            Spell const* current = GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            TC_LOG_INFO("scripts.classic", "[rogue_combo] {} combo points {} -> {} (max {}), combo target {}, generic spell {}, update packet {}",
+                GetName(), oldPower, val, maxPower, GetClassicComboTarget().ToString(), current ? current->GetSpellInfo()->Id : 0, withPowerUpdate);
+        }
+    }
+
     // Classic 1.60: also send combo point changes as a power update (the official rogue sniff 70338 has type 4 power updates);
     // energize changes the power without one. The client shows them only on UnitData ClassicComboTarget (Spell::EffectEnergize)
-    if (power == POWER_COMBO_POINTS && IsPlayer() && oldPower != val)
+    // A gain from an energize (EnergizeBySpell passes withPowerUpdate false) keeps it that way: the energize log that follows tells the
+    // client the gain, and with the power update first the client counted the point twice in its combat text ("2 combo points" with one
+    // on the target frame, up to 6; RU Discord, Nursa, 11-22). Live sends no type 4 power update for a gain: 816 combo energize logs
+    // (Claw 1082, Rake 1822, 3029) and no power update in the 21 Nov 18:09 capture, 40 and none in the 20 Nov 15:40 one.
+    if (power == POWER_COMBO_POINTS && IsPlayer() && oldPower != val && (withPowerUpdate || val < oldPower))
         withPowerUpdate = true;
 
     // no points left, no combo target (finishers, resets, logout)
@@ -12277,6 +12349,9 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
             ai->OnHealthDepleted(attacker, true);
             ai->JustDied(attacker);
         }
+
+        // the AI's JustDied may have despawned the creature already, the hook then runs on an object that is out of the world
+        sScriptMgr->OnCreatureJustDied(creature, attacker);
 
         if (TempSummon * summon = creature->ToTempSummon())
         {

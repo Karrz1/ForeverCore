@@ -721,7 +721,7 @@ enum PlayerSlots
     // first slot for item stored (in any way in player m_items data)
     PLAYER_SLOT_START           = 0,
     // last+1 slot for item stored (in any way in player m_items data)
-    PLAYER_SLOT_END             = 108,                  // Classic 1.60: 9 bank bag slots, everything after them +3
+    PLAYER_SLOT_END             = 144,                  // Classic 1.60: 9 bank bag slots, everything after them +3; key ring 112..143
     PLAYER_SLOTS_COUNT          = (PLAYER_SLOT_END - PLAYER_SLOT_START)
 };
 
@@ -840,6 +840,16 @@ enum AccountBankBagSlots
     ACCOUNT_BANK_SLOT_BAG_START = 103,
     ACCOUNT_BANK_SLOT_BAG_END   = 108
 };
+
+// Classic 1.60 key ring: container -2 in the client (32 slots, GetBagName "KEYRING"), stored straight in InvSlots 112..143
+// (client 70790 bag/slot to InvSlot at rva 0x2605400: slot + 112 for slots 0..31). 108..111 are the client's account bank tabs 6..9.
+enum KeyRingSlots : uint8                                   // 32 slots
+{
+    KEYRING_SLOT_START          = 112,
+    KEYRING_SLOT_END            = 144
+};
+
+static_assert(int(KEYRING_SLOT_END) == int(PLAYER_SLOT_END));
 
 struct ItemPosCount
 {
@@ -1340,6 +1350,7 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         void SetTaxiCheater(bool on) { if (on) m_ExtraFlags |= PLAYER_EXTRA_TAXICHEAT; else m_ExtraFlags &= ~PLAYER_EXTRA_TAXICHEAT; }
         bool isGMVisible() const { return !(m_ExtraFlags & PLAYER_EXTRA_GM_INVISIBLE); }
         void SetGMVisible(bool on);
+        void UpdateInvisibilityVisFlags();
         void SetPvPDeath(bool on) { if (on) m_ExtraFlags |= PLAYER_EXTRA_PVP_DEATH; else m_ExtraFlags &= ~PLAYER_EXTRA_PVP_DEATH; }
         bool HasRaceChanged() const { return (m_ExtraFlags & PLAYER_EXTRA_HAS_RACE_CHANGED) != 0; }
         void SetHasRaceChanged() { m_ExtraFlags |= PLAYER_EXTRA_HAS_RACE_CHANGED; }
@@ -1369,6 +1380,10 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         // See WorldObject::ModSpellCastTime and Spell::TriggerGlobalCooldown.
         float GetBotCastSpeedMod() const { return _botCastSpeedMod.load(std::memory_order_relaxed); }
         void SetBotCastSpeedMod(float mod) { _botCastSpeedMod.store(mod, std::memory_order_relaxed); }
+        // PlayerbotV2 ambient show: keep drawn weapons out past the 3s idle resheath
+        // (the smith's hammer at the forge). Set by API::set_sheath; combat clears it.
+        bool BotSheathHold() const { return m_botSheathHold; }
+        void SetBotSheathHold(bool hold) { m_botSheathHold = hold; }
 
         // Played Time Stuff
         time_t m_logintime;
@@ -1465,6 +1480,11 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
                         if (callback(pItem) == ItemSearchCallbackResult::Stop)
                             return false;
 
+                for (uint8 i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
+                    if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+                        if (callback(pItem) == ItemSearchCallbackResult::Stop)
+                            return false;
+
                 for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
                     if (Bag* pBag = GetBagByPos(i))
                         for (uint32 j = 0; j < GetBagSize(pBag); ++j)
@@ -1541,6 +1561,9 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         static bool IsBankPos(uint8 bag, uint8 slot);
         static bool IsChildEquipmentPos(uint16 pos) { return IsChildEquipmentPos(pos >> 8, pos & 255); }
         static bool IsChildEquipmentPos(uint8 bag, uint8 slot);
+        static bool IsKeyRingPos(uint16 pos) { return IsKeyRingPos(pos >> 8, pos & 255); }
+        static bool IsKeyRingPos(uint8 bag, uint8 slot);
+        static bool CanGoInKeyRing(ItemTemplate const* proto);
         static bool IsAccountBankPos(uint16 pos) { return IsBankPos(pos >> 8, pos & 255); }
         static bool IsAccountBankPos(uint8 bag, uint8 slot);
         bool IsValidPos(uint16 pos, bool explicit_pos) const { return IsValidPos(pos >> 8, pos & 255, explicit_pos); }
@@ -2350,6 +2373,8 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         void SetLootGUID(ObjectGuid const& guid) { SetUpdateFieldValue(m_values.ModifyValue(&Player::m_playerData).ModifyValue(&UF::PlayerData::LootTargetGUID), guid); }
         Loot* GetLootByWorldObjectGUID(ObjectGuid const& lootWorldObjectGuid) const;
         std::unordered_map<ObjectGuid, Loot*> const& GetAELootView() const { return m_AELootView; }
+        // Drops loot view entries whose Loot is already freed (see Loot::IsLive), without reading them. Call before walking the view.
+        void PruneDeadLootViews();
         LootRoll* GetLootRoll(ObjectGuid const& lootObjectGuid, uint8 lootListId);
         void AddLootRoll(LootRoll* roll);
         void RemoveLootRoll(LootRoll* roll);
@@ -2459,6 +2484,9 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         void UpdateMirrorTimers();
         void StopMirrorTimers();
         bool IsMirrorTimerActive(MirrorTimerType type) const;
+        // Time left on a mirror timer in ms (the breath while under water), DISABLED_MIRROR_TIMER when it is not running (full, or the
+        // player cannot drown).
+        int32 GetMirrorTimerLeft(MirrorTimerType type) const { return m_MirrorTimer[type]; }
 
         bool CanJoinConstantChannelInZone(ChatChannelsEntry const* channel, AreaTableEntry const* zone) const;
 
@@ -3541,9 +3569,11 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         // Temporary removed pet cache
         uint32 m_temporaryUnsummonedPetNumber;
         uint32 m_botSheathIdleMs = 0;                       // bot only: ms with weapons drawn and no fight
+        bool   m_botSheathHold = false;                     // bot only: a show wants the weapons out (station tool); cleared by combat or an UNARMED set_sheath
         uint32 m_petResummonDelay;                          // ms until the pet remembered at login is summoned (0 = none pending)
         bool m_petParkedForTravel;                          // pet put away because it could not follow the owner (boat, taxi, teleport)
         uint32 m_petParkedCheckTimer;
+        uint8 m_petParkedLoadFails;                         // resummon loads that failed while parked; bounded so a bad record cannot retry forever
         Optional<ReactStates> m_temporaryPetReactState;
         uint32 m_oldpetspell;
         ObjectGuid m_temporaryUnsummonedBattlePet;

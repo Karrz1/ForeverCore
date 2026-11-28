@@ -36,10 +36,10 @@ uint32 GetClientWeatherId(WeatherState state)
     {
         case WEATHER_STATE_LIGHT_RAIN:       return 625;
         case WEATHER_STATE_MEDIUM_RAIN:      return 579;
-        case WEATHER_STATE_HEAVY_RAIN:       return 586;
-        case WEATHER_STATE_LIGHT_SNOW:       return 588;
-        case WEATHER_STATE_MEDIUM_SNOW:      return 589;
-        case WEATHER_STATE_HEAVY_SNOW:       return 590;
+        case WEATHER_STATE_HEAVY_RAIN:       return 580; // live 71037 heavy rain (586 is rain with thunder)
+        case WEATHER_STATE_LIGHT_SNOW:       return 628; // live 71037 snow ids (Dun Morogh, Loch Modan)
+        case WEATHER_STATE_MEDIUM_SNOW:      return 629;
+        case WEATHER_STATE_HEAVY_SNOW:       return 630;
         case WEATHER_STATE_LIGHT_SANDSTORM:  return 592;
         case WEATHER_STATE_MEDIUM_SANDSTORM: return 600;
         case WEATHER_STATE_HEAVY_SANDSTORM:  return 602;

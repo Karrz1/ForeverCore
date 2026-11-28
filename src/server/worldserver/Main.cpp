@@ -470,6 +470,12 @@ int main(int argc, char** argv)
 
     sLog->SetSynchronous();
 
+    // Save and log out every player now, while scripts and modules are all still loaded: OnShutdown tears some of them down
+    // (the bot module stops its bots there), and a logout that ran after that, in the network handle below, could lose the save.
+    // (Shutdown order as in Everlake's core.)
+    sWorld->KickAll();
+    sWorld->UpdateSessions(1);
+
     sScriptMgr->OnShutdown();
 
     // set server offline

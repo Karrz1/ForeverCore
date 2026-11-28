@@ -45,6 +45,9 @@ void WorldSession::HandleInspectOpcode(WorldPackets::Inspect::Inspect& inspect)
 
     WorldPackets::Inspect::InspectResult inspectResult;
     inspectResult.DisplayInfo.Initialize(player);
+    // 71037 added two int32 and a list to the trait part; older accepted clients (70959) still read the old layout.
+    // A session without a real client (build 0) gets the live layout.
+    inspectResult.TraitsInfo.LiveLayout = !GetClientBuild() || GetClientBuild() >= 71037;
 
     if (GetPlayer()->CanBeGameMaster() || sWorld->getIntConfig(CONFIG_TALENTS_INSPECTING) + (GetPlayer()->GetEffectiveTeam() == player->GetEffectiveTeam()) > 1)
     {

@@ -1336,21 +1336,6 @@ enum ThunderbrewLaguerKeg
     NPC_HURLEY_CRONY       = 9541,
 };
 
-namespace
-{
-// VMaNGOS creature_movement_template entry 9537 (MoveWaypoint(0, 0, 1000, 0, 0, false))
-WaypointPath BuildHurleyPath()
-{
-    std::vector<WaypointNode> nodes;
-    nodes.emplace_back(0, 855.816f, -149.763f, -49.671f, 0.575959f, Optional<Milliseconds>(), WaypointMoveType::Run);
-    nodes.emplace_back(1, 884.958f, -147.708f, -49.7599f, Optional<float>(), Optional<Milliseconds>(), WaypointMoveType::Run);
-    nodes.emplace_back(2, 890.479f, -147.318f, -49.7617f, Optional<float>(), Optional<Milliseconds>(), WaypointMoveType::Run);
-    nodes.emplace_back(3, 896.846f, -147.319f, -49.7627f, Optional<float>(), Optional<Milliseconds>(5000ms), WaypointMoveType::Run);
-    nodes.emplace_back(4, 896.846f, -147.319f, -49.7627f, Optional<float>(), Optional<Milliseconds>(), WaypointMoveType::Run);
-    return WaypointPath(0, std::move(nodes), WaypointMoveType::Run);
-}
-}
-
 struct classic_go_thunderbrew_laguer_keg : public GameObjectAI
 {
     classic_go_thunderbrew_laguer_keg(GameObject* go) : GameObjectAI(go) { }
@@ -1375,11 +1360,16 @@ struct classic_go_thunderbrew_laguer_keg : public GameObjectAI
             if (!hurley)
                 return true;
 
-            hurley->SetWalk(false);
-            hurley->GetMotionMaster()->Clear();
-            // TODO(classic): VMaNGOS creature_movement_scripts 953701 (point 1: yell 4934) and 953704 (point 4: remove
-            // UNIT_FLAG_IMMUNE_TO_PC, set home position, move idle, react aggressive, start script on cronies) are not ported.
-            hurley->GetMotionMaster()->MovePath(BuildHurleyPath(), false);
+            // His SmartAI hides him when he appears (invisible, immune) and waits for data 1 1, the kegs' signal in the TC script:
+            // then he shows himself, yells, runs path 76297 and turns attackable at its end (actionlist 953700). Without the signal
+            // he stayed invisible, only GM mode showed him (Discord RU, 2026-11-23). His path and yells are the SmartAI's.
+            // The hiding runs in JustAppeared, on his first update after the summon, so the signal waits a moment: sent at once it
+            // came before the hiding and he stayed invisible (af73 run: he yelled and fought the player unseen).
+            hurley->m_Events.AddEventAtOffset([hurley]()
+            {
+                if (hurley->IsAlive() && hurley->AI())
+                    hurley->AI()->SetData(1, 1);
+            }, 1s);
 
             // Summon cronies around Hurley
             for (uint8 i = 0; i < 4; ++i)
@@ -1486,6 +1476,8 @@ struct classic_npc_watchman_doomgrip : public ScriptedAI
                 golem->SetUninteractible(false);                    // UNIT_FLAG_UNINTERACTIBLE
                 golem->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);    // UNIT_FLAG_SPAWNING
                 golem->SetImmuneToNPC(false);                       // UNIT_FLAG_IMMUNE_TO_NPC
+                golem->SetImmuneToPC(false);                        // UNIT_FLAG_IMMUNE_TO_PC: the dormant golem keeps it, so a woken
+                                                                    // one fought players who could not hit it back
                 if (who && golem->AI())
                     golem->AI()->AttackStart(who);
             }

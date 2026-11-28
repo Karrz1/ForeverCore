@@ -307,7 +307,10 @@ bool PathGenerator::CalculatePathImpl(float srcX, float srcY, float srcZ, float 
     // make sure navMesh works - we can run on map w/o mmap
     // check if the start and end point have a .mmtile loaded (can we pass via not loaded tile on the way?)
     Unit const* _sourceUnit = _source->ToUnit();
-    if (!_navMesh || !_navMeshQuery || (_sourceUnit && _sourceUnit->HasUnitState(UNIT_STATE_IGNORE_PATHFINDING)) ||
+    // A creature riding a ship (a pet that boarded with its owner) walks on the deck, which no navmesh holds: the world mesh under
+    // it is the sea. Its spline is laid in the ship's frame (MoveSplineInit), so a straight line over the deck is the path.
+    bool const onShip = _source->ToCreature() && _source->GetTransport();
+    if (!_navMesh || !_navMeshQuery || (_sourceUnit && _sourceUnit->HasUnitState(UNIT_STATE_IGNORE_PATHFINDING)) || onShip ||
         !HaveTile(start) || !HaveTile(dest))
     {
         BuildShortcut();
@@ -578,9 +581,19 @@ void PathGenerator::BuildPolyPath(G3D::Vector3 const& startPos, G3D::Vector3 con
         if (_source->GetMap()->IsUnderWater(_source->GetPhaseShift(), p.x, p.y, p.z))
         {
             TC_LOG_DEBUG("maps.mmaps", "++ BuildPolyPath :: underWater case");
+            // The straight swim only where it is clear of models and above the ground (SwimLegClear). Without that test a swimmer
+            // far under the surface polygons went straight at a mob anywhere: in Blackfathom Deeps bots under the water swam into
+            // the rock at mobs in the room above, and could not be called back out (DoctorSun, Discord 2026-11-21). A blocked line
+            // takes the polygon route to the nearest point instead, as for a unit that cannot swim.
             if (Unit const* _sourceUnit = _source->ToUnit())
                 if (_sourceUnit->CanSwim())
-                    buildShotrcut = true;
+                {
+                    std::string swimWhy;
+                    if (SwimLegClear(_source->GetMap(), _source->GetPhaseShift(), startPos, endPos, false, swimWhy))
+                        buildShotrcut = true;
+                    else
+                        _incompleteReason = "no straight swim: " + swimWhy;
+                }
         }
         else
         {
@@ -615,8 +628,8 @@ void PathGenerator::BuildPolyPath(G3D::Vector3 const& startPos, G3D::Vector3 con
             }
 
             _type = PathType(PATHFIND_INCOMPLETE);
-            _incompleteReason = Trinity::StringFormat("far from the navmesh: the start {:.2f} yd, the destination {:.2f} yd from its polygon",
-                distToStartPoly, distToEndPoly);
+            _incompleteReason = Trinity::StringFormat("far from the navmesh: the start {:.2f} yd, the destination {:.2f} yd from its polygon{}{}",
+                distToStartPoly, distToEndPoly, _incompleteReason.empty() ? "" : "; ", _incompleteReason);
 
             AddFarFromPolyFlags(startFarFromPoly, endFarFromPoly);
         }
@@ -1108,6 +1121,37 @@ void PathGenerator::BuildPointPath(const float *startPoint, const float *endPoin
             if (_type & PATHFIND_INCOMPLETE)
                 _incompleteReason += (_incompleteReason.empty() ? "" : "; ") + ("no straight swim: " + swimWhy);
         }
+        // A creature that swims (a fish, a shark, a murloc in the sea) stays in the water between two points in it. The navmesh holds
+        // deep water as polygons on its surface, and the route's points are those polygons' points, so every step of a wander or a chase
+        // from a point under the water rose to the surface, ran along it and dived again at its end (the dive leg above), or stayed on
+        // top when its end was less than a head under (Discord 2026-11-21, Mansen: "sealife struggle to stay below water. Who fed them
+        // helium?"). Its route is the straight swim when that stays in the water, clear of models and above the ground; else each point
+        // in the water goes down to the depth the swim has there, between its start's and its end's, as long as every leg stays clear.
+        // Players and bots are not touched (their own swim rules: the block above and the module's WaterRouteAdjust).
+        Creature const* fish = _source->ToCreature();
+        if (fish && fish->CanSwim() && !fish->CanFly() && !fish->IsHovering() && pointCount >= 2)
+        {
+            G3D::Vector3 const start = GetStartPosition();
+            G3D::Vector3 end = _pathPoints[pointCount - 1];
+            // The route's last point is the destination lifted onto the surface polygon: the destination itself, when it is in the water
+            // right under that point, is where the swim ends.
+            G3D::Vector3 const& asked = GetEndPosition();
+            float const askedAcross = std::sqrt((asked.x - end.x) * (asked.x - end.x) + (asked.y - end.y) * (asked.y - end.y));
+            if (!(_type & PATHFIND_INCOMPLETE) && askedAcross < 1.0f && asked.z < end.z && map->IsInWater(phase, asked.x, asked.y, asked.z))
+                end = asked;
+            if (map->IsInWater(phase, start.x, start.y, start.z) && map->IsInWater(phase, end.x, end.y, end.z - 0.5f))
+            {
+                std::string swimWhy;
+                if (legClear(start, end, true, swimWhy))
+                {
+                    _pathPoints = { start, end };
+                    pointCount = 2;
+                    SetActualEndPosition(end);
+                }
+                else if (SinkSwimRoute(start, end))
+                    SetActualEndPosition(end);
+            }
+        }
     }
 
     // force the given destination, if needed
@@ -1132,6 +1176,47 @@ void PathGenerator::BuildPointPath(const float *startPoint, const float *endPoin
     TC_LOG_DEBUG("maps.mmaps", "++ PathGenerator::BuildPointPath path type {} size {} poly-size {}", _type, pointCount, _polyLength);
 }
 
+// A swimming creature's route whose straight swim is blocked (BuildPointPath): each point in the water that lies
+// above the depth the swim has there (the start's and the end's z, in the ratio of the way along) goes down to it, never under its
+// ground. The lowered route is kept only if each of its legs stays in the water, clear of models and above the ground (SwimLegClear);
+// otherwise the navmesh points stay, as before.
+bool PathGenerator::SinkSwimRoute(G3D::Vector3 const& start, G3D::Vector3 const& end)
+{
+    Map* map = _source->GetMap();
+    PhaseShift const& phase = _source->GetPhaseShift();
+    std::size_t const count = _pathPoints.size();
+    if (count < 3)
+        return false;
+    // The first point is the source's own place (the spline starts there whatever the route says), the last the swim's end.
+    Movement::PointsArray sunk = _pathPoints;
+    sunk.front() = start;
+    sunk.back() = end;
+    std::vector<float> along(count, 0.0f);
+    for (std::size_t i = 1; i < count; ++i)
+        along[i] = along[i - 1] + (sunk[i] - sunk[i - 1]).magnitude();
+    float const total = along[count - 1];
+    if (total < 0.1f)
+        return false;
+    for (std::size_t i = 1; i + 1 < count; ++i)
+    {
+        G3D::Vector3& q = sunk[i];
+        if (!map->IsInWater(phase, q.x, q.y, q.z - 0.5f))
+            continue;
+        float depthZ = start.z + (end.z - start.z) * (along[i] / total);
+        float const ground = map->GetGridHeight(phase, q.x, q.y);
+        if (ground > INVALID_HEIGHT)
+            depthZ = std::max(depthZ, ground + 0.5f);
+        if (depthZ < q.z - 0.1f)
+            q.z = depthZ;
+    }
+    std::string why;
+    for (std::size_t i = 1; i < count; ++i)
+        if (!SwimLegClear(map, phase, sunk[i - 1], sunk[i], true, why))
+            return false;
+    _pathPoints = std::move(sunk);
+    return true;
+}
+
 // Every path point lies on a walkable navmesh polygon. The height probe can miss the floor model under it (a gap in a WMO floor) and
 // hand back the terrain grid below; a point moved that far down puts the unit under the floor (SM Library, map 189: the hall floor at
 // z 18.5, the grid at 0; a hunter's path came back with points at z 3.8 and 0.0 and it walked under the hall). A drop of more than
@@ -1144,14 +1229,27 @@ void PathGenerator::NormalizePath(bool meshPoints)
     // crawlers) crosses navmesh water polygons, and those lie on the water surface. Its point belongs on the bed below, however
     // deep: left on the surface, the spline lifted it out of the water and the next position update dropped it back (Discord
     // 2026-11-10, noobiru: crabs on the Echo Isles hopping a couple of yards above the water).
+    // The test asks whether the bed it drops to lies under water. Water polygons lie at or a little above the liquid surface
+    // (Durotar coast: polygons at z 0.51-0.73), so a probe half a yard under the polygon can land above the water, read "not in
+    // water", and the point stays on the surface (dev movement log 11-21: crawler path points at z 0.5 between bed points at
+    // -10 .. -29). The bed itself is under water whenever the drop is this deep.
+    // Water under the bed alone is not enough: under a pier, dock or bridge the bed is under water too, and a probe that missed
+    // the planks would send the walker down to the sea bed under them. The polygon must also lie at the liquid surface (at most
+    // kMaxWaterPolyRise above it); a walkway polygon stands yards above the water and keeps its height.
+    constexpr float kMaxWaterPolyRise = 1.5f;
     Unit const* unit = _source->ToUnit();
     bool const walksWaterBed = unit && !unit->CanSwim() && !unit->CanFly();
     for (uint32 i = 0; i < _pathPoints.size(); ++i)
     {
         float z = _pathPoints[i].z;
         _source->UpdateAllowedPositionZ(_pathPoints[i].x, _pathPoints[i].y, z);
-        bool const throughWater = meshPoints && walksWaterBed && z < _pathPoints[i].z - kMaxNormalizeDrop
-            && _source->GetMap()->IsInWater(_source->GetPhaseShift(), _pathPoints[i].x, _pathPoints[i].y, _pathPoints[i].z - 0.5f);
+        bool throughWater = false;
+        if (meshPoints && walksWaterBed && z < _pathPoints[i].z - kMaxNormalizeDrop)
+        {
+            LiquidData liquid;
+            throughWater = _source->GetMap()->IsInWater(_source->GetPhaseShift(), _pathPoints[i].x, _pathPoints[i].y, z + 0.5f, &liquid)
+                && _pathPoints[i].z <= liquid.level + kMaxWaterPolyRise;
+        }
         if (!meshPoints || z >= _pathPoints[i].z - kMaxNormalizeDrop || throughWater)
             _pathPoints[i].z = z;
     }

@@ -19,6 +19,8 @@
 #define TRINITYCORE_BOUNDING_INTERVAL_HIERARCHY_WRAPPER_H
 
 #include "BoundingIntervalHierarchy.h"
+#include "Log.h"
+#include <cmath>
 #include <span>
 #include <unordered_map>
 
@@ -92,11 +94,43 @@ public:
         ++unbalanced_times;
     }
 
+    // An object whose bounds are not finite, or have low above high, makes BIH::build loop for ever (the split never narrows),
+    // and the freeze detector then stops the world server. Such objects stay out of the tree (no dynamic collision for them)
+    // and are logged; they come back if they are removed and inserted again with usable bounds.
+    static bool UsableBounds(G3D::AABox const& box)
+    {
+        G3D::Vector3 const& lo = box.low();
+        G3D::Vector3 const& hi = box.high();
+        return std::isfinite(lo.x) && std::isfinite(lo.y) && std::isfinite(lo.z)
+            && std::isfinite(hi.x) && std::isfinite(hi.y) && std::isfinite(hi.z)
+            && lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z;
+    }
+
+    void dropUnusableBounds()
+    {
+        std::vector<T const*> unusable;
+        for (T const* obj : m_objects)
+        {
+            G3D::AABox box;
+            BoundsFunc()(obj, box);
+            if (!UsableBounds(box))
+            {
+                TC_LOG_ERROR("maps", "BIHWrap: object {} left out of the collision tree, bounds lo=({}, {}, {}) hi=({}, {}, {})",
+                    static_cast<void const*>(obj), box.low().x, box.low().y, box.low().z, box.high().x, box.high().y, box.high().z);
+                unusable.push_back(obj);
+            }
+        }
+
+        for (T const* obj : unusable)
+            remove(*obj);
+    }
+
     void balance()
     {
         if (unbalanced_times == 0)
             return;
 
+        dropUnusableBounds();
         m_tree.build(m_objects, BoundsFunc());
         unbalanced_times = 0;
     }

@@ -591,6 +591,11 @@ std::string Battleground::DescribeIndoors(Player const* player) const
         mogp, (mogp & 0x8) != 0, (mogp & 0x2000) != 0, rootId, adtId, groupId, row, rowFlags, player->GetAreaId(), area ? uint32(area->Flags[0]) : 0u);
 }
 
+uint8 Battleground::GetLfgRole(ChrSpecializationEntry const* spec)
+{
+    return uint8(spec ? spec->GetRole() : ChrSpecializationRole::Dps);
+}
+
 char const* Battleground::GetMountRefusal(Player const* player) const
 {
     if (isArena())
@@ -1444,6 +1449,7 @@ void Battleground::BuildPvPLogDataPacket(WorldPackets::Battleground::PVPMatchSta
             playerData.Race = player->GetRace();
             playerData.Class = player->GetClass();
             playerData.HonorLevel = player->GetHonorLevel();
+            playerData.Role = GetLfgRole(player->GetPrimarySpecializationEntry());
 
             pvpLogData.Statistics.push_back(playerData);
         }

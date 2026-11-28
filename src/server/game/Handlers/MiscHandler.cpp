@@ -377,7 +377,7 @@ void WorldSession::HandleRequestCemeteryList(WorldPackets::Misc::RequestCemetery
         if (!it->second.Conditions.Meets(conditionSource))
             continue;
 
-        graveyardIds.push_back(it->first);
+        graveyardIds.push_back(it->second.safeLocId);
     }
 
     if (graveyardIds.empty())
@@ -434,12 +434,26 @@ void WorldSession::HandleStandStateChangeOpcode(WorldPackets::Misc::StandStateCh
 // sitting with the sit key or on a chair sends a stand state change, so that objective never counted (Discord, Kozhan 2026-11-11).
 // 98289 is hidden ("Camp Tutorial Area Trigger", in no client or server quest table); the server completes it on live.
 // INFERRED: it is completed when the rest starts, the one moment the tree's aura condition is met.
+//
+// A chair or bench seats the player with a near teleport onto its slot (GameObject::Use). The position lands with the client's
+// teleport ack, and the next Player::Update takes that as movement and removes the rest (it ends on moving, as eating does): a
+// rest started while the seat move was on its way was gone the moment it began, so sitting in a chair never rested (TestPlayer
+// myrows4-1121: "aura 1289723 on" and "gone" in the same update). The rest of a sit that comes during a near teleport waits for
+// the seat move to land (UpdatePendingCampfireRest).
+//
+// The Camp Chair (612275) is the camp's own seat: a player's chair goes a yard in front of them (1307229: dest caster front,
+// range 1), so a chair set at the edge of the camp can stand outside the fire's reach of whoever sits in it (Discord, 6_1_8_8_1
+// "Bugs 3" 3, 2026-11-16: "the chair is too far away from the campfire"). Seated in one, the fire within camp feature range of
+// the chair counts (the reach the camp's features and their placement limit are counted with, classic_go_scripts.cpp).
 void WorldSession::UpdateCampfireRest(uint8 standState)
 {
     static constexpr uint32 SPELL_CAMPFIRE_REST = 1289723;
     static constexpr uint32 QUEST_CAMP_TUTORIAL_AREA_TRIGGER = 98289;
     static constexpr uint32 SPELL_FOCUS_CAMPFIRE = 4;
     static constexpr float CAMPFIRE_RANGE = 15.0f;
+    static constexpr uint32 GO_CAMP_CHAIR = 612275;
+    static constexpr float CHAIR_SEAT_RANGE = 2.0f;     // a seated player stands on the chair's slot
+    static constexpr float CAMP_FEATURE_RANGE = 20.0f;
 
     switch (standState)
     {
@@ -450,9 +464,17 @@ void WorldSession::UpdateCampfireRest(uint8 standState)
         case UNIT_STAND_STATE_SIT_HIGH_CHAIR:
             break;
         default:
+            _pendingCampfireRestStandState = 0;
             _player->RemoveAurasDueToSpell(SPELL_CAMPFIRE_REST);
             return;
     }
+
+    if (_player->IsBeingTeleportedNear())
+    {
+        _pendingCampfireRestStandState = standState;
+        return;
+    }
+    _pendingCampfireRestStandState = 0;
 
     if (_player->HasAura(SPELL_CAMPFIRE_REST))
         return;
@@ -461,12 +483,38 @@ void WorldSession::UpdateCampfireRest(uint8 standState)
     Trinity::GameObjectFocusCheck check(_player, SPELL_FOCUS_CAMPFIRE);
     Trinity::GameObjectSearcher<Trinity::GameObjectFocusCheck> searcher(_player, fire, check);
     Cell::VisitGridObjects(_player, searcher, CAMPFIRE_RANGE);
+    if (!fire && standState != UNIT_STAND_STATE_SIT)
+    {
+        if (GameObject* chair = _player->FindNearestGameObject(GO_CAMP_CHAIR, CHAIR_SEAT_RANGE))
+        {
+            auto chairFire = [chair](GameObject* go)
+            {
+                return go->GetGOInfo()->GetSpellFocusType() == SPELL_FOCUS_CAMPFIRE && go->isSpawned()
+                    && go->IsWithinDist(chair, CAMP_FEATURE_RANGE);
+            };
+            Trinity::GameObjectSearcher<decltype(chairFire)> chairSearcher(chair, fire, chairFire);
+            Cell::VisitGridObjects(chair, chairSearcher, CAMP_FEATURE_RANGE);
+        }
+    }
     if (!fire)
         return;
 
     _player->CastSpell(_player, SPELL_CAMPFIRE_REST, true);
     if (_player->HasAura(SPELL_CAMPFIRE_REST))
         _player->UpdateCriteria(CriteriaType::CompleteQuest, QUEST_CAMP_TUTORIAL_AREA_TRIGGER);
+}
+
+// The rest of a sit whose seat move has landed: Player::Update calls this after its movement interrupts, so the landing no longer
+// takes the rest away (see UpdateCampfireRest). Only while the player still sits as they sat down.
+void WorldSession::UpdatePendingCampfireRest()
+{
+    if (!_pendingCampfireRestStandState || _player->IsBeingTeleportedNear())
+        return;
+
+    uint8 const standState = _pendingCampfireRestStandState;
+    _pendingCampfireRestStandState = 0;
+    if (_player->GetStandState() == standState)
+        UpdateCampfireRest(standState);
 }
 
 void WorldSession::HandleReclaimCorpse(WorldPackets::Misc::ReclaimCorpse& /*packet*/)

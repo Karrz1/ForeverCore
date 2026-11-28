@@ -24,10 +24,12 @@
 #include "Map.h"
 #include "ScriptedCreature.h"
 #include "SpellInfo.h"
+#include "classic_respawn.h"
 #include "classic_script_text.h"
 #include "classic_temple_of_ahnqiraj.h"
 #include <cstdlib>
 #include <list>
+#include <set>
 #include <vector>
 
 namespace
@@ -75,6 +77,7 @@ struct classic_mob_anubisath_sentinel : public ScriptedAI
     bool m_bAlone;
     bool gatherOthersWhenAggro;
     GuidSet nearby;
+    std::set<ObjectGuid::LowType> nearbySpawnIds;     // TC: a buddy whose corpse decayed has left the map, respawn it by spawn
 
     void selectAbility(int asel)
     {
@@ -117,6 +120,7 @@ struct classic_mob_anubisath_sentinel : public ScriptedAI
     void ClearBuddyList()
     {
         nearby.clear();
+        nearbySpawnIds.clear();
     }
 
     void AddBuddyToList(Creature* buddy)
@@ -128,6 +132,8 @@ struct classic_mob_anubisath_sentinel : public ScriptedAI
             return;
 
         nearby.insert(buddy->GetGUID());
+        if (buddy->GetSpawnId())
+            nearbySpawnIds.insert(buddy->GetSpawnId());
     }
 
     void GiveBuddyMyList(ObjectGuid buddyGuid)
@@ -224,14 +230,9 @@ struct classic_mob_anubisath_sentinel : public ScriptedAI
     {
         if (!me->isDead())
         {
-            for (ObjectGuid const& guid : nearby)
-            {
-                if (Creature* buddy = me->GetMap()->GetCreature(guid))
-                {
-                    if (buddy->isDead())
-                        buddy->Respawn();
-                }
-            }
+            // VMaNGOS respawned the dead buddies by guid; TC removes a dead creature from the map when its corpse decays
+            for (ObjectGuid::LowType spawnId : nearbySpawnIds)
+                ClassicRespawnSpawnIfDead(me->GetMap(), spawnId);
         }
 
         ClearBuddyList();

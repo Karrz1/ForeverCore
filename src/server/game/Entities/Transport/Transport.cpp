@@ -288,8 +288,41 @@ void Transport::AddPassenger(WorldObject* passenger, Position const& offset)
         TC_LOG_DEBUG("entities.transport", "Object {} boarded transport {}.", passenger->GetName(), GetName());
 
         if (Player* plr = passenger->ToPlayer())
+        {
             sScriptMgr->OnAddPassenger(this, plr);
+            BoardOwnersCompanions(plr);
+        }
     }
+}
+
+// Classic 1.60: an owner's pet, guardians and minions next to it board the ship with it, as on live. Only players were ever added
+// when they stepped on board (MovementHandler), so a warlock's demon or a hunter's pet stayed in the world's frame: the moving ship
+// left it behind and it was dismissed out of reach (Discord, Wook, 2026-11-23). Summons made on board already ride along
+// (Map::SummonCreature), and so do pets that appear next to an owner who is on board (Pet::LoadPetFromDB, Player::SummonPet).
+// Totems stay where they were put, and mind-controlled units and vehicles keep their own handling.
+void Transport::BoardOwnersCompanions(Player* owner)
+{
+    static constexpr float BoardingReach = 30.0f;  // the follow range of a pet that is still on the pier
+
+    for (Unit* controlled : owner->m_Controlled)
+    {
+        Creature* companion = controlled->ToCreature();
+        if (!companion || !companion->IsInWorld() || companion->GetMap() != GetMap() || companion->GetTransport() || companion->GetVehicle()
+            || companion->IsTotem() || companion->IsCharmed() || companion->GetOwnerGUID() != owner->GetGUID()
+            || !companion->IsWithinDist(owner, BoardingReach))
+            continue;
+
+        AddPassenger(companion, GetPositionOffsetTo(companion->GetPosition()));
+    }
+}
+
+// The same companions leave the ship with their owner (a demon on the deck follows its owner down the pier).
+void Transport::LeaveWithOwner(Player* owner)
+{
+    for (Unit* controlled : owner->m_Controlled)
+        if (Creature* companion = controlled->ToCreature())
+            if (companion->GetTransport() == this && companion->GetOwnerGUID() == owner->GetGUID())
+                RemovePassenger(companion);
 }
 
 Transport* Transport::RemovePassenger(WorldObject* passenger)
@@ -304,6 +337,7 @@ Transport* Transport::RemovePassenger(WorldObject* passenger)
         {
             sScriptMgr->OnRemovePassenger(this, plr);
             plr->SetFallInformation(0, plr->GetPositionZ());
+            LeaveWithOwner(plr);
         }
     }
 
@@ -616,7 +650,12 @@ bool Transport::TeleportTransport(uint32 oldMapId, uint32 newMapId, float x, flo
                     if (veh->GetTransport() == this)
                         continue;
 
-                (*itr)->ToUnit()->NearTeleportTo(GetPositionWithOffset((*itr)->m_movementInfo.transport.pos));
+                // Classic 1.60: the ship jumps across the same map (Grom'gol <-> Undercity, TaxiPathNode flag 1 between nodes 12 and
+                // 13 of path 301). The players stay on board: the teleport names the ship and gives their place on its deck, as a far
+                // teleport does. With only a world position the client took them off the ship, and once it moved on after the loading
+                // screen they fell (Discord, 11-26). HandleMoveTeleportAck puts them back at the deck spot, wherever the ship is by then.
+                (*itr)->ToUnit()->NearTeleportTo(TeleportLocation{ .Location = WorldLocation(GetMapId(), (*itr)->m_movementInfo.transport.pos),
+                    .TransportGuid = GetTransportGUID() });
             }
         }
 
