@@ -753,6 +753,18 @@ bool CollectionMgr::CanAddAppearance(ItemModifiedAppearanceEntry const* itemModi
 void CollectionMgr::AddItemAppearance(ItemModifiedAppearanceEntry const* itemModifiedAppearance)
 {
     Player* owner = _owner->GetPlayer();
+    // No player yet: Player::Create stores a starting item the new character can't equip in its bags (StoreNewItem ->
+    // OnItemAdded), before the session has a player, and never-binding items count at once. Record the appearance on the
+    // account only: the player's transmog blocks are rebuilt from _appearances at login (LoadItemAppearances) and the
+    // account blocks are saved with it. Criteria and temporary appearances need a player and don't apply to a new item.
+    if (!owner)
+    {
+        if (_appearances->size() <= itemModifiedAppearance->ID)
+            _appearances->resize(itemModifiedAppearance->ID + 1);
+        _appearances->set(itemModifiedAppearance->ID);
+        return;
+    }
+
     if (_appearances->size() <= itemModifiedAppearance->ID)
     {
         std::size_t numBlocks = _appearances->num_blocks();
